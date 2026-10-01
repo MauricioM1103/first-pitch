@@ -452,6 +452,7 @@ def get_games(date_str):
             "favors_home": (p_home is not None and p_home >= 0.5),
             "game_pk": game.get("gamePk"),
             "odds": odds,
+            "game_ctx": game_ctx,
         })
     games.sort(key=lambda g: g["sort_key"])
     return games
@@ -1116,6 +1117,7 @@ INDEX_TEMPLATE = r"""<!doctype html>
       <nav class="nav-tabs">
         <a class="nav-tab active" href="/">Schedule</a>
         <a class="nav-tab" href="/edges">Edges</a>
+        <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
         <a class="nav-tab" href="/market">Market</a>
         <a class="nav-tab" href="/backtest">Model</a>
       </nav>
@@ -1492,6 +1494,7 @@ svg.calib { max-width: 100%; height: auto; }
       <nav class="nav-tabs">
         <a class="nav-tab" href="/">Schedule</a>
         <a class="nav-tab" href="/edges">Edges</a>
+        <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
         <a class="nav-tab" href="/market">Market</a>
         <a class="nav-tab active" href="/backtest">Model</a>
       </nav>
@@ -3318,6 +3321,459 @@ def nfl_backtest():
         sample_preds=sample_preds,
         calibration_svg=render_calibration_svg(m.get("calibration") or []),
     )
+
+
+# ============================================================================
+# Monte Carlo simulator (MLB)
+# ============================================================================
+
+MONTECARLO_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>First Pitch &mdash; Monte Carlo &mdash; {{ date_pretty }}</title>
+{{ fonts_link|safe }}
+<style>
+{{ shared_style|safe }}
+
+.hero { padding-bottom: 20px; margin-bottom: 24px; border-bottom: 1px solid var(--rule); }
+.hero h1 {
+  font-family: "Fraunces", Georgia, serif;
+  font-style: italic; font-weight: 400;
+  font-size: clamp(32px, 5vw, 48px);
+  line-height: 1.05; letter-spacing: -0.02em;
+  margin: 0 0 8px; font-variation-settings: "opsz" 144;
+}
+.hero .sub { color: var(--muted); max-width: 760px; font-size: 13.5px; line-height: 1.55; }
+
+.summary { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom: 24px; }
+.summary .metric { background: var(--card); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px; }
+.summary .label { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+.summary .value { font-family: "JetBrains Mono", monospace; font-size: 22px; font-weight: 500; color: var(--ink); font-variant-numeric: tabular-nums; }
+.summary .value.good { color: var(--good); text-shadow: var(--ev-strong-glow); }
+
+.mc-grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+@media (min-width: 1080px) { .mc-grid { grid-template-columns: repeat(2, 1fr); } }
+
+.mc-card {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: 12px; padding: 20px 22px;
+  display: flex; flex-direction: column; gap: 14px;
+  transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+}
+.mc-card:hover { border-color: var(--rule-strong); transform: translateY(-1px); box-shadow: var(--card-hover-shadow); }
+
+.mc-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.mc-matchup { font-size: 18px; font-weight: 600; color: var(--ink); letter-spacing: -0.01em; line-height: 1.2; }
+.mc-time { font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.lambda-row { display: flex; gap: 20px; font-family: "JetBrains Mono", monospace; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--muted); }
+.lambda-row b { color: var(--ink); font-weight: 500; }
+
+.mc-section { border-top: 1px dashed var(--rule); padding-top: 12px; }
+.mc-section-label { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+
+.mc-table {
+  width: 100%; border-collapse: collapse;
+  font-family: "JetBrains Mono", monospace; font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.mc-table th {
+  text-align: right; padding: 4px 6px;
+  color: var(--muted); font-weight: 500;
+  font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  border-bottom: 1px solid var(--rule);
+}
+.mc-table th:first-child { text-align: left; }
+.mc-table td { padding: 6px; text-align: right; color: var(--ink); }
+.mc-table td:first-child { text-align: left; color: var(--muted); }
+.mc-table td.pick { color: var(--ink); font-weight: 500; }
+.mc-table td.edge-pos { color: var(--good); font-weight: 600; text-shadow: var(--ev-strong-glow); }
+.mc-table td.edge-neg { color: var(--muted-2); }
+
+.dist-row {
+  display: grid; grid-template-columns: repeat(10, 1fr);
+  gap: 2px; align-items: end;
+  height: 48px; margin-top: 6px;
+}
+.dist-bar { background: color-mix(in oklab, var(--accent) 60%, transparent); border-radius: 2px 2px 0 0; }
+.dist-labels { display: grid; grid-template-columns: repeat(10, 1fr); gap: 2px; font-family: "JetBrains Mono", monospace; font-size: 9px; color: var(--muted); text-align: center; margin-top: 2px; }
+
+.mc-no-sim { font-size: 12.5px; color: var(--muted-2); font-style: italic; }
+
+.sim-controls { display: flex; align-items: center; gap: 10px; margin: 0 0 20px; flex-wrap: wrap; }
+.sim-controls label { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 8px; }
+.sim-controls select {
+  height: 36px; padding: 0 10px;
+  border: 1px solid var(--rule-strong); background: var(--surface); color: var(--ink);
+  border-radius: 8px; font-family: inherit; font-size: 13px;
+}
+
+.empty-mc { padding: 60px 24px; text-align: center; color: var(--muted); }
+.empty-mc h2 { font-family: "Fraunces", Georgia, serif; font-style: italic; font-weight: 400; font-size: 24px; color: var(--ink); margin: 0 0 8px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap header-row">
+    <div class="brand" style="display: flex; align-items: baseline;">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">First Pitch</span>
+      <nav class="nav-tabs">
+        <a class="nav-tab" href="/">Schedule</a>
+        <a class="nav-tab" href="/edges">Edges</a>
+        <a class="nav-tab active" href="/montecarlo">Monte Carlo</a>
+        <a class="nav-tab" href="/market">Market</a>
+        <a class="nav-tab" href="/backtest">Model</a>
+      </nav>
+    </div>
+    <form class="controls" method="get" action="/montecarlo">
+      <a class="btn icon" href="/montecarlo?date={{ prev_date }}&amp;n={{ n_sims }}">&lsaquo;</a>
+      <input type="date" name="date" value="{{ date_str }}" onchange="this.form.submit()">
+      <a class="btn icon" href="/montecarlo?date={{ next_date }}&amp;n={{ n_sims }}">&rsaquo;</a>
+      {% if not is_today %}<a class="btn" href="/montecarlo?date={{ today }}&amp;n={{ n_sims }}">Today</a>{% endif %}
+    </form>
+  </div>
+</header>
+
+{{ sport_strip|safe }}
+
+<main class="wrap reveal">
+  <div class="hero">
+    <h1>Monte Carlo &middot; {{ date_pretty }}</h1>
+    <p class="sub">
+      Draw <strong>{{ '{:,}'.format(n_sims) }}</strong> independent Poisson samples per game using
+      projected scoring rates (team RPG blended with opposing SP ERA and bullpen quality).
+      Compute empirical probabilities for every market and compare them to Pinnacle's devigged fair.
+      <br><br>
+      <em>Caveat:</em> this is the same scoring model we already use analytically &mdash; the simulation
+      gives you the full outcome distribution, not a sharper probability. On run-line and total markets
+      the model can show large edges (10%+) when it disagrees with the market; Pinnacle has more
+      information (injuries, lineups, sharp money) so treat those as model-view, not guaranteed EV.
+      Live and finished games have their edge calcs suppressed because the market has moved for state.
+    </p>
+  </div>
+
+  <div class="sim-controls">
+    <label>
+      Simulations
+      <select onchange="window.location.href='/montecarlo?date={{ date_str }}&amp;n='+this.value">
+        {% for n in [1000, 5000, 10000, 25000, 50000] %}
+        <option value="{{ n }}" {% if n == n_sims %}selected{% endif %}>{{ '{:,}'.format(n) }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <span style="color:var(--muted-2); font-size:11px">fit time ~{{ fit_time_ms }} ms total</span>
+  </div>
+
+  <div class="summary">
+    <div class="metric">
+      <div class="label">Games simulated</div>
+      <div class="value">{{ games_simulated }}</div>
+    </div>
+    <div class="metric">
+      <div class="label">+Edge markets</div>
+      <div class="value {% if positive_count %}good{% endif %}">{{ positive_count }}</div>
+    </div>
+    <div class="metric">
+      <div class="label">Strong (&ge;2%)</div>
+      <div class="value {% if strong_count %}good{% endif %}">{{ strong_count }}</div>
+    </div>
+    <div class="metric">
+      <div class="label">Avg total projected</div>
+      <div class="value">{{ '%.2f'|format(avg_total) if avg_total is not none else '—' }}</div>
+    </div>
+  </div>
+
+  {% if games %}
+  <div class="mc-grid">
+    {% for g in games %}
+    <article class="mc-card">
+      <div class="mc-head">
+        <div class="mc-matchup">{{ g.away }} <span style="font-family:Fraunces,serif;font-style:italic;color:var(--muted)">at</span> {{ g.home }}</div>
+        <div class="mc-time">
+          {% if g.live %}
+          <span class="meta-chip status" style="margin-right:6px">{{ g.status or 'Live' }} &middot; edges off</span>
+          {% endif %}
+          {{ g.first_pitch }}
+        </div>
+      </div>
+      {% if g.sim %}
+      <div class="lambda-row">
+        <span>&lambda;<sub>away</sub> <b>{{ '%.2f'|format(g.sim.lambda_away) }}</b></span>
+        <span>&lambda;<sub>home</sub> <b>{{ '%.2f'|format(g.sim.lambda_home) }}</b></span>
+        <span>exp total <b>{{ '%.2f'|format(g.sim.mean_total) }}</b></span>
+        <span>extras <b>{{ (g.sim.extras_pct * 100)|round(1) }}%</b></span>
+      </div>
+
+      <div class="mc-section">
+        <div class="mc-section-label">Market vs Simulation</div>
+        <table class="mc-table">
+          <thead>
+            <tr>
+              <th>Market</th>
+              <th>Sim %</th>
+              <th>Fair</th>
+              <th>Pin price</th>
+              <th>Edge</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in g.rows %}
+            <tr>
+              <td class="pick">{{ row.pick }}</td>
+              <td>{{ '%.1f'|format(row.sim_pct) }}%</td>
+              <td>{{ row.sim_fair_am }}</td>
+              <td>
+                {% if row.pin_am is not none %}
+                  {{ ('+' if row.pin_am > 0 else '') ~ row.pin_am }}
+                {% else %}&mdash;{% endif %}
+              </td>
+              <td class="{% if row.edge_pct is not none and row.edge_pct > 0 %}edge-pos{% else %}edge-neg{% endif %}">
+                {% if row.edge_pct is not none %}
+                  {{ '%+.2f'|format(row.edge_pct) }}%
+                {% else %}&mdash;{% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="mc-section">
+        <div class="mc-section-label">Simulated Total Runs Distribution</div>
+        <div class="dist-row">
+          {% for bar in g.total_hist %}
+          <div class="dist-bar" style="height: {{ bar.height }}%" title="Total {{ bar.value }}: {{ bar.pct }}%"></div>
+          {% endfor %}
+        </div>
+        <div class="dist-labels">
+          {% for bar in g.total_hist %}<span>{{ bar.value }}</span>{% endfor %}
+        </div>
+      </div>
+      {% else %}
+      <div class="mc-no-sim">Missing team or pitcher stats &mdash; can't project &lambda; for this matchup.</div>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-mc">
+    <h2>No MLB games to simulate.</h2>
+    <p>Try a different date.</p>
+  </div>
+  {% endif %}
+
+  <footer>
+    <div>{{ games_simulated }} games &middot; {{ '{:,}'.format(n_sims) }} sims each &middot; projection: team RPG &times; opp SP ERA + bullpen</div>
+    <div>fit {{ fit_time_ms }} ms</div>
+  </footer>
+</main>
+</body>
+</html>
+"""
+
+
+def _american_from_prob(p):
+    if p is None or p <= 0 or p >= 1:
+        return None
+    dec = 1.0 / p
+    if dec >= 2.0:
+        return int(round((dec - 1) * 100))
+    return int(round(-100 / (dec - 1)))
+
+
+@app.route("/montecarlo")
+def montecarlo():
+    date_str = request.args.get("date") or datetime.now(EASTERN).date().isoformat()
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        d = datetime.now(EASTERN).date()
+        date_str = d.isoformat()
+    try:
+        n_sims = int(request.args.get("n") or 10000)
+    except ValueError:
+        n_sims = 10000
+    n_sims = max(1000, min(50000, n_sims))
+
+    try:
+        games = get_games(date_str)
+    except Exception:
+        games = []
+
+    today = datetime.now(EASTERN).date().isoformat()
+
+    t_start = time.time()
+    out_games = []
+    positive_count = 0
+    strong_count = 0
+    totals_mean_sum = 0.0
+    totals_mean_n = 0
+
+    IN_PROGRESS_STATUSES = {"In Progress", "Delayed", "Delayed Start", "Suspended", "Final",
+                             "Game Over", "Postponed", "Completed Early"}
+
+    for g in games:
+        ctx = g.get("game_ctx") or {}
+        sim = mlb_model.simulate_from_game_ctx(ctx, n_sims=n_sims,
+                                                seed=g.get("game_pk"))
+
+        # Pinnacle odds for a live/finished game won't match a full-game sim.
+        # Keep the simulation (useful preview) but suppress edge calcs there.
+        game_live = g.get("status") in IN_PROGRESS_STATUSES
+
+        rows = []
+        total_hist = []
+        if sim:
+            totals_mean_sum += sim["mean_total"]
+            totals_mean_n += 1
+
+            pin = (g.get("odds") or {}).get("pinnacle") or {}
+            # Devig Pinnacle probabilities for fair comparison
+            def _pin_devig_2(am_h, am_a):
+                if am_h is None or am_a is None:
+                    return None, None
+                ph = 1.0 / mlb_odds.american_to_decimal(am_h) if mlb_odds.american_to_decimal(am_h) else None
+                pa = 1.0 / mlb_odds.american_to_decimal(am_a) if mlb_odds.american_to_decimal(am_a) else None
+                if ph is None or pa is None:
+                    return None, None
+                s = ph + pa
+                return ph / s, pa / s
+
+            # ---- MONEYLINE ----
+            ml = pin.get("moneyline") or {}
+            pin_home_fair, pin_away_fair = _pin_devig_2(ml.get("home_am"), ml.get("away_am"))
+            for side, sim_p, pin_am, pin_fair, label in [
+                ("home", sim["p_home"], ml.get("home_am"), pin_home_fair, g["home"]["team"]),
+                ("away", sim["p_away"], ml.get("away_am"), pin_away_fair, g["away"]["team"]),
+            ]:
+                edge = None
+                if pin_am and sim_p and not game_live:
+                    dec = mlb_odds.american_to_decimal(pin_am)
+                    if dec:
+                        edge = (sim_p * dec - 1) * 100
+                rows.append({
+                    "pick": label,
+                    "sim_pct": sim_p * 100,
+                    "sim_fair_am": _signed(_american_from_prob(sim_p)),
+                    "pin_am": pin_am,
+                    "edge_pct": edge,
+                })
+
+            # ---- TOTAL ----
+            tot = pin.get("total") or {}
+            if tot.get("line") is not None:
+                line = tot["line"]
+                p_over = sim["p_over_fn"](line)
+                p_under = 1 - p_over
+                pin_over_fair, pin_under_fair = _pin_devig_2(tot.get("over_am"), tot.get("under_am"))
+                for side, sim_p, pin_am, label in [
+                    ("over", p_over, tot.get("over_am"), f"Over {line}"),
+                    ("under", p_under, tot.get("under_am"), f"Under {line}"),
+                ]:
+                    edge = None
+                    if pin_am and sim_p:
+                        dec = mlb_odds.american_to_decimal(pin_am)
+                        if dec:
+                            edge = (sim_p * dec - 1) * 100
+                    rows.append({
+                        "pick": label,
+                        "sim_pct": sim_p * 100,
+                        "sim_fair_am": _signed(_american_from_prob(sim_p)),
+                        "pin_am": pin_am,
+                        "edge_pct": edge,
+                    })
+
+            # ---- RUN LINE -1.5 ----
+            rl = pin.get("run_line") or {}
+            if rl.get("home_am") is not None or rl.get("away_am") is not None:
+                p_home_cov = sim["p_margin_ge_fn"](2)
+                p_away_cov = 1 - p_home_cov
+                for side, sim_p, pin_am, label in [
+                    ("home", p_home_cov, rl.get("home_am"), f"{g['home']['team']} -1.5"),
+                    ("away", p_away_cov, rl.get("away_am"), f"{g['away']['team']} +1.5"),
+                ]:
+                    edge = None
+                    if pin_am and sim_p:
+                        dec = mlb_odds.american_to_decimal(pin_am)
+                        if dec:
+                            edge = (sim_p * dec - 1) * 100
+                    rows.append({
+                        "pick": label,
+                        "sim_pct": sim_p * 100,
+                        "sim_fair_am": _signed(_american_from_prob(sim_p)),
+                        "pin_am": pin_am,
+                        "edge_pct": edge,
+                    })
+
+            for r in rows:
+                if r["edge_pct"] is not None:
+                    if r["edge_pct"] > 0:
+                        positive_count += 1
+                    if r["edge_pct"] >= 2:
+                        strong_count += 1
+
+            # Histogram of totals (bins 4..13)
+            lo, hi = 4, 13
+            counts = [0] * (hi - lo + 1)
+            for t in sim["totals"]:
+                if t < lo:
+                    counts[0] += 1
+                elif t > hi:
+                    counts[-1] += 1
+                else:
+                    counts[t - lo] += 1
+            max_count = max(counts) or 1
+            for i, c in enumerate(counts):
+                pct = c / sim["n_sims"] * 100
+                total_hist.append({
+                    "value": lo + i,
+                    "pct": round(pct, 1),
+                    "height": int(round(c / max_count * 100)),
+                })
+
+        out_games.append({
+            "away": g["away"]["team"],
+            "home": g["home"]["team"],
+            "first_pitch": g["first_pitch"],
+            "status": g.get("status"),
+            "live": game_live,
+            "sim": sim,
+            "rows": rows,
+            "total_hist": total_hist,
+        })
+
+    fit_time_ms = int((time.time() - t_start) * 1000)
+    avg_total = (totals_mean_sum / totals_mean_n) if totals_mean_n else None
+    date_pretty = d.strftime("%A, %B %d").replace(" 0", " ")
+
+    return render_template_string(
+        MONTECARLO_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        sport_strip=render_sport_strip("mlb"),
+        date_str=date_str,
+        date_pretty=date_pretty,
+        prev_date=(d - timedelta(days=1)).isoformat(),
+        next_date=(d + timedelta(days=1)).isoformat(),
+        today=today,
+        is_today=(date_str == today),
+        games=out_games,
+        n_sims=n_sims,
+        games_simulated=sum(1 for g in out_games if g["sim"]),
+        positive_count=positive_count,
+        strong_count=strong_count,
+        avg_total=avg_total,
+        fit_time_ms=fit_time_ms,
+    )
+
+
+def _signed(am):
+    if am is None:
+        return "—"
+    return f"+{am}" if am > 0 else str(am)
 
 
 if __name__ == "__main__":

@@ -474,6 +474,96 @@ def predict_run_line(game_ctx, line=1.5):
     }
 
 
+def simulate_game(lam_home, lam_away, n_sims=10000, seed=None):
+    """Monte Carlo simulate N games using independent Poisson scoring.
+
+    Returns a dict with win probs, run distributions, and market-ready
+    probabilities for totals and the run line. Pure stdlib — no numpy.
+    """
+    import random
+    rng = random.Random(seed) if seed is not None else random
+
+    def _pois(lam):
+        """Knuth's algorithm for Poisson(λ) sample. Fast for small λ."""
+        if lam <= 0:
+            return 0
+        L = math.exp(-lam)
+        k = 0
+        p = 1.0
+        while p > L:
+            k += 1
+            p *= rng.random()
+        return k - 1
+
+    home_scores = []
+    away_scores = []
+    totals = []
+    margins = []
+    home_wins = away_wins = 0
+    extras = 0
+    for _ in range(n_sims):
+        h = _pois(lam_home)
+        a = _pois(lam_away)
+        if h == a:
+            # Extra innings — resolve coin flip with small home advantage
+            extras += 1
+            if rng.random() < 0.53:
+                h += 1
+            else:
+                a += 1
+        if h > a:
+            home_wins += 1
+        else:
+            away_wins += 1
+        home_scores.append(h)
+        away_scores.append(a)
+        totals.append(h + a)
+        margins.append(h - a)
+
+    totals_sorted = sorted(totals)
+    margins_sorted = sorted(margins)
+
+    def _p_over(line):
+        """P(total > line). line can be X.5 or X.0."""
+        # count sims where total > line (strict)
+        hi_count = sum(1 for t in totals if t > line)
+        return hi_count / n_sims
+
+    def _p_margin_ge(k):
+        return sum(1 for m in margins if m >= k) / n_sims
+
+    return {
+        "n_sims": n_sims,
+        "lambda_home": lam_home,
+        "lambda_away": lam_away,
+        "p_home": home_wins / n_sims,
+        "p_away": away_wins / n_sims,
+        "mean_total": sum(totals) / n_sims,
+        "median_total": totals_sorted[n_sims // 2],
+        "mean_margin": sum(margins) / n_sims,
+        "median_margin": margins_sorted[n_sims // 2],
+        "extras_pct": extras / n_sims,
+        "p_over_fn": _p_over,
+        "p_margin_ge_fn": _p_margin_ge,
+        # histograms (binned later in the UI)
+        "totals": totals,
+        "margins": margins,
+    }
+
+
+def simulate_from_game_ctx(game_ctx, n_sims=10000, scope="full", seed=None):
+    """Convenience: project λ from team stats, then simulate."""
+    lam_h = project_runs(game_ctx.get("home_rpg"), game_ctx.get("away_sp_era"),
+                         game_ctx.get("away_sp_ip"), game_ctx.get("away_team_era"),
+                         scope=scope)
+    lam_a = project_runs(game_ctx.get("away_rpg"), game_ctx.get("home_sp_era"),
+                         game_ctx.get("home_sp_ip"), game_ctx.get("home_team_era"),
+                         scope=scope)
+    if lam_h is None or lam_a is None:
+        return None
+    return simulate_game(lam_h, lam_a, n_sims=n_sims, seed=seed)
+
+
 def predict_f5_moneyline(game_ctx):
     """F5 can tie — return p_home / p_away / p_push for 2-way-with-tie-push markets."""
     lam_h = project_runs(game_ctx.get("home_rpg"), game_ctx.get("away_sp_era"),
