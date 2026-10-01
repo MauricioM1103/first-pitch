@@ -337,9 +337,15 @@ def _best_book_price_for(side_key_fn, oapi_books, side_name_fn, side_key):
     return best_dec, best_book
 
 
-def build_sport_games(sport):
+def build_sport_games(sport, model_prob_fn=None):
     """For a non-MLB sport, return a list of game dicts with per-market odds
-    and a bets list (all positive-EV plays)."""
+    and a bets list.
+
+    model_prob_fn: optional callback (game_dict) -> dict with keys
+        {home, away, draw} of win probabilities. When provided, ML "fair"
+        probabilities come from the model instead of Pinnacle devig.
+        Totals/spreads continue to use Pinnacle devig regardless.
+    """
     games = parse_pinnacle_games(
         sport["pinnacle_league_id"],
         ml_outcomes=sport["ml_outcomes"],
@@ -374,6 +380,17 @@ def build_sport_games(sport):
                 p_h = american_to_prob(ml["home_am"])
                 p_a = american_to_prob(ml["away_am"])
                 home_fair, away_fair = devig_two_sided(p_h, p_a)
+
+            # Model override for fair probabilities (NFL)
+            if model_prob_fn:
+                mp = model_prob_fn(g)
+                if mp:
+                    if mp.get("home") is not None:
+                        home_fair = mp["home"]
+                    if mp.get("away") is not None:
+                        away_fair = mp["away"]
+                    if mp.get("draw") is not None:
+                        draw_fair = mp["draw"]
 
             # Odds API h2h outcome names come as team names
             def pick_name(side):

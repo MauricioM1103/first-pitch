@@ -459,30 +459,65 @@ def get_games(date_str):
 
 SHARED_STYLE = r"""
 :root {
+  /* Paper ground, lightly punched-up accents for subtle gaming flavor */
   --bg: #F1ECDF; --surface: #FBF8F0; --card: #FFFFFF;
-  --ink: #1A1613; --muted: #7A7167; --muted-2: #9A9186;
+  --ink: #15110D; --muted: #786F62; --muted-2: #9A9186;
   --rule: #DED7C6; --rule-strong: #C9C1AE; --chip-bg: #F1ECDF;
-  --accent: #A63329; --good: #3B7350; --warn: #B0801E; --poor: #A63329;
-  --focus: #A63329; --card-shadow: 0 1px 0 rgba(26,22,19,0.04);
-  --header-bg: rgba(241,236,223,0.88);
+  --accent: #D13438;              /* vibrant stitching red */
+  --accent-glow: rgba(209, 52, 56, 0.22);
+  --good: #0F8F5E;                /* emerald */
+  --good-glow: rgba(15, 143, 94, 0.22);
+  --warn: #C98412;                /* saturated amber */
+  --warn-glow: rgba(201, 132, 18, 0.22);
+  --poor: #D13438;
+  --focus: #D13438;
+  --card-shadow: 0 1px 0 rgba(26,22,19,0.04);
+  --header-bg: rgba(241,236,223,0.9);
+  --ev-strong-glow: 0 0 10px var(--good-glow);
+  --card-hover-shadow: 0 4px 20px rgba(21,17,13,0.06), 0 0 0 1px var(--rule-strong);
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #14110E; --surface: #1B1815; --card: #23201C;
-    --ink: #ECE5D8; --muted: #8F8676; --muted-2: #6A6357;
-    --rule: #2A2621; --rule-strong: #3B362E; --chip-bg: #1B1815;
-    --accent: #D06A5F; --good: #7BB893; --warn: #D9B25E; --poor: #D06A5F;
-    --focus: #D06A5F; --card-shadow: 0 1px 0 rgba(0,0,0,0.25);
-    --header-bg: rgba(20,17,14,0.85);
+    /* Late-night scoreboard: deeper ground, neon accents, soft glow */
+    --bg: #0E0D11; --surface: #15141A; --card: #1C1B23;
+    --ink: #ECEAF2; --muted: #8E8A99; --muted-2: #605D6E;
+    --rule: #26242D; --rule-strong: #3A3744; --chip-bg: #15141A;
+    --accent: #FF4D6A;
+    --accent-glow: rgba(255, 77, 106, 0.4);
+    --good: #22F0A0;              /* electric mint */
+    --good-glow: rgba(34, 240, 160, 0.35);
+    --warn: #FFC94A;
+    --warn-glow: rgba(255, 201, 74, 0.3);
+    --poor: #FF4D6A;
+    --focus: #22F0A0;
+    --card-shadow: 0 1px 0 rgba(0,0,0,0.3);
+    --header-bg: rgba(14,13,17,0.88);
+    --ev-strong-glow: 0 0 14px var(--good-glow);
+    --card-hover-shadow:
+      0 6px 24px rgba(0,0,0,0.45),
+      0 0 0 1px var(--accent),
+      0 0 20px rgba(255, 77, 106, 0.08);
   }
 }
 :root[data-theme="dark"] {
-  --bg: #14110E; --surface: #1B1815; --card: #23201C;
-  --ink: #ECE5D8; --muted: #8F8676; --muted-2: #6A6357;
-  --rule: #2A2621; --rule-strong: #3B362E; --chip-bg: #1B1815;
-  --accent: #D06A5F; --good: #7BB893; --warn: #D9B25E; --poor: #D06A5F;
-  --focus: #D06A5F; --card-shadow: 0 1px 0 rgba(0,0,0,0.25);
-  --header-bg: rgba(20,17,14,0.85);
+  --bg: #0E0D11; --surface: #15141A; --card: #1C1B23;
+  --ink: #ECEAF2; --muted: #8E8A99; --muted-2: #605D6E;
+  --rule: #26242D; --rule-strong: #3A3744; --chip-bg: #15141A;
+  --accent: #FF4D6A;
+  --accent-glow: rgba(255, 77, 106, 0.4);
+  --good: #22F0A0;
+  --good-glow: rgba(34, 240, 160, 0.35);
+  --warn: #FFC94A;
+  --warn-glow: rgba(255, 201, 74, 0.3);
+  --poor: #FF4D6A;
+  --focus: #22F0A0;
+  --card-shadow: 0 1px 0 rgba(0,0,0,0.3);
+  --header-bg: rgba(14,13,17,0.88);
+  --ev-strong-glow: 0 0 14px var(--good-glow);
+  --card-hover-shadow:
+    0 6px 24px rgba(0,0,0,0.45),
+    0 0 0 1px var(--accent),
+    0 0 20px rgba(255, 77, 106, 0.08);
 }
 
 * { box-sizing: border-box; }
@@ -612,6 +647,98 @@ footer {
   font-family: "JetBrains Mono", monospace;
   font-variant-numeric: tabular-nums;
 }
+
+/* ===== neon / gaming accents ===== */
+.brand-mark {
+  box-shadow: 0 0 10px var(--accent-glow);
+}
+.brand-name {
+  text-shadow: 0 0 0 transparent;
+}
+:root[data-theme="dark"] .brand-name,
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .brand-name {
+    text-shadow: 0 0 18px rgba(255, 77, 106, 0.12);
+  }
+}
+.nav-tab.active {
+  box-shadow: 0 0 0 1px var(--accent-glow);
+}
+.sport-pill.active {
+  box-shadow: inset 0 0 0 1px var(--accent),
+              0 0 12px var(--accent-glow);
+}
+.ev-cell.strong,
+.bets td.num.ev-cell.strong,
+.edges .num.ev-strong {
+  text-shadow: var(--ev-strong-glow);
+}
+.streak.up { text-shadow: 0 0 6px var(--good-glow); }
+.streak.down { text-shadow: 0 0 6px var(--accent-glow); }
+
+/* ===== mobile layout ===== */
+@media (max-width: 640px) {
+  body { font-size: 15px; }
+  .wrap { padding: 0 14px; }
+  header .wrap, main.wrap { padding-left: 14px; padding-right: 14px; }
+  .header-row {
+    height: auto; min-height: 56px;
+    padding: 10px 0; gap: 10px;
+  }
+  .brand-name { font-size: 19px; }
+  .nav-tabs {
+    margin-left: 0; order: 2;
+    flex-wrap: nowrap; overflow-x: auto;
+    width: 100%; -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .nav-tabs::-webkit-scrollbar { display: none; }
+  .nav-tab { padding: 8px 12px; font-size: 13px; flex-shrink: 0; }
+  .controls {
+    width: 100%; order: 3;
+    justify-content: flex-start;
+  }
+  .btn, input[type=date] {
+    height: 40px; min-width: 40px; font-size: 14px;
+  }
+  .btn.icon { width: 40px; }
+  .sport-pill {
+    padding: 7px 12px; font-size: 13px;
+  }
+  main { padding: 24px 0 48px; }
+  .hero, .hero-block {
+    margin-bottom: 20px; padding-bottom: 16px;
+  }
+  .hero h1, .hero-block h1 {
+    font-size: 28px;
+  }
+}
+
+/* Tables on narrow screens: horizontal scroll inside a wrapper */
+.table-scroll { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+@media (max-width: 760px) {
+  .bets, .edges { overflow-x: auto; }
+  .bets table, .edges table,
+  .limits-table, .elo-table, .calib-table, .pred-table {
+    min-width: 640px;
+  }
+  .elo-cols, .calib-wrap, .grid-metrics {
+    grid-template-columns: 1fr !important;
+  }
+  .metric .value { font-size: 20px; }
+  .model-def { grid-template-columns: 1fr 1fr; }
+  .section { padding: 16px 18px; }
+  .card { padding: 16px 16px 14px; }
+  .team-name { font-size: 19px; }
+}
+
+/* ===== card hover reinforced for dark theme ===== */
+.card:hover {
+  box-shadow: var(--card-hover-shadow);
+}
+
+/* Positive EV rows a touch more visible under neon palette */
+.bets tr.pos.strong td.num.ev-cell { color: var(--good); }
 """
 
 FONTS_LINK = (
@@ -2568,9 +2695,30 @@ def sport_page(slug):
     market_filter = (request.args.get("market") or "all").upper()
     show = request.args.get("show") or "all"
 
+    # NFL gets a trained model (same walk-forward Elo approach as MLB);
+    # other sports fall back to Pinnacle devig for fair probabilities.
+    model_prob_fn = None
+    if slug == "nfl":
+        try:
+            import nfl_model
+            nfl_state = nfl_model.get_or_run_backtest()
+            final_elo = nfl_state.get("final_elo", {}) if nfl_state else {}
+            def _nfl_prob(g):
+                h = nfl_model.abbr_from_name(g.get("home_name", ""))
+                a = nfl_model.abbr_from_name(g.get("away_name", ""))
+                if not h or not a:
+                    return None
+                h_elo = final_elo.get(h, nfl_model.INITIAL_ELO)
+                a_elo = final_elo.get(a, nfl_model.INITIAL_ELO)
+                p = nfl_model.predict_win_prob(h_elo, a_elo)
+                return {"home": p, "away": 1 - p, "draw": None}
+            model_prob_fn = _nfl_prob
+        except Exception:
+            model_prob_fn = None
+
     try:
-        games = generic_odds.build_sport_games(sport)
-    except Exception as e:
+        games = generic_odds.build_sport_games(sport, model_prob_fn=model_prob_fn)
+    except Exception:
         games = []
 
     rows = []
@@ -2612,6 +2760,296 @@ def sport_page(slug):
         available_markets=markets_meta,
         show=show,
         now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
+    )
+
+
+# ============================================================================
+# NFL backtest page
+# ============================================================================
+
+NFL_BACKTEST_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>First Pitch &mdash; NFL Model &amp; Backtest</title>
+{{ fonts_link|safe }}
+<style>
+{{ shared_style|safe }}
+
+.hero-block { padding-bottom: 20px; margin-bottom: 24px; border-bottom: 1px solid var(--rule); }
+.hero-block h1 {
+  font-family: "Fraunces", Georgia, serif;
+  font-style: italic; font-weight: 400;
+  font-size: clamp(32px, 5vw, 48px);
+  line-height: 1.05; letter-spacing: -0.02em;
+  margin: 0 0 8px; font-variation-settings: "opsz" 144;
+}
+.hero-block .sub { color: var(--muted); max-width: 760px; font-size: 13.5px; line-height: 1.55; }
+
+.grid-metrics {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin-bottom: 24px;
+}
+.metric {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: 10px; padding: 14px 16px;
+}
+.metric .label {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--muted); margin-bottom: 6px;
+}
+.metric .value {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 24px; font-weight: 500; color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.metric .value.accent { color: var(--accent); }
+.metric .value.good { color: var(--good); }
+.metric .foot { margin-top: 6px; font-size: 11.5px; color: var(--muted); font-family: "JetBrains Mono", monospace; }
+.metric .delta.up { color: var(--good); }
+
+.section {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: 12px; padding: 20px 24px; margin-bottom: 20px;
+}
+.section h2 {
+  font-family: "Fraunces", Georgia, serif;
+  font-weight: 500; font-size: 20px; margin: 0 0 10px;
+  letter-spacing: -0.01em;
+}
+.section .lead { color: var(--muted); margin: 0 0 16px; font-size: 13px; line-height: 1.6; max-width: 760px; }
+
+.calib-wrap { display: grid; grid-template-columns: 1fr; gap: 16px; }
+@media (min-width: 900px) { .calib-wrap { grid-template-columns: 1fr 1fr; } }
+.calib-svg-wrap {
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 8px;
+  padding: 20px; display: flex; justify-content: center;
+}
+svg.calib { max-width: 100%; height: auto; }
+
+.calib-table, .elo-table, .pred-table {
+  width: 100%; border-collapse: collapse;
+  font-family: "JetBrains Mono", monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 12.5px;
+}
+.calib-table th, .calib-table td,
+.elo-table th, .elo-table td,
+.pred-table th, .pred-table td {
+  padding: 7px 10px; border-bottom: 1px solid var(--rule); text-align: right;
+}
+.calib-table th:first-child, .elo-table th:nth-child(2), .pred-table th { text-align: left; }
+.calib-table td:first-child, .elo-table td:nth-child(2), .pred-table td { text-align: left; }
+.calib-table th, .elo-table th, .pred-table th {
+  color: var(--muted); font-size: 10px; letter-spacing: 0.1em;
+  text-transform: uppercase; font-weight: 500;
+}
+.elo-cols { display: grid; grid-template-columns: 1fr; gap: 20px; }
+@media (min-width: 900px) { .elo-cols { grid-template-columns: 1fr 1fr; } }
+
+.pred-correct { color: var(--good); font-weight: 600; }
+.pred-wrong { color: var(--muted-2); }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap header-row">
+    <div class="brand" style="display: flex; align-items: baseline;">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">First Pitch</span>
+    </div>
+    <div class="controls">
+      <a class="btn" href="/sport/nfl/backtest?refresh=1">Refit</a>
+    </div>
+  </div>
+</header>
+
+{{ sport_strip|safe }}
+
+<main class="wrap reveal">
+  <div class="hero-block">
+    <h1>NFL model &amp; backtest</h1>
+    <p class="sub">
+      Walk-forward Elo with margin-of-victory damping and a rest-day adjustment.
+      Fit chronologically across all {{ state.total_games }} games of the {{ state.season }} regular season.
+      Predictions are logged <em>before</em> each game using Elo as-of first kickoff; the final
+      {{ state.score_last_weeks }} weeks are scored against actual outcomes below.
+    </p>
+  </div>
+
+  <div class="grid-metrics">
+    <div class="metric">
+      <div class="label">Accuracy</div>
+      <div class="value accent">{{ '%.1f'|format(m.accuracy * 100) }}%</div>
+      <div class="foot">
+        <span class="delta up">+{{ '%.1f'|format((m.accuracy - m.home_baseline_accuracy) * 100) }} pts</span>
+        vs home-team ({{ '%.1f'|format(m.home_baseline_accuracy * 100) }}%)
+      </div>
+    </div>
+    <div class="metric">
+      <div class="label">Log loss</div>
+      <div class="value">{{ '%.4f'|format(m.log_loss) }}</div>
+      <div class="foot">baseline {{ '%.4f'|format(m.home_baseline_log_loss) }} &middot; coin 0.6931</div>
+    </div>
+    <div class="metric">
+      <div class="label">Brier</div>
+      <div class="value">{{ '%.4f'|format(m.brier_score) }}</div>
+      <div class="foot">0.25 = coin flip</div>
+    </div>
+    <div class="metric">
+      <div class="label">Scored games</div>
+      <div class="value">{{ m.n }}</div>
+      <div class="foot">wks {{ state.score_from_week }}&ndash;{{ state.max_week }}</div>
+    </div>
+    {% if m.record_baseline_accuracy is not none %}
+    <div class="metric">
+      <div class="label">vs better record</div>
+      <div class="value">{{ '%.1f'|format(m.record_baseline_accuracy * 100) }}%</div>
+      <div class="foot">naive heuristic</div>
+    </div>
+    {% endif %}
+    <div class="metric">
+      <div class="label">Hyperparams</div>
+      <div class="value" style="font-size:14px;line-height:1.4">
+        K={{ state.hyperparams.K|int }} &middot; HFA=+{{ state.hyperparams.HFA|int }}
+      </div>
+      <div class="foot">rest weight {{ state.hyperparams.REST_WEIGHT }} Elo/day</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Calibration</h2>
+    <p class="lead">Predicted probabilities in 10% bins vs observed home win rate. 45&deg; line = perfect calibration.</p>
+    <div class="calib-wrap">
+      <div class="calib-svg-wrap">{{ calibration_svg|safe }}</div>
+      <div>
+        <table class="calib-table">
+          <thead><tr><th>Bin</th><th>N</th><th>Avg pred</th><th>Actual</th><th>Delta</th></tr></thead>
+          <tbody>
+            {% for c in m.calibration %}
+            <tr>
+              <td>{{ (c.bin_lo*100)|int }}-{{ (c.bin_hi*100)|int }}%</td>
+              <td>{{ c.n }}</td>
+              <td>{{ '%.3f'|format(c.avg_pred) }}</td>
+              <td>{{ '%.3f'|format(c.actual) }}</td>
+              <td>{{ '%+.3f'|format(c.actual - c.avg_pred) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Final Elo ratings</h2>
+    <p class="lead">End-of-regular-season ratings; feed today's live NFL predictions on the NFL tab.</p>
+    <div class="elo-cols">
+      <div>
+        <table class="elo-table">
+          <thead><tr><th>#</th><th>Team</th><th>Elo</th><th>W-L</th></tr></thead>
+          <tbody>
+            {% for ab, elo, wl in top_elo %}
+            <tr>
+              <td style="color:var(--muted)">{{ loop.index }}</td>
+              <td>{{ state.team_names[ab] }}</td>
+              <td>{{ elo|round|int }}</td>
+              <td>{{ wl[0] }}-{{ wl[1] }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <table class="elo-table">
+          <thead><tr><th>#</th><th>Team</th><th>Elo</th><th>W-L</th></tr></thead>
+          <tbody>
+            {% for ab, elo, wl in bottom_elo %}
+            <tr>
+              <td style="color:var(--muted)">{{ loop.index + 16 }}</td>
+              <td>{{ state.team_names[ab] }}</td>
+              <td>{{ elo|round|int }}</td>
+              <td>{{ wl[0] }}-{{ wl[1] }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Sample of scored predictions</h2>
+    <p class="lead">Last 24 games in the scored window.</p>
+    <table class="pred-table">
+      <thead><tr>
+        <th>Date</th><th>Wk</th><th>Matchup</th>
+        <th>Model pick</th><th>Actual</th><th></th>
+      </tr></thead>
+      <tbody>
+      {% for p in sample_preds %}
+        <tr>
+          <td>{{ p.date }}</td>
+          <td>{{ p.week }}</td>
+          <td>{{ p.away }} at {{ p.home }}</td>
+          <td>{% if p.p_home >= 0.5 %}{{ p.home }} {{ (p.p_home * 100)|int }}%{% else %}{{ p.away }} {{ ((1-p.p_home) * 100)|int }}%{% endif %}</td>
+          <td>{{ p.away_score }}&ndash;{{ p.home_score }}</td>
+          <td>
+            {% if (p.p_home >= 0.5) == p.home_won %}<span class="pred-correct">&check;</span>
+            {% else %}<span class="pred-wrong">&times;</span>{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <footer>
+    <div>Fit on {{ state.total_games }} games &middot; data: nflverse community dataset</div>
+    <div>last refit {{ state.generated_at }}</div>
+  </footer>
+</main>
+</body>
+</html>
+"""
+
+
+@app.route("/sport/nfl/backtest")
+def nfl_backtest():
+    try:
+        import nfl_model
+        if request.args.get("refresh"):
+            state = nfl_model.get_or_run_backtest(refresh=True)
+        else:
+            state = nfl_model.get_or_run_backtest()
+    except Exception as e:
+        state = None
+    if not state:
+        return render_template_string(
+            NFL_BACKTEST_TEMPLATE,
+            fonts_link=FONTS_LINK,
+            shared_style=SHARED_STYLE,
+            sport_strip=render_sport_strip("nfl"),
+            state=None, m=None, top_elo=[], bottom_elo=[],
+            sample_preds=[], calibration_svg="",
+        )
+    m = state.get("metrics") or {}
+    elo_items = sorted(state["final_elo"].items(), key=lambda kv: -kv[1])
+    top_elo = [(ab, r, state["final_wl"].get(ab, [0, 0])) for ab, r in elo_items[:16]]
+    bottom_elo = [(ab, r, state["final_wl"].get(ab, [0, 0])) for ab, r in elo_items[16:]]
+    sample_preds = state["predictions"][-24:]
+    return render_template_string(
+        NFL_BACKTEST_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        sport_strip=render_sport_strip("nfl"),
+        state=state, m=m,
+        top_elo=top_elo, bottom_elo=bottom_elo,
+        sample_preds=sample_preds,
+        calibration_svg=render_calibration_svg(m.get("calibration") or []),
     )
 
 

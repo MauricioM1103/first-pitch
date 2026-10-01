@@ -1,0 +1,393 @@
+#!/usr/bin/env python3
+"""NFL Elo model + walk-forward backtest.
+
+Mirrors the MLB approach: predict before each game using only data available
+pre-kickoff, log the prediction, then update Elo with the actual result.
+Score only the final N weeks of the season — the earlier games serve as Elo
+warm-up.
+
+Data source: nflverse community games.csv (hosted on GitHub). It contains
+every NFL game 1999–current with scores, rest days, QBs, and closing lines.
+No API key required.
+
+Hyperparameters (lightly tuned off 538's public MLB/NFL Elo methodology):
+  * K = 20            typical NFL value given ~272 regular-season games
+  * HFA = 55          Elo points (~2.5 point spread equivalent, 538 uses 48)
+  * REST_WEIGHT = 2   Elo per day of extra rest
+  * MOV multiplier    log-based damper for expected blowouts
+"""
+import argparse
+import csv
+import io
+import json
+import math
+import os
+import sys
+import time
+from datetime import date, datetime, timedelta
+from urllib.error import URLError
+from urllib.request import Request, urlopen
+
+GAMES_URL = "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"
+
+CACHE_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "nfl_backtest_cache.json",
+)
+
+INITIAL_ELO = 1500.0
+K_FACTOR = 20.0
+HFA = 55.0
+REST_WEIGHT = 2.0
+CACHE_MAX_AGE_H = 24
+
+TEAM_NAMES = {
+    "ARI": "Arizona Cardinals", "ATL": "Atlanta Falcons", "BAL": "Baltimore Ravens",
+    "BUF": "Buffalo Bills", "CAR": "Carolina Panthers", "CHI": "Chicago Bears",
+    "CIN": "Cincinnati Bengals", "CLE": "Cleveland Browns", "DAL": "Dallas Cowboys",
+    "DEN": "Denver Broncos", "DET": "Detroit Lions", "GB": "Green Bay Packers",
+    "HOU": "Houston Texans", "IND": "Indianapolis Colts", "JAX": "Jacksonville Jaguars",
+    "KC": "Kansas City Chiefs", "LA": "Los Angeles Rams", "LAC": "Los Angeles Chargers",
+    "LV": "Las Vegas Raiders", "MIA": "Miami Dolphins", "MIN": "Minnesota Vikings",
+    "NE": "New England Patriots", "NO": "New Orleans Saints", "NYG": "New York Giants",
+    "NYJ": "New York Jets", "PHI": "Philadelphia Eagles", "PIT": "Pittsburgh Steelers",
+    "SEA": "Seattle Seahawks", "SF": "San Francisco 49ers", "TB": "Tampa Bay Buccaneers",
+    "TEN": "Tennessee Titans", "WAS": "Washington Commanders",
+    # Legacy / alt codes
+    "LAR": "Los Angeles Rams", "SD": "Los Angeles Chargers", "STL": "Los Angeles Rams",
+    "OAK": "Las Vegas Raiders", "WSH": "Washington Commanders",
+}
+# Reverse map: name -> current preferred abbreviation
+_PREFERRED_ABBR = {
+    "Arizona Cardinals": "ARI", "Atlanta Falcons": "ATL", "Baltimore Ravens": "BAL",
+    "Buffalo Bills": "BUF", "Carolina Panthers": "CAR", "Chicago Bears": "CHI",
+    "Cincinnati Bengals": "CIN", "Cleveland Browns": "CLE", "Dallas Cowboys": "DAL",
+    "Denver Broncos": "DEN", "Detroit Lions": "DET", "Green Bay Packers": "GB",
+    "Houston Texans": "HOU", "Indianapolis Colts": "IND", "Jacksonville Jaguars": "JAX",
+    "Kansas City Chiefs": "KC", "Los Angeles Rams": "LA", "Los Angeles Chargers": "LAC",
+    "Las Vegas Raiders": "LV", "Miami Dolphins": "MIA", "Minnesota Vikings": "MIN",
+    "New England Patriots": "NE", "New Orleans Saints": "NO", "New York Giants": "NYG",
+    "New York Jets": "NYJ", "Philadelphia Eagles": "PHI", "Pittsburgh Steelers": "PIT",
+    "Seattle Seahawks": "SEA", "San Francisco 49ers": "SF", "Tampa Bay Buccaneers": "TB",
+    "Tennessee Titans": "TEN", "Washington Commanders": "WAS",
+}
+
+
+def abbr_from_name(name):
+    """Return the preferred team abbreviation for a full name, or None."""
+    return _PREFERRED_ABBR.get(name)
+
+
+def _fetch_games_csv():
+    req = Request(GAMES_URL, headers={"User-Agent": "nfl-model/1.0"})
+    with urlopen(req, timeout=30) as resp:
+        text = resp.read().decode("utf-8")
+    return list(csv.DictReader(io.StringIO(text)))
+
+
+def _to_int(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _to_float(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def load_season_games(season):
+    """Return list of completed regular-season games for `season`, sorted by date."""
+    rows = _fetch_games_csv()
+    games = []
+    for r in rows:
+        if _to_int(r.get("season")) != season:
+            continue
+        if (r.get("game_type") or "").upper() != "REG":
+            continue
+        home_score = _to_int(r.get("home_score"))
+        away_score = _to_int(r.get("away_score"))
+        if home_score is None or away_score is None:
+            continue
+        games.append({
+            "game_id": r.get("game_id"),
+            "season": season,
+            "week": _to_int(r.get("week")),
+            "date": r.get("gameday"),
+            "home_abbr": r.get("home_team"),
+            "away_abbr": r.get("away_team"),
+            "home_name": TEAM_NAMES.get(r.get("home_team"), r.get("home_team") or ""),
+            "away_name": TEAM_NAMES.get(r.get("away_team"), r.get("away_team") or ""),
+            "home_score": home_score,
+            "away_score": away_score,
+            "home_won": home_score > away_score,
+            "home_rest": _to_int(r.get("home_rest")) or 7,
+            "away_rest": _to_int(r.get("away_rest")) or 7,
+            "home_qb": r.get("home_qb_name") or "",
+            "away_qb": r.get("away_qb_name") or "",
+        })
+    games.sort(key=lambda g: (g["date"] or "", g["game_id"] or ""))
+    return games
+
+
+# ----- Elo math ---------------------------------------------------------
+
+def expected_prob(a, b):
+    return 1.0 / (1.0 + 10 ** ((b - a) / 400.0))
+
+
+def _mov_multiplier(margin, winner_elo_diff):
+    m = abs(margin) if margin else 1
+    return math.log(m + 1) * (2.2 / (max(0.0, winner_elo_diff) * 0.001 + 2.2))
+
+
+def predict_win_prob(home_elo, away_elo, home_rest=7, away_rest=7):
+    rest_adj = REST_WEIGHT * ((home_rest or 7) - (away_rest or 7))
+    return expected_prob(home_elo + HFA + rest_adj, away_elo)
+
+
+def elo_update(home_elo, away_elo, home_won, home_score, away_score,
+               home_rest=7, away_rest=7, k=K_FACTOR):
+    rest_adj = REST_WEIGHT * ((home_rest or 7) - (away_rest or 7))
+    exp_h = expected_prob(home_elo + HFA + rest_adj, away_elo)
+    margin = (home_score or 0) - (away_score or 0)
+    if home_won:
+        winner_diff = (home_elo + HFA + rest_adj) - away_elo
+    else:
+        winner_diff = away_elo - (home_elo + HFA + rest_adj)
+    mov = _mov_multiplier(margin, winner_diff)
+    delta = k * mov * ((1 if home_won else 0) - exp_h)
+    return home_elo + delta, away_elo - delta
+
+
+# ----- backtest ---------------------------------------------------------
+
+def run_backtest(season, score_last_weeks=8, verbose=True):
+    if verbose:
+        print(f"[nfl] loading {season} games from nflverse...", flush=True)
+    games = load_season_games(season)
+    if not games:
+        raise RuntimeError(f"no completed regular-season games found for {season}")
+    if verbose:
+        print(f"[nfl]   {len(games)} completed games", flush=True)
+
+    max_week = max(g["week"] or 0 for g in games)
+    score_from_week = max(1, max_week - score_last_weeks + 1)
+
+    elo = {}
+    wl = {}  # team -> [wins, losses]
+    predictions = []
+    for g in games:
+        h = g["home_abbr"]
+        a = g["away_abbr"]
+        elo.setdefault(h, INITIAL_ELO)
+        elo.setdefault(a, INITIAL_ELO)
+        wl.setdefault(h, [0, 0])
+        wl.setdefault(a, [0, 0])
+
+        # Prediction (no look-ahead)
+        p_home = predict_win_prob(elo[h], elo[a], g["home_rest"], g["away_rest"])
+
+        if (g["week"] or 0) >= score_from_week:
+            predictions.append({
+                "date": g["date"], "week": g["week"],
+                "home": g["home_name"], "away": g["away_name"],
+                "home_abbr": h, "away_abbr": a,
+                "home_qb": g["home_qb"], "away_qb": g["away_qb"],
+                "pregame_home_elo": round(elo[h], 1),
+                "pregame_away_elo": round(elo[a], 1),
+                "pregame_home_wl": list(wl[h]),
+                "pregame_away_wl": list(wl[a]),
+                "p_home": p_home,
+                "home_won": g["home_won"],
+                "home_score": g["home_score"], "away_score": g["away_score"],
+            })
+
+        # Update Elo and W-L AFTER predicting
+        elo[h], elo[a] = elo_update(
+            elo[h], elo[a], g["home_won"], g["home_score"], g["away_score"],
+            g["home_rest"], g["away_rest"],
+        )
+        if g["home_won"]:
+            wl[h][0] += 1
+            wl[a][1] += 1
+        else:
+            wl[h][1] += 1
+            wl[a][0] += 1
+
+    team_names = {g["home_abbr"]: g["home_name"] for g in games}
+    team_names.update({g["away_abbr"]: g["away_name"] for g in games})
+
+    return {
+        "season": season,
+        "score_from_week": score_from_week,
+        "max_week": max_week,
+        "score_last_weeks": score_last_weeks,
+        "total_games": len(games),
+        "scored_games": len(predictions),
+        "predictions": predictions,
+        "final_elo": {t: round(e, 1) for t, e in elo.items()},
+        "final_wl": wl,
+        "team_names": team_names,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "hyperparams": {
+            "K": K_FACTOR, "HFA": HFA, "REST_WEIGHT": REST_WEIGHT,
+            "INITIAL_ELO": INITIAL_ELO,
+        },
+    }
+
+
+def compute_metrics(predictions):
+    if not predictions:
+        return {"n": 0}
+    n = len(predictions)
+    ll = brier = 0.0
+    correct = 0
+    home_wins_actual = 0
+    record_correct = 0
+    record_defined = 0
+
+    for p in predictions:
+        y = 1 if p["home_won"] else 0
+        ph = max(1e-6, min(1 - 1e-6, p["p_home"]))
+        ll -= y * math.log(ph) + (1 - y) * math.log(1 - ph)
+        brier += (ph - y) ** 2
+        if (ph >= 0.5) == (y == 1):
+            correct += 1
+        home_wins_actual += y
+
+        hw, hl = p.get("pregame_home_wl") or [0, 0]
+        aw, al = p.get("pregame_away_wl") or [0, 0]
+        home_pct = hw / max(1, hw + hl) if (hw + hl) else 0.5
+        away_pct = aw / max(1, aw + al) if (aw + al) else 0.5
+        if home_pct != away_pct:
+            record_defined += 1
+            pick_home = home_pct > away_pct
+            if pick_home == bool(y):
+                record_correct += 1
+
+    bins = 10
+    calibration = []
+    for b in range(bins):
+        lo = b / bins
+        hi = (b + 1) / bins
+        bucket = [p for p in predictions if (lo <= p["p_home"] < hi) or (b == bins - 1 and p["p_home"] == 1.0)]
+        if bucket:
+            avg_p = sum(p["p_home"] for p in bucket) / len(bucket)
+            act = sum(1 if p["home_won"] else 0 for p in bucket) / len(bucket)
+            calibration.append({"bin_lo": lo, "bin_hi": hi, "n": len(bucket),
+                                "avg_pred": avg_p, "actual": act})
+
+    p_home_base = home_wins_actual / n
+    home_ll = 0.0
+    for p in predictions:
+        y = 1 if p["home_won"] else 0
+        ph = max(1e-6, min(1 - 1e-6, p_home_base))
+        home_ll -= y * math.log(ph) + (1 - y) * math.log(1 - ph)
+
+    return {
+        "n": n,
+        "accuracy": correct / n,
+        "log_loss": ll / n,
+        "brier_score": brier / n,
+        "home_baseline_prob": p_home_base,
+        "home_baseline_accuracy": p_home_base,
+        "home_baseline_log_loss": home_ll / n,
+        "record_baseline_accuracy": record_correct / record_defined if record_defined else None,
+        "record_baseline_defined": record_defined,
+        "calibration": calibration,
+    }
+
+
+def _pick_season():
+    """Prefer current season if it has completed REG games; else prior."""
+    try:
+        rows = _fetch_games_csv()
+    except Exception:
+        return date.today().year - 1
+    counts = {}
+    for r in rows:
+        if (r.get("game_type") or "").upper() != "REG":
+            continue
+        if r.get("home_score") in (None, "", "NA"):
+            continue
+        s = _to_int(r.get("season"))
+        if s:
+            counts[s] = counts.get(s, 0) + 1
+    y = date.today().year
+    for cand in (y, y - 1, y - 2):
+        if counts.get(cand, 0) >= 100:
+            return cand
+    return max(counts.keys()) if counts else y - 1
+
+
+def get_or_run_backtest(refresh=False, season=None, score_last_weeks=8, verbose=False):
+    if not refresh and os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE) as f:
+                data = json.load(f)
+            gen = datetime.fromisoformat(data.get("generated_at", "1970-01-01"))
+            if (datetime.now() - gen) < timedelta(hours=CACHE_MAX_AGE_H):
+                return data
+        except (json.JSONDecodeError, ValueError, KeyError):
+            pass
+    if season is None:
+        season = _pick_season()
+    result = run_backtest(season, score_last_weeks=score_last_weeks, verbose=verbose)
+    result["metrics"] = compute_metrics(result["predictions"])
+    with open(CACHE_FILE, "w") as f:
+        json.dump(result, f)
+    return result
+
+
+def _print_report(result):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+    m = result["metrics"]
+    print()
+    print(f"=== NFL backtest ===")
+    print(f"Season          : {result['season']}")
+    print(f"Total games     : {result['total_games']}")
+    print(f"Scored window   : weeks {result['score_from_week']} - {result['max_week']}")
+    print(f"Scored games    : {result['scored_games']}")
+    print()
+    print(f"Model accuracy  : {m['accuracy']:.4f}")
+    print(f"Model log loss  : {m['log_loss']:.4f}")
+    print(f"Model Brier     : {m['brier_score']:.4f}")
+    print()
+    print(f"Home baseline   : acc={m['home_baseline_accuracy']:.4f}  ll={m['home_baseline_log_loss']:.4f}")
+    if m["record_baseline_accuracy"] is not None:
+        print(f"Record baseline : acc={m['record_baseline_accuracy']:.4f}  over {m['record_baseline_defined']} games")
+    print()
+    print("Calibration:")
+    for c in m["calibration"]:
+        print(f"  {c['bin_lo']:.1f}-{c['bin_hi']:.1f}  n={c['n']:3d}  avg_pred={c['avg_pred']:.3f}  actual={c['actual']:.3f}")
+    print()
+    ranked = sorted(result["final_elo"].items(), key=lambda kv: -kv[1])[:10]
+    print("Top 10 final Elo:")
+    for ab, elo in ranked:
+        name = result["team_names"].get(ab, ab)
+        wl = result["final_wl"].get(ab, [0, 0])
+        print(f"  {elo:7.1f}  {name:28s}  {wl[0]}-{wl[1]}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="NFL Elo backtest")
+    parser.add_argument("--refresh", action="store_true")
+    parser.add_argument("--season", type=int, default=None)
+    parser.add_argument("--score-weeks", type=int, default=8)
+    args = parser.parse_args()
+    result = get_or_run_backtest(
+        refresh=args.refresh, season=args.season,
+        score_last_weeks=args.score_weeks, verbose=True,
+    )
+    _print_report(result)
+
+
+if __name__ == "__main__":
+    main()
