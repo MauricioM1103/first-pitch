@@ -122,7 +122,20 @@ def _call_claude(prompt):
             ),
             messages=[{"role": "user", "content": prompt}],
         )
-        text = msg.content[0].text if msg.content else ""
+        # Claude 5 may return a ThinkingBlock before the text block — pick the
+        # first block that actually has a .text attribute (type == "text").
+        text = ""
+        for block in (msg.content or []):
+            if getattr(block, "type", None) == "text":
+                text = getattr(block, "text", "") or ""
+                break
+        if not text:
+            # Last-ditch: any block exposing .text
+            for block in (msg.content or []):
+                t = getattr(block, "text", None)
+                if t:
+                    text = t
+                    break
     except Exception as e:
         return {"error": f"Claude API error: {e}"}
 
