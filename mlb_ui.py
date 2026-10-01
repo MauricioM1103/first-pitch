@@ -2564,13 +2564,22 @@ SPORT_TEMPLATE = r"""<!doctype html>
 
 <main class="wrap reveal">
   <div class="hero">
-    <h1>{{ sport.name }} &middot; model-free edges</h1>
+    <h1>{{ sport.name }} &middot; {% if has_model %}model edges{% else %}model-free edges{% endif %}</h1>
     <p class="sub">
+      {% if has_model %}
+      Positive-EV plays using the {{ sport.name }} Elo model (team rating blended with starting-QB rating) as the "fair" probability for moneyline. Model fits walk-forward across the regular season with no look-ahead &mdash; see the <a href="/sport/{{ sport.slug }}/backtest" style="color:var(--accent);text-decoration:underline">backtest &rarr;</a> for accuracy, calibration, and QB rankings. Totals and spreads still use Pinnacle devig.
+      {% else %}
       Positive-EV plays identified by comparing each US sportsbook's price to
       <strong>Pinnacle's devigged fair probability</strong> &mdash; the industry
       consensus "true" market line. No per-sport model yet; this is pure line-shopping
       against the sharpest book.
+      {% endif %}
     </p>
+    {% if has_model %}
+    <div style="margin-top:12px; display:flex; gap:8px; flex-wrap:wrap">
+      <a class="btn" href="/sport/{{ sport.slug }}/backtest">View model &amp; backtest</a>
+    </div>
+    {% endif %}
   </div>
 
   <div class="summary">
@@ -2609,7 +2618,7 @@ SPORT_TEMPLATE = r"""<!doctype html>
           <th>Market</th>
           <th>Game</th>
           <th>Pick</th>
-          <th class="num">Fair</th>
+          <th class="num">{% if has_model %}Model{% else %}Fair{% endif %}</th>
           <th class="num">Pin price</th>
           <th class="num">Best price</th>
           <th>Book</th>
@@ -2759,6 +2768,7 @@ def sport_page(slug):
         market_filter=market_filter,
         available_markets=markets_meta,
         show=show,
+        has_model=(model_prob_fn is not None),
         now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
     )
 
