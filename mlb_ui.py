@@ -1118,6 +1118,7 @@ INDEX_TEMPLATE = r"""<!doctype html>
         <a class="nav-tab active" href="/">Schedule</a>
         <a class="nav-tab" href="/edges">Edges</a>
         <a class="nav-tab" href="/arbitrage">Arbitrage</a>
+        <a class="nav-tab" href="/parlay">Parlay</a>
         <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
         <a class="nav-tab" href="/analyst">AI Analyst</a>
         <a class="nav-tab" href="/market">Market</a>
@@ -1497,6 +1498,7 @@ svg.calib { max-width: 100%; height: auto; }
         <a class="nav-tab" href="/">Schedule</a>
         <a class="nav-tab" href="/edges">Edges</a>
         <a class="nav-tab" href="/arbitrage">Arbitrage</a>
+        <a class="nav-tab" href="/parlay">Parlay</a>
         <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
         <a class="nav-tab" href="/analyst">AI Analyst</a>
         <a class="nav-tab" href="/market">Market</a>
@@ -4250,6 +4252,380 @@ def analyst_api_game():
     except Exception as e:
         result = {"error": f"analyst error: {e}"}
     return Response(json.dumps(result), mimetype="application/json")
+
+
+# ============================================================================
+# Parlay Builder (/parlay) — client-side cart over all +EV legs
+# ============================================================================
+
+PARLAY_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>First Pitch &mdash; Parlay Builder &mdash; {{ date_pretty }}</title>
+{{ fonts_link|safe }}
+<style>
+{{ shared_style|safe }}
+
+.hero { padding-bottom: 20px; margin-bottom: 24px; border-bottom: 1px solid var(--rule); }
+.hero h1 { font-family: "Fraunces", Georgia, serif; font-style: italic; font-weight: 400; font-size: clamp(32px, 5vw, 48px); line-height: 1.05; letter-spacing: -0.02em; margin: 0 0 8px; font-variation-settings: "opsz" 144; }
+.hero .sub { color: var(--muted); max-width: 760px; font-size: 13.5px; line-height: 1.55; }
+
+.layout { display: grid; grid-template-columns: 1fr; gap: 24px; }
+@media (min-width: 1080px) { .layout { grid-template-columns: 1fr 320px; align-items: start; } }
+
+.legs-wrap { background: var(--card); border: 1px solid var(--rule); border-radius: 12px; overflow: hidden; }
+.legs-wrap table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.legs-wrap th { text-align: left; padding: 12px 14px; background: var(--surface); color: var(--muted); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; font-weight: 500; border-bottom: 1px solid var(--rule); }
+.legs-wrap td { padding: 10px 14px; border-bottom: 1px solid var(--rule); vertical-align: middle; }
+.legs-wrap tr.selected { background: color-mix(in oklab, var(--good) 10%, transparent); box-shadow: inset 3px 0 0 var(--good); }
+.legs-wrap tr:last-child td { border-bottom: none; }
+.legs-wrap .num { font-family: "JetBrains Mono", monospace; font-variant-numeric: tabular-nums; text-align: right; }
+.legs-wrap .ev-pos { color: var(--good); font-weight: 600; }
+.legs-wrap .ev-pos.strong { text-shadow: var(--ev-strong-glow); }
+.legs-wrap .mkt-pill { display: inline-block; font-family: "JetBrains Mono", monospace; font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 6px; border-radius: 3px; background: var(--chip-bg); color: var(--muted); border: 1px solid var(--rule); }
+.legs-wrap .sport-pill-sm { display: inline-block; font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 8px; border-radius: 4px; background: var(--chip-bg); color: var(--muted); border: 1px solid var(--rule); }
+.legs-wrap input[type=checkbox] { accent-color: var(--good); width: 18px; height: 18px; cursor: pointer; }
+
+.cart {
+  background: var(--card); border: 1px solid var(--rule); border-radius: 12px;
+  padding: 20px 22px; position: sticky; top: 20px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.cart h3 { font-family: "Fraunces", Georgia, serif; font-weight: 500; font-size: 18px; margin: 0; letter-spacing: -0.01em; }
+.cart .empty-msg { color: var(--muted-2); font-style: italic; font-size: 13px; }
+.cart-rows { display: flex; flex-direction: column; gap: 8px; }
+.cart-row {
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 8px;
+  padding: 8px 10px; display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  font-size: 12px;
+}
+.cart-row .ck-pick { color: var(--ink); font-weight: 500; }
+.cart-row .ck-meta { color: var(--muted); font-family: "JetBrains Mono", monospace; font-size: 10.5px; }
+.cart-row button {
+  background: none; border: none; color: var(--muted-2); cursor: pointer; font-size: 15px;
+  padding: 0 4px;
+}
+.cart-row button:hover { color: var(--accent); }
+.cart-totals { border-top: 1px dashed var(--rule); padding-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.cart-totals .row { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; }
+.cart-totals .label { color: var(--muted); font-family: "JetBrains Mono", monospace; font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; }
+.cart-totals .value { color: var(--ink); font-weight: 500; font-family: "JetBrains Mono", monospace; font-variant-numeric: tabular-nums; }
+.cart-totals .value.good { color: var(--good); text-shadow: var(--ev-strong-glow); }
+.cart-totals .value.bad  { color: var(--muted-2); }
+
+.books-warn {
+  background: color-mix(in oklab, var(--warn) 10%, transparent);
+  border: 1px solid color-mix(in oklab, var(--warn) 40%, var(--rule));
+  color: var(--ink);
+  padding: 8px 10px; border-radius: 6px;
+  font-size: 11.5px; line-height: 1.4;
+  display: none;
+}
+.books-warn.visible { display: block; }
+
+.filter-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 16px; }
+.filter-chips .chip { padding: 6px 12px; border-radius: 999px; border: 1px solid var(--rule-strong); background: var(--surface); color: var(--muted); font-size: 12px; font-weight: 500; text-decoration: none; }
+.filter-chips .chip:hover { color: var(--ink); background: var(--card); }
+.filter-chips .chip.active { color: var(--ink); background: var(--card); border-color: var(--ink); }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap header-row">
+    <div class="brand" style="display: flex; align-items: baseline;">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">First Pitch</span>
+      <nav class="nav-tabs">
+        <a class="nav-tab" href="/">Schedule</a>
+        <a class="nav-tab" href="/edges">Edges</a>
+        <a class="nav-tab" href="/arbitrage">Arbitrage</a>
+        <a class="nav-tab active" href="/parlay">Parlay</a>
+        <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
+        <a class="nav-tab" href="/analyst">AI Analyst</a>
+      </nav>
+    </div>
+    <form class="controls" method="get" action="/parlay">
+      <a class="btn icon" href="/parlay?date={{ prev_date }}">&lsaquo;</a>
+      <input type="date" name="date" value="{{ date_str }}" onchange="this.form.submit()">
+      <a class="btn icon" href="/parlay?date={{ next_date }}">&rsaquo;</a>
+      {% if not is_today %}<a class="btn" href="/parlay?date={{ today }}">Today</a>{% endif %}
+    </form>
+  </div>
+</header>
+
+{{ sport_strip|safe }}
+
+<main class="wrap reveal">
+  <div class="hero">
+    <h1>Parlay builder &middot; {{ date_pretty }}</h1>
+    <p class="sub">
+      Pick +EV legs from any sport. The combined decimal, fair probability, and expected value
+      update live. Fair prob assumes independence between legs; same-game or related legs will
+      overestimate the combined probability.
+    </p>
+  </div>
+
+  <div class="layout">
+    <div>
+      {% if legs %}
+      <div class="filter-chips">
+        <a class="chip active" href="?date={{ date_str }}">All sports</a>
+        {% for s in sport_list %}
+        <a class="chip" href="?date={{ date_str }}&sport={{ s }}">{{ s }}</a>
+        {% endfor %}
+      </div>
+
+      <div class="legs-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:40px"></th>
+              <th>Sport</th>
+              <th>Market</th>
+              <th>Game &amp; Pick</th>
+              <th class="num">Fair</th>
+              <th class="num">Price</th>
+              <th>Book</th>
+              <th class="num">EV</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for leg in legs %}
+            <tr data-leg-id="{{ leg.id }}" data-decimal="{{ leg.decimal }}" data-fair="{{ leg.fair_prob }}" data-pick="{{ leg.pick }}" data-game="{{ leg.game }}" data-market="{{ leg.market }}" data-book="{{ leg.book }}">
+              <td><input type="checkbox" onchange="toggleLeg(this)"></td>
+              <td><span class="sport-pill-sm">{{ leg.sport }}</span></td>
+              <td><span class="mkt-pill">{{ leg.market }}</span></td>
+              <td>
+                <div style="color:var(--ink);font-weight:500">{{ leg.pick }}</div>
+                <div style="color:var(--muted);font-size:11px">{{ leg.game }}</div>
+              </td>
+              <td class="num">{{ (leg.fair_prob * 100)|round(1) }}%</td>
+              <td class="num">{{ ('+' if leg.american > 0 else '') ~ leg.american }} <span style="color:var(--muted-2)">({{ '%.2f'|format(leg.decimal) }})</span></td>
+              <td>{{ leg.book }}</td>
+              <td class="num ev-pos {% if leg.ev_pct >= 2 %}strong{% endif %}">+{{ '%.1f'|format(leg.ev_pct) }}%</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="empty-mc">
+        <h2>No +EV legs available right now.</h2>
+        <p>Try a different date or wait for lines to be posted.</p>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="cart" id="cart">
+      <h3>Your parlay</h3>
+      <div id="cart-empty" class="empty-msg">Select legs to build a parlay.</div>
+      <div class="cart-rows" id="cart-rows" style="display:none"></div>
+      <div class="books-warn" id="books-warn">Legs come from different books — most sportsbooks only let you parlay their own lines.</div>
+      <div class="cart-totals" id="cart-totals" style="display:none">
+        <div class="row"><span class="label">Legs</span><span class="value" id="t-legs">0</span></div>
+        <div class="row"><span class="label">Combined decimal</span><span class="value" id="t-dec">—</span></div>
+        <div class="row"><span class="label">Combined American</span><span class="value" id="t-am">—</span></div>
+        <div class="row"><span class="label">Combined fair</span><span class="value" id="t-fair">—</span></div>
+        <div class="row"><span class="label">Expected value</span><span class="value" id="t-ev">—</span></div>
+        <div class="row"><span class="label">Kelly stake (¼)</span><span class="value" id="t-kelly">—</span></div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <div>{{ legs|length }} +EV legs across {{ sport_list|length }} sports</div>
+    <div>updated {{ now }}</div>
+  </footer>
+</main>
+
+<script>
+const legs = {};  // id -> {decimal, fair, pick, game, market, book}
+
+function toggleLeg(cb) {
+  const row = cb.closest('tr');
+  const id = row.dataset.legId;
+  if (cb.checked) {
+    legs[id] = {
+      decimal: parseFloat(row.dataset.decimal),
+      fair:    parseFloat(row.dataset.fair),
+      pick:    row.dataset.pick,
+      game:    row.dataset.game,
+      market:  row.dataset.market,
+      book:    row.dataset.book,
+    };
+    row.classList.add('selected');
+  } else {
+    delete legs[id];
+    row.classList.remove('selected');
+  }
+  render();
+}
+
+function removeLeg(id) {
+  const row = document.querySelector('tr[data-leg-id="' + id + '"]');
+  if (row) {
+    const cb = row.querySelector('input[type=checkbox]');
+    if (cb) cb.checked = false;
+    row.classList.remove('selected');
+  }
+  delete legs[id];
+  render();
+}
+
+function decimalToAmerican(d) {
+  if (!d || d <= 1) return '—';
+  if (d >= 2.0) return '+' + Math.round((d - 1) * 100);
+  return String(Math.round(-100 / (d - 1)));
+}
+
+function esc(s){ return (s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function render() {
+  const ids = Object.keys(legs);
+  const n = ids.length;
+  const emptyEl = document.getElementById('cart-empty');
+  const rowsEl = document.getElementById('cart-rows');
+  const totalsEl = document.getElementById('cart-totals');
+  const warnEl = document.getElementById('books-warn');
+
+  if (n === 0) {
+    emptyEl.style.display = 'block';
+    rowsEl.style.display = 'none';
+    totalsEl.style.display = 'none';
+    warnEl.classList.remove('visible');
+    return;
+  }
+  emptyEl.style.display = 'none';
+  rowsEl.style.display = 'flex';
+  totalsEl.style.display = 'flex';
+
+  // Rows
+  rowsEl.innerHTML = ids.map(id => {
+    const l = legs[id];
+    return `
+      <div class="cart-row">
+        <div>
+          <div class="ck-pick">${esc(l.pick)}</div>
+          <div class="ck-meta">${esc(l.market)} · ${esc(l.book)} · ${l.decimal.toFixed(2)}</div>
+        </div>
+        <button onclick="removeLeg('${id}')" aria-label="Remove">×</button>
+      </div>
+    `;
+  }).join('');
+
+  // Combined math
+  let combDec = 1, combFair = 1;
+  for (const id of ids) {
+    combDec  *= legs[id].decimal;
+    combFair *= legs[id].fair;
+  }
+  const ev = combFair * combDec - 1;
+  const kelly = Math.max(0, Math.min(0.25, (combDec * combFair - 1) / (combDec - 1 || 1)));
+
+  document.getElementById('t-legs').textContent = n;
+  document.getElementById('t-dec').textContent  = combDec.toFixed(2);
+  document.getElementById('t-am').textContent   = decimalToAmerican(combDec);
+  document.getElementById('t-fair').textContent = (combFair * 100).toFixed(2) + '%';
+  const evCell = document.getElementById('t-ev');
+  evCell.textContent = (ev >= 0 ? '+' : '') + (ev * 100).toFixed(2) + '%';
+  evCell.className = 'value ' + (ev > 0 ? 'good' : 'bad');
+  document.getElementById('t-kelly').textContent = (kelly * 100).toFixed(2) + '%';
+
+  // Different books warning
+  const books = new Set(ids.map(id => legs[id].book));
+  if (books.size > 1) warnEl.classList.add('visible');
+  else warnEl.classList.remove('visible');
+}
+</script>
+</body>
+</html>
+"""
+
+
+@app.route("/parlay")
+def parlay():
+    date_str = request.args.get("date") or datetime.now(EASTERN).date().isoformat()
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        d = datetime.now(EASTERN).date()
+        date_str = d.isoformat()
+
+    legs = []
+
+    # --- MLB +EV legs ---
+    try:
+        games = get_games(date_str)
+    except Exception:
+        games = []
+    for g in games:
+        o = g.get("odds") or {}
+        for b in o.get("bets") or []:
+            if b.get("ev_pct", 0) <= 0:
+                continue
+            best_dec = (o.get("best_decimal") or {}).get(b["side"]) if b["market"] in ("ML", "Run Line", "Total") else None
+            best_book = (o.get("best_book") or {}).get(b["side"]) if b["market"] in ("ML", "Run Line", "Total") else None
+            use_dec = best_dec if (best_dec and best_dec > (b["decimal"] or 0)) else b["decimal"]
+            use_book = best_book if (best_dec and best_dec > (b["decimal"] or 0)) else "pinnacle"
+            legs.append({
+                "id": f"mlb_{g.get('game_pk')}_{b['market']}_{b['side']}",
+                "sport": "MLB",
+                "game": f"{g['away']['team']} at {g['home']['team']}",
+                "market": b["market"],
+                "pick": b["pick"],
+                "fair_prob": b["fair_prob"],
+                "decimal": use_dec,
+                "american": mlb_odds.decimal_to_american(use_dec),
+                "book": use_book,
+                "ev_pct": (b.get("fair_prob", 0) * use_dec - 1) * 100 if use_dec else b["ev_pct"],
+            })
+
+    # --- Non-MLB sports ---
+    for sport in sports.SPORTS:
+        if sport.get("dedicated"):
+            continue
+        try:
+            sport_games = generic_odds.build_sport_games(sport)
+        except Exception:
+            continue
+        for g in sport_games:
+            for b in g.get("bets") or []:
+                if b.get("ev_pct", 0) <= 0:
+                    continue
+                legs.append({
+                    "id": f"{sport['slug']}_{g.get('matchup_id')}_{b['market']}_{b['side']}",
+                    "sport": sport["name"],
+                    "game": f"{g['away_name']} at {g['home_name']}",
+                    "market": b["market"],
+                    "pick": b["pick"],
+                    "fair_prob": b["fair_prob"],
+                    "decimal": b["book_decimal"] or b["pin_decimal"],
+                    "american": b["book_american"] or b["pin_american"],
+                    "book": b["book"],
+                    "ev_pct": b["ev_pct"],
+                })
+
+    legs.sort(key=lambda x: -x["ev_pct"])
+    sport_list = sorted({l["sport"] for l in legs})
+
+    today = datetime.now(EASTERN).date().isoformat()
+    return render_template_string(
+        PARLAY_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        sport_strip=render_sport_strip("mlb"),
+        legs=legs,
+        sport_list=sport_list,
+        date_str=date_str,
+        date_pretty=d.strftime("%A, %B %d").replace(" 0", " "),
+        prev_date=(d - timedelta(days=1)).isoformat(),
+        next_date=(d + timedelta(days=1)).isoformat(),
+        today=today,
+        is_today=(date_str == today),
+        now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
+    )
 
 
 if __name__ == "__main__":
