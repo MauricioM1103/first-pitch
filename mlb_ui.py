@@ -2945,8 +2945,8 @@ svg.calib { max-width: 100%; height: auto; }
   </div>
 
   <div class="section">
-    <h2>Final Elo ratings</h2>
-    <p class="lead">End-of-regular-season ratings; feed today's live NFL predictions on the NFL tab.</p>
+    <h2>Final team Elo ratings</h2>
+    <p class="lead">End-of-regular-season team ratings. Feed today's live NFL predictions on the NFL tab (blended with the starter's QB Elo at prediction time).</p>
     <div class="elo-cols">
       <div>
         <table class="elo-table">
@@ -2980,6 +2980,50 @@ svg.calib { max-width: 100%; height: auto; }
       </div>
     </div>
   </div>
+
+  {% if top_qbs %}
+  <div class="section">
+    <h2>Quarterback ratings</h2>
+    <p class="lead">
+      Per-QB Elo (minimum 8 games started this season). The model blends
+      <code>{{ (state.hyperparams.QB_WEIGHT * 100)|int }}%</code> of each QB's rating-diff from
+      1500 into their team's effective Elo at prediction time &mdash; so a top-rated starter at
+      a mid-tier team can flip the favorite.
+    </p>
+    <div class="elo-cols">
+      <div>
+        <table class="elo-table">
+          <thead><tr><th>#</th><th>QB</th><th>Elo</th><th>Games</th></tr></thead>
+          <tbody>
+            {% for qb, elo, games in top_qbs %}
+            <tr>
+              <td style="color:var(--muted)">{{ loop.index }}</td>
+              <td>{{ qb }}</td>
+              <td>{{ elo|round|int }}</td>
+              <td>{{ games }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <table class="elo-table">
+          <thead><tr><th>#</th><th>QB</th><th>Elo</th><th>Games</th></tr></thead>
+          <tbody>
+            {% for qb, elo, games in bottom_qbs %}
+            <tr>
+              <td style="color:var(--muted)">{{ bottom_qb_rank_start + loop.index }}</td>
+              <td>{{ qb }}</td>
+              <td>{{ elo|round|int }}</td>
+              <td>{{ games }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+  {% endif %}
 
   <div class="section">
     <h2>Sample of scored predictions</h2>
@@ -3040,6 +3084,18 @@ def nfl_backtest():
     elo_items = sorted(state["final_elo"].items(), key=lambda kv: -kv[1])
     top_elo = [(ab, r, state["final_wl"].get(ab, [0, 0])) for ab, r in elo_items[:16]]
     bottom_elo = [(ab, r, state["final_wl"].get(ab, [0, 0])) for ab, r in elo_items[16:]]
+
+    # Quarterback rankings (min 8 games this season)
+    qb_games = state.get("qb_games", {}) or {}
+    qb_items = sorted(
+        [(q, e, qb_games.get(q, 0)) for q, e in (state.get("final_qb_elo") or {}).items()
+         if qb_games.get(q, 0) >= 8],
+        key=lambda x: -x[1],
+    )
+    top_qbs = qb_items[:12]
+    bottom_qbs = qb_items[-12:] if len(qb_items) > 24 else qb_items[12:]
+    bottom_qb_rank_start = len(qb_items) - len(bottom_qbs) if bottom_qbs else 0
+
     sample_preds = state["predictions"][-24:]
     return render_template_string(
         NFL_BACKTEST_TEMPLATE,
@@ -3048,6 +3104,8 @@ def nfl_backtest():
         sport_strip=render_sport_strip("nfl"),
         state=state, m=m,
         top_elo=top_elo, bottom_elo=bottom_elo,
+        top_qbs=top_qbs, bottom_qbs=bottom_qbs,
+        bottom_qb_rank_start=bottom_qb_rank_start,
         sample_preds=sample_preds,
         calibration_svg=render_calibration_svg(m.get("calibration") or []),
     )

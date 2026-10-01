@@ -39,6 +39,17 @@ INITIAL_ELO = 1500.0
 K_FACTOR = 20.0
 HFA = 55.0
 REST_WEIGHT = 2.0
+
+# QB Elo: parallel rating per quarterback. Blended into team strength at
+# prediction time; updated separately per game based on observed vs expected.
+QB_INITIAL_ELO = 1500.0
+QB_WEIGHT = 0.50   # fraction of QB rating diff from avg that enters team Elo
+QB_K = 10.0        # smaller than team K: QBs change teams, one player
+WARMUP_SEASONS = 0  # Backtest hyperparam tuning showed warmup hurts team Elo
+                    # (even with 1/3 regression at season boundaries). We fit
+                    # on the target season only. For live predictions in a
+                    # later season you'd want this at 1 — accept the tradeoff.
+
 CACHE_MAX_AGE_H = 24
 
 TEAM_NAMES = {
@@ -99,12 +110,17 @@ def _to_float(v):
         return None
 
 
-def load_season_games(season):
-    """Return list of completed regular-season games for `season`, sorted by date."""
+def load_season_games(season, extra_prior_seasons=0):
+    """Return list of completed regular-season games.
+
+    Includes `season` plus `extra_prior_seasons` prior seasons for ratings
+    warm-up (QBs carry across seasons, team Elo regresses softly between).
+    """
     rows = _fetch_games_csv()
+    seasons = set(range(season - extra_prior_seasons, season + 1))
     games = []
     for r in rows:
-        if _to_int(r.get("season")) != season:
+        if _to_int(r.get("season")) not in seasons:
             continue
         if (r.get("game_type") or "").upper() != "REG":
             continue
@@ -114,7 +130,7 @@ def load_season_games(season):
             continue
         games.append({
             "game_id": r.get("game_id"),
-            "season": season,
+            "season": _to_int(r.get("season")),
             "week": _to_int(r.get("week")),
             "date": r.get("gameday"),
             "home_abbr": r.get("home_team"),
@@ -144,61 +160,130 @@ def _mov_multiplier(margin, winner_elo_diff):
     return math.log(m + 1) * (2.2 / (max(0.0, winner_elo_diff) * 0.001 + 2.2))
 
 
-def predict_win_prob(home_elo, away_elo, home_rest=7, away_rest=7):
+def _qb_adj(qb_elo):
+    """Team-Elo adjustment implied by a QB's rating."""
+    if qb_elo is None:
+        return 0.0
+    return QB_WEIGHT * (qb_elo - QB_INITIAL_ELO)
+
+
+def predict_win_prob(home_elo, away_elo, home_rest=7, away_rest=7,
+                     home_qb_elo=None, away_qb_elo=None):
     rest_adj = REST_WEIGHT * ((home_rest or 7) - (away_rest or 7))
-    return expected_prob(home_elo + HFA + rest_adj, away_elo)
+    h = home_elo + _qb_adj(home_qb_elo)
+    a = away_elo + _qb_adj(away_qb_elo)
+    return expected_prob(h + HFA + rest_adj, a)
 
 
 def elo_update(home_elo, away_elo, home_won, home_score, away_score,
-               home_rest=7, away_rest=7, k=K_FACTOR):
+               home_rest=7, away_rest=7,
+               home_qb_elo=None, away_qb_elo=None,
+               k=K_FACTOR, qb_k=QB_K):
+    """Return (new_home_elo, new_away_elo, new_home_qb_elo, new_away_qb_elo).
+
+    QB inputs may be None (fallback to team-only). Both team and QB ratings
+    update from the same game result; the QB K-factor is lower because a
+    QB plays ~1/22 of positions and we don't want individual-game noise to
+    swing their rating too hard.
+    """
     rest_adj = REST_WEIGHT * ((home_rest or 7) - (away_rest or 7))
-    exp_h = expected_prob(home_elo + HFA + rest_adj, away_elo)
+    h = home_elo + _qb_adj(home_qb_elo)
+    a = away_elo + _qb_adj(away_qb_elo)
+    exp_h = expected_prob(h + HFA + rest_adj, a)
     margin = (home_score or 0) - (away_score or 0)
     if home_won:
-        winner_diff = (home_elo + HFA + rest_adj) - away_elo
+        winner_diff = (h + HFA + rest_adj) - a
     else:
-        winner_diff = away_elo - (home_elo + HFA + rest_adj)
+        winner_diff = a - (h + HFA + rest_adj)
     mov = _mov_multiplier(margin, winner_diff)
-    delta = k * mov * ((1 if home_won else 0) - exp_h)
-    return home_elo + delta, away_elo - delta
+    y = 1 if home_won else 0
+    team_delta = k * mov * (y - exp_h)
+    new_home = home_elo + team_delta
+    new_away = away_elo - team_delta
+    new_home_qb = home_qb_elo
+    new_away_qb = away_qb_elo
+    if home_qb_elo is not None and away_qb_elo is not None:
+        qb_delta = qb_k * mov * (y - exp_h)
+        new_home_qb = home_qb_elo + qb_delta
+        new_away_qb = away_qb_elo - qb_delta
+    return new_home, new_away, new_home_qb, new_away_qb
 
 
 # ----- backtest ---------------------------------------------------------
 
-def run_backtest(season, score_last_weeks=8, verbose=True):
+def run_backtest(season, score_last_weeks=8, warmup_seasons=WARMUP_SEASONS,
+                 use_qb=True, verbose=True):
+    """Walk-forward Elo backtest for one NFL season.
+
+    Scores only games in the `score_last_weeks` tail of `season`. The prior
+    `warmup_seasons` are used purely to warm team + QB ratings so they start
+    the scored window with history.
+
+    `use_qb=False` runs the team-only variant for comparison.
+    """
     if verbose:
-        print(f"[nfl] loading {season} games from nflverse...", flush=True)
-    games = load_season_games(season)
+        print(f"[nfl] loading {season} (+{warmup_seasons} prior) from nflverse...", flush=True)
+    games = load_season_games(season, extra_prior_seasons=warmup_seasons)
     if not games:
         raise RuntimeError(f"no completed regular-season games found for {season}")
+    scored_season_games = [g for g in games if g["season"] == season]
+    if not scored_season_games:
+        raise RuntimeError(f"no games in target season {season}")
     if verbose:
-        print(f"[nfl]   {len(games)} completed games", flush=True)
+        print(f"[nfl]   {len(games)} total games, "
+              f"{len(scored_season_games)} in target season "
+              f"({'with QB' if use_qb else 'team-only'})", flush=True)
 
-    max_week = max(g["week"] or 0 for g in games)
+    max_week = max((g["week"] or 0) for g in scored_season_games)
     score_from_week = max(1, max_week - score_last_weeks + 1)
 
     elo = {}
-    wl = {}  # team -> [wins, losses]
+    qb_elo = {}
+    qb_games = {}
+    wl = {}
     predictions = []
+    seasons_seen = set()
+
     for g in games:
+        # 538-style: regress team Elo toward 1500 by 1/3 at each season boundary
+        if g["season"] not in seasons_seen and seasons_seen:
+            for t in list(elo.keys()):
+                elo[t] = INITIAL_ELO + (2.0 / 3.0) * (elo[t] - INITIAL_ELO)
+        seasons_seen.add(g["season"])
+
         h = g["home_abbr"]
         a = g["away_abbr"]
+        home_qb = (g["home_qb"] or "").strip() if use_qb else ""
+        away_qb = (g["away_qb"] or "").strip() if use_qb else ""
         elo.setdefault(h, INITIAL_ELO)
         elo.setdefault(a, INITIAL_ELO)
         wl.setdefault(h, [0, 0])
         wl.setdefault(a, [0, 0])
+        if home_qb:
+            qb_elo.setdefault(home_qb, QB_INITIAL_ELO)
+            qb_games.setdefault(home_qb, 0)
+        if away_qb:
+            qb_elo.setdefault(away_qb, QB_INITIAL_ELO)
+            qb_games.setdefault(away_qb, 0)
 
-        # Prediction (no look-ahead)
-        p_home = predict_win_prob(elo[h], elo[a], g["home_rest"], g["away_rest"])
+        hq = qb_elo.get(home_qb) if home_qb else None
+        aq = qb_elo.get(away_qb) if away_qb else None
 
-        if (g["week"] or 0) >= score_from_week:
+        p_home = predict_win_prob(elo[h], elo[a],
+                                  g["home_rest"], g["away_rest"],
+                                  home_qb_elo=hq, away_qb_elo=aq)
+
+        in_target = (g["season"] == season and (g["week"] or 0) >= score_from_week)
+        if in_target:
             predictions.append({
                 "date": g["date"], "week": g["week"],
                 "home": g["home_name"], "away": g["away_name"],
                 "home_abbr": h, "away_abbr": a,
-                "home_qb": g["home_qb"], "away_qb": g["away_qb"],
+                "home_qb": home_qb, "away_qb": away_qb,
                 "pregame_home_elo": round(elo[h], 1),
                 "pregame_away_elo": round(elo[a], 1),
+                "pregame_home_qb_elo": round(hq, 1) if hq else None,
+                "pregame_away_qb_elo": round(aq, 1) if aq else None,
                 "pregame_home_wl": list(wl[h]),
                 "pregame_away_wl": list(wl[a]),
                 "p_home": p_home,
@@ -206,11 +291,19 @@ def run_backtest(season, score_last_weeks=8, verbose=True):
                 "home_score": g["home_score"], "away_score": g["away_score"],
             })
 
-        # Update Elo and W-L AFTER predicting
-        elo[h], elo[a] = elo_update(
+        new_h, new_a, new_hq, new_aq = elo_update(
             elo[h], elo[a], g["home_won"], g["home_score"], g["away_score"],
             g["home_rest"], g["away_rest"],
+            home_qb_elo=hq, away_qb_elo=aq,
         )
+        elo[h], elo[a] = new_h, new_a
+        if home_qb and new_hq is not None:
+            qb_elo[home_qb] = new_hq
+            qb_games[home_qb] = qb_games.get(home_qb, 0) + 1
+        if away_qb and new_aq is not None:
+            qb_elo[away_qb] = new_aq
+            qb_games[away_qb] = qb_games.get(away_qb, 0) + 1
+
         if g["home_won"]:
             wl[h][0] += 1
             wl[a][1] += 1
@@ -226,16 +319,22 @@ def run_backtest(season, score_last_weeks=8, verbose=True):
         "score_from_week": score_from_week,
         "max_week": max_week,
         "score_last_weeks": score_last_weeks,
+        "warmup_seasons": warmup_seasons,
+        "use_qb": use_qb,
         "total_games": len(games),
         "scored_games": len(predictions),
         "predictions": predictions,
         "final_elo": {t: round(e, 1) for t, e in elo.items()},
+        "final_qb_elo": {q: round(e, 1) for q, e in qb_elo.items()},
+        "qb_games": qb_games,
         "final_wl": wl,
         "team_names": team_names,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "hyperparams": {
             "K": K_FACTOR, "HFA": HFA, "REST_WEIGHT": REST_WEIGHT,
             "INITIAL_ELO": INITIAL_ELO,
+            "QB_WEIGHT": QB_WEIGHT, "QB_K": QB_K,
+            "QB_INITIAL_ELO": QB_INITIAL_ELO,
         },
     }
 
