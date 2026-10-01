@@ -20,7 +20,7 @@ import time
 _cache = {}  # (provider, game_pk) -> (analysis_dict, timestamp)
 _CACHE_TTL_S = 6 * 3600  # 6 hours per game
 
-CLAUDE_MODEL = "claude-sonnet-4-5"  # Fast + inexpensive; swap to opus for depth
+CLAUDE_MODEL = "claude-sonnet-5-5"  # Current Sonnet; swap to claude-opus-5-5 for depth
 CLAUDE_MAX_TOKENS = 900
 
 
