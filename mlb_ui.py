@@ -1119,6 +1119,7 @@ INDEX_TEMPLATE = r"""<!doctype html>
         <a class="nav-tab" href="/edges">Edges</a>
         <a class="nav-tab" href="/arbitrage">Arbitrage</a>
         <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
+        <a class="nav-tab" href="/analyst">AI Analyst</a>
         <a class="nav-tab" href="/market">Market</a>
         <a class="nav-tab" href="/backtest">Model</a>
       </nav>
@@ -1497,6 +1498,7 @@ svg.calib { max-width: 100%; height: auto; }
         <a class="nav-tab" href="/edges">Edges</a>
         <a class="nav-tab" href="/arbitrage">Arbitrage</a>
         <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
+        <a class="nav-tab" href="/analyst">AI Analyst</a>
         <a class="nav-tab" href="/market">Market</a>
         <a class="nav-tab active" href="/backtest">Model</a>
       </nav>
@@ -3964,6 +3966,290 @@ def arbitrage():
         scan_time_ms=scan_time_ms,
         now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
     )
+
+
+# ============================================================================
+# AI Analyst (/analyst) — Claude-powered structured analysis per game
+# ============================================================================
+
+ANALYST_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>First Pitch &mdash; AI Analyst &mdash; {{ date_pretty }}</title>
+{{ fonts_link|safe }}
+<style>
+{{ shared_style|safe }}
+
+.hero { padding-bottom: 20px; margin-bottom: 24px; border-bottom: 1px solid var(--rule); }
+.hero h1 { font-family: "Fraunces", Georgia, serif; font-style: italic; font-weight: 400; font-size: clamp(32px, 5vw, 48px); line-height: 1.05; letter-spacing: -0.02em; margin: 0 0 8px; font-variation-settings: "opsz" 144; }
+.hero .sub { color: var(--muted); max-width: 760px; font-size: 13.5px; line-height: 1.6; }
+
+.needs-key {
+  background: color-mix(in oklab, var(--warn) 10%, var(--card));
+  border: 1px solid color-mix(in oklab, var(--warn) 40%, var(--rule));
+  border-radius: 10px; padding: 16px 20px; margin-bottom: 24px;
+}
+.needs-key strong { color: var(--ink); }
+.needs-key code { background: var(--surface); padding: 2px 6px; border-radius: 3px; font-size: 11.5px; }
+
+.game-grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+@media (min-width: 900px)  { .game-grid { grid-template-columns: repeat(2, 1fr); } }
+
+.ag-card {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: 12px; padding: 20px 22px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.ag-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.ag-matchup { font-size: 18px; font-weight: 600; color: var(--ink); letter-spacing: -0.01em; line-height: 1.2; }
+.ag-time { font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.ag-stats {
+  font-family: "JetBrains Mono", monospace; font-size: 11px;
+  color: var(--muted); font-variant-numeric: tabular-nums;
+  display: flex; flex-wrap: wrap; gap: 12px;
+}
+.ag-stats b { color: var(--ink); font-weight: 500; }
+
+.ag-btn {
+  align-self: flex-start;
+  padding: 8px 16px; border-radius: 8px;
+  border: 1px solid var(--accent);
+  background: color-mix(in oklab, var(--accent) 10%, var(--surface));
+  color: var(--accent); font-weight: 600;
+  font-size: 13px; cursor: pointer;
+  transition: background 120ms ease, box-shadow 120ms ease;
+}
+.ag-btn:hover {
+  background: color-mix(in oklab, var(--accent) 20%, var(--surface));
+  box-shadow: 0 0 14px var(--accent-glow);
+}
+.ag-btn:disabled { opacity: 0.5; cursor: wait; }
+
+.ag-analysis {
+  border-top: 1px dashed var(--rule); padding-top: 14px;
+  font-size: 13px; line-height: 1.55;
+  display: none;
+}
+.ag-analysis.visible { display: block; }
+.ag-analysis h4 {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--muted); margin: 10px 0 6px; font-weight: 500;
+}
+.ag-analysis ul { margin: 0 0 8px; padding-left: 20px; }
+.ag-analysis li { margin-bottom: 4px; color: var(--ink); }
+.ag-pick {
+  background: color-mix(in oklab, var(--good) 15%, transparent);
+  box-shadow: inset 3px 0 0 var(--good);
+  padding: 10px 14px; border-radius: 6px; margin-top: 10px;
+}
+.ag-pick .label { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+.ag-pick .pick-text { font-weight: 600; font-size: 15px; color: var(--ink); margin-top: 4px; }
+.ag-pick .pick-rationale { font-size: 12.5px; color: var(--muted); margin-top: 6px; line-height: 1.4; }
+.ag-pick .conf { font-family: "JetBrains Mono", monospace; color: var(--good); text-shadow: var(--ev-strong-glow); }
+.ag-error { color: var(--accent); font-style: italic; font-size: 12.5px; }
+
+.loading { color: var(--muted); font-style: italic; }
+.gen-foot { font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--muted-2); margin-top: 6px; letter-spacing: 0.08em; text-transform: uppercase; }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap header-row">
+    <div class="brand" style="display: flex; align-items: baseline;">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">First Pitch</span>
+      <nav class="nav-tabs">
+        <a class="nav-tab" href="/">Schedule</a>
+        <a class="nav-tab" href="/edges">Edges</a>
+        <a class="nav-tab" href="/arbitrage">Arbitrage</a>
+        <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
+        <a class="nav-tab active" href="/analyst">AI Analyst</a>
+      </nav>
+    </div>
+    <form class="controls" method="get" action="/analyst">
+      <a class="btn icon" href="/analyst?date={{ prev_date }}">&lsaquo;</a>
+      <input type="date" name="date" value="{{ date_str }}" onchange="this.form.submit()">
+      <a class="btn icon" href="/analyst?date={{ next_date }}">&rsaquo;</a>
+      {% if not is_today %}<a class="btn" href="/analyst?date={{ today }}">Today</a>{% endif %}
+    </form>
+  </div>
+</header>
+
+{{ sport_strip|safe }}
+
+<main class="wrap reveal">
+  <div class="hero">
+    <h1>AI analyst &middot; {{ date_pretty }}</h1>
+    <p class="sub">
+      Claude reviews each matchup against the model, the Pinnacle market, pitcher lines, and context,
+      then returns a structured take: stat read, matchup factors, risk flags, and a pick with confidence (1&ndash;3 stars).
+      Each analysis is cached for 6 hours. One Claude call per matchup; costs about $0.01&ndash;0.03 per game at Sonnet pricing.
+    </p>
+  </div>
+
+  {% if not key_available %}
+  <div class="needs-key">
+    <strong>Needs setup:</strong> this page calls Anthropic's API. Set <code>ANTHROPIC_API_KEY</code> in
+    Render Settings &rarr; Environment, then redeploy. You can get a key at
+    <a href="https://console.anthropic.com" style="color:var(--accent)">console.anthropic.com</a>
+    &mdash; usage is pay-as-you-go, no monthly minimum.
+  </div>
+  {% endif %}
+
+  {% if not games %}
+  <div class="empty-mc">
+    <h2>No MLB games on this date.</h2>
+    <p>Try a different date.</p>
+  </div>
+  {% else %}
+  <div class="game-grid">
+    {% for g in games %}
+    <article class="ag-card" data-game-pk="{{ g.game_pk }}">
+      <div class="ag-head">
+        <div class="ag-matchup">{{ g.away }} <span style="font-family:Fraunces,serif;font-style:italic;color:var(--muted)">at</span> {{ g.home }}</div>
+        <div class="ag-time">{{ g.first_pitch }}</div>
+      </div>
+      <div class="ag-stats">
+        <span>Model: <b>{{ (g.p_home * 100)|round|int if g.p_home else '?' }}%</b> home</span>
+        <span>{{ g.away }} {{ g.away_rec }}</span>
+        <span>{{ g.home }} {{ g.home_rec }}</span>
+      </div>
+      <button class="ag-btn" onclick="analyzeGame({{ g.game_pk }}, this)">Analyze</button>
+      <div class="ag-analysis" id="analysis-{{ g.game_pk }}"></div>
+    </article>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <footer>
+    <div>Analyses generated by Claude Sonnet &middot; cached 6h per game</div>
+    <div>updated {{ now }}</div>
+  </footer>
+</main>
+
+<script>
+const CURRENT_DATE = {{ date_str|tojson }};
+async function analyzeGame(pk, btn) {
+  const target = document.getElementById('analysis-' + pk);
+  if (btn) { btn.disabled = true; btn.textContent = 'Thinking…'; }
+  target.classList.add('visible');
+  target.innerHTML = '<div class="loading">Claude is reviewing the matchup…</div>';
+  try {
+    const res = await fetch('/analyst/api/game?pk=' + pk + '&date=' + encodeURIComponent(CURRENT_DATE));
+    const data = await res.json();
+    target.innerHTML = renderAnalysis(data);
+  } catch (e) {
+    target.innerHTML = '<div class="ag-error">Fetch error: ' + e + '</div>';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Re-analyze'; }
+  }
+}
+function esc(s){ return (s||'').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+function renderAnalysis(d) {
+  if (d.error) {
+    return '<div class="ag-error">' + esc(d.error) + '</div>'
+      + (d.raw ? '<pre style="white-space:pre-wrap;color:var(--muted-2);font-size:11px">' + esc(d.raw) + '</pre>' : '');
+  }
+  const pick = d.pick || {};
+  const stars = '★'.repeat(pick.confidence || 1) + '☆'.repeat(3 - (pick.confidence || 1));
+  const sideLabel = (pick.side || '').replace(/^./, c => c.toUpperCase());
+  return `
+    <h4>Stat Read</h4>
+    <ul>${(d.stat_read||[]).map(b => '<li>' + esc(b) + '</li>').join('')}</ul>
+    <h4>Matchup Factors</h4>
+    <ul>${(d.matchup_factors||[]).map(b => '<li>' + esc(b) + '</li>').join('')}</ul>
+    <h4>Risk Flags</h4>
+    <ul>${(d.risk_flags||[]).map(b => '<li>' + esc(b) + '</li>').join('')}</ul>
+    <div class="ag-pick">
+      <div class="label">Pick · <span class="conf">${stars}</span></div>
+      <div class="pick-text">${esc(pick.market || '?')} — ${esc(sideLabel)}</div>
+      <div class="pick-rationale">${esc(pick.rationale || '')}</div>
+    </div>
+    <div class="gen-foot">${esc(d.model||'claude')} · ${esc(d.generated_at||'now')}</div>
+  `;
+}
+</script>
+</body>
+</html>
+"""
+
+
+@app.route("/analyst")
+def analyst_page():
+    import analyst as analyst_mod
+    date_str = request.args.get("date") or datetime.now(EASTERN).date().isoformat()
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        d = datetime.now(EASTERN).date()
+        date_str = d.isoformat()
+    try:
+        games = get_games(date_str)
+    except Exception:
+        games = []
+
+    def _rec(side):
+        w, l = side.get("wins"), side.get("losses")
+        if w is None or l is None:
+            return ""
+        return f"{w}-{l}"
+
+    simple = [{
+        "game_pk": g["game_pk"],
+        "away": g["away"]["team"],
+        "home": g["home"]["team"],
+        "first_pitch": g["first_pitch"],
+        "p_home": g.get("p_home"),
+        "away_rec": _rec(g["away"]),
+        "home_rec": _rec(g["home"]),
+    } for g in games if g.get("game_pk")]
+
+    today = datetime.now(EASTERN).date().isoformat()
+    return render_template_string(
+        ANALYST_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        sport_strip=render_sport_strip("mlb"),
+        games=simple,
+        key_available=analyst_mod.is_available(),
+        date_str=date_str,
+        date_pretty=d.strftime("%A, %B %d").replace(" 0", " "),
+        prev_date=(d - timedelta(days=1)).isoformat(),
+        next_date=(d + timedelta(days=1)).isoformat(),
+        today=today,
+        is_today=(date_str == today),
+        now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
+    )
+
+
+@app.route("/analyst/api/game")
+def analyst_api_game():
+    import analyst as analyst_mod
+    pk_str = request.args.get("pk")
+    date_str = request.args.get("date") or datetime.now(EASTERN).date().isoformat()
+    try:
+        pk = int(pk_str) if pk_str else None
+    except ValueError:
+        pk = None
+    if not pk:
+        return Response(json.dumps({"error": "missing pk"}), mimetype="application/json")
+    try:
+        games = get_games(date_str)
+    except Exception:
+        games = []
+    game = next((g for g in games if g.get("game_pk") == pk), None)
+    if not game:
+        return Response(json.dumps({"error": "game not found on this date"}),
+                        mimetype="application/json")
+    try:
+        result = analyst_mod.analyze_game(game)
+    except Exception as e:
+        result = {"error": f"analyst error: {e}"}
+    return Response(json.dumps(result), mimetype="application/json")
 
 
 if __name__ == "__main__":
