@@ -729,6 +729,216 @@ def get_or_run_backtest(refresh=False, season=None, score_last_n_days=60, verbos
 
 
 # ============================================================================
+# Multi-season backtest (12 regular seasons aggregate)
+# ============================================================================
+
+NUM_SEASONS = 12
+MULTI_WARMUP_SEASONS = 2
+
+MULTI_CACHE_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "mlb_multi_backtest_cache.json",
+)
+
+
+def _load_pitcher_gamelogs_multi(pid_season_pairs, workers=16):
+    """Fetch pitcher gameLogs for a set of (pid, season) pairs in parallel.
+
+    Returns {(pid, season): [outing, ...]}.
+    """
+    def _one(args):
+        pid, season = args
+        try:
+            d = _fetch(PITCHER_LOG_URL.format(pid=pid, season=season))
+        except (URLError, ValueError, TimeoutError, ConnectionError, OSError):
+            return (pid, season), []
+        outings = []
+        for s in (d.get("stats") or []):
+            for split in (s.get("splits") or []):
+                stat = split.get("stat") or {}
+                dt = split.get("date")
+                if not dt:
+                    continue
+                outings.append({
+                    "date": dt,
+                    "er": stat.get("earnedRuns") or 0,
+                    "ip": _parse_ip(stat.get("inningsPitched", 0)),
+                    "so": stat.get("strikeOuts") or 0,
+                    "bb": stat.get("baseOnBalls") or 0,
+                    "h": stat.get("hits") or 0,
+                })
+        outings.sort(key=lambda o: o["date"])
+        return (pid, season), outings
+
+    out = {}
+    pairs = [p for p in pid_season_pairs if p[0]]
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = [ex.submit(_one, p) for p in pairs]
+        for f in as_completed(futs):
+            key, outings = f.result()
+            out[key] = outings
+    return out
+
+
+def run_multi_season_backtest(end_season, num_seasons=NUM_SEASONS,
+                               warmup_seasons=MULTI_WARMUP_SEASONS,
+                               verbose=True):
+    """Walk-forward Elo + SP backtest across `num_seasons` ending at `end_season`.
+
+    Team Elo persists across seasons (regressed 1/3 toward 1500 at each boundary).
+    Starting-pitcher stats reset per season (statsapi gameLog is per-season).
+
+    Returns aggregate metrics plus per-season breakdown.
+    """
+    first = end_season - num_seasons + 1
+    seasons = list(range(first, end_season + 1))
+    scored_from = first + warmup_seasons
+
+    if verbose:
+        print(f"[mlb] multi-season {first}-{end_season} "
+              f"(warmup {first}..{scored_from - 1}, scored {scored_from}..{end_season})",
+              flush=True)
+
+    # 1. Fetch schedules in parallel
+    t0 = time.time()
+    all_games = []
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs = {ex.submit(load_season_games, s): s for s in seasons}
+        for f in as_completed(futs):
+            s = futs[f]
+            try:
+                g = f.result()
+            except Exception as e:
+                if verbose:
+                    print(f"[mlb]   {s}: FAILED {e}", flush=True)
+                g = []
+            if verbose:
+                print(f"[mlb]   {s}: {len(g)} games", flush=True)
+            all_games.extend(g)
+    all_games.sort(key=lambda g: (g["date"], g["gamePk"]))
+    if verbose:
+        print(f"[mlb]   {len(all_games)} total games, "
+              f"schedules fetched in {time.time()-t0:.1f}s", flush=True)
+
+    # 2. Collect unique (pitcher, season) pairs
+    pid_season_pairs = set()
+    for g in all_games:
+        s_year = int(g["date"][:4])
+        for pid in (g["home_sp_id"], g["away_sp_id"]):
+            if pid:
+                pid_season_pairs.add((pid, s_year))
+    if verbose:
+        print(f"[mlb] fetching {len(pid_season_pairs)} pitcher-season logs...",
+              flush=True)
+
+    t0 = time.time()
+    logs = _load_pitcher_gamelogs_multi(pid_season_pairs)
+    if verbose:
+        print(f"[mlb]   gameLogs fetched in {time.time()-t0:.1f}s", flush=True)
+
+    # 3. Walk forward
+    elo = {}
+    predictions = []
+    per_season = {s: {"n": 0, "correct": 0, "ll": 0.0, "brier": 0.0} for s in seasons[warmup_seasons:]}
+    seasons_seen = set()
+
+    for g in all_games:
+        s_year = int(g["date"][:4])
+        if s_year not in seasons_seen and seasons_seen:
+            # Season boundary: regress team Elo toward 1500 by 1/3
+            for t in list(elo.keys()):
+                elo[t] = INITIAL_ELO + (2.0 / 3.0) * (elo[t] - INITIAL_ELO)
+        seasons_seen.add(s_year)
+
+        h = g["home_id"]
+        a = g["away_id"]
+        elo.setdefault(h, INITIAL_ELO)
+        elo.setdefault(a, INITIAL_ELO)
+
+        home_sp = pitcher_stats_asof(
+            logs.get((g["home_sp_id"], s_year), []), g["date"]
+        ) if g["home_sp_id"] else None
+        away_sp = pitcher_stats_asof(
+            logs.get((g["away_sp_id"], s_year), []), g["date"]
+        ) if g["away_sp_id"] else None
+
+        p_home = predict_win_prob(elo[h], elo[a], home_sp, away_sp)
+
+        if s_year >= scored_from:
+            y = 1 if g["home_won"] else 0
+            ph = max(1e-6, min(1 - 1e-6, p_home))
+            correct = (ph >= 0.5) == (y == 1)
+            per_season[s_year]["n"] += 1
+            per_season[s_year]["correct"] += 1 if correct else 0
+            per_season[s_year]["ll"] -= y * math.log(ph) + (1 - y) * math.log(1 - ph)
+            per_season[s_year]["brier"] += (ph - y) ** 2
+            predictions.append({
+                "season": s_year,
+                "date": g["date"],
+                "home": g["home_name"], "away": g["away_name"],
+                "home_id": h, "away_id": a,
+                "home_sp": g["home_sp_name"], "away_sp": g["away_sp_name"],
+                "p_home": p_home, "home_won": g["home_won"],
+                "home_score": g["home_score"], "away_score": g["away_score"],
+            })
+
+        elo[h], elo[a] = elo_update(
+            elo[h], elo[a], g["home_won"], g["home_score"], g["away_score"]
+        )
+
+    for s, stat in per_season.items():
+        if stat["n"] > 0:
+            stat["accuracy"] = stat["correct"] / stat["n"]
+            stat["log_loss"] = stat["ll"] / stat["n"]
+            stat["brier"] = stat["brier"] / stat["n"]
+        else:
+            stat["accuracy"] = stat["log_loss"] = stat["brier"] = None
+
+    team_names = {g["home_id"]: g["home_name"] for g in all_games}
+    team_names.update({g["away_id"]: g["away_name"] for g in all_games})
+
+    return {
+        "first_season": first,
+        "last_season": end_season,
+        "num_seasons": num_seasons,
+        "warmup_seasons": warmup_seasons,
+        "scored_from_season": scored_from,
+        "total_games": len(all_games),
+        "scored_games": len(predictions),
+        "per_season": per_season,
+        "predictions": predictions,
+        "final_elo": {str(tid): round(e, 1) for tid, e in elo.items()},
+        "team_names": {str(tid): team_names.get(tid, "") for tid in team_names},
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "hyperparams": {
+            "K": K_FACTOR, "HFA": HFA,
+            "ERA_WEIGHT": ERA_WEIGHT, "WHIP_WEIGHT": WHIP_WEIGHT,
+            "IP_FULL": IP_FULL,
+            "LEAGUE_ERA": LEAGUE_ERA, "LEAGUE_WHIP": LEAGUE_WHIP,
+        },
+    }
+
+
+def get_or_run_multi_season_backtest(refresh=False, end_season=None, verbose=False):
+    if not refresh and os.path.exists(MULTI_CACHE_FILE):
+        try:
+            with open(MULTI_CACHE_FILE) as f:
+                data = json.load(f)
+            gen = datetime.fromisoformat(data.get("generated_at", "1970-01-01"))
+            if (datetime.now() - gen) < timedelta(hours=CACHE_MAX_AGE_H):
+                return data
+        except (json.JSONDecodeError, ValueError, KeyError):
+            pass
+    if end_season is None:
+        end_season = _pick_season()
+    result = run_multi_season_backtest(end_season, verbose=verbose)
+    result["metrics"] = compute_metrics(result["predictions"])
+    with open(MULTI_CACHE_FILE, "w") as f:
+        json.dump(result, f)
+    return result
+
+
+# ============================================================================
 # CLI
 # ============================================================================
 

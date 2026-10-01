@@ -226,13 +226,17 @@ def sp_stats_for_model(stat):
 # ============================================================================
 
 def get_model_state():
-    """Load fitted model state (Elo ratings + backtest results)."""
+    """Load fitted model state (Elo ratings + backtest results).
+
+    Uses the 12-season multi-season fit so live predictions get team Elo
+    informed by a decade of history rather than one season of noise.
+    """
     key = ("model_state",)
     def _f():
         try:
-            return mlb_model.get_or_run_backtest()
+            return mlb_model.get_or_run_multi_season_backtest()
         except Exception as e:
-            print(f"[warn] model unavailable: {e}", flush=True)
+            print(f"[warn] mlb model unavailable: {e}", flush=True)
             return None
     return _cached(key, 60 * 60, _f)
 
@@ -1506,12 +1510,14 @@ svg.calib { max-width: 100%; height: auto; }
   {% else %}
 
   <div class="hero-block">
-    <h1>The model, and how it did.</h1>
+    <h1>MLB model &middot; 12-season backtest</h1>
     <p class="sub">
-      An Elo rating model, warm-started across the full {{ state.season }} regular season, with a
-      pregame adjustment for each starting pitcher's season-to-date ERA and WHIP.
-      Predictions are made <em>before</em> each game using only stats that would have been available at first pitch.
-      The final {{ state.score_last_n_days }} days are scored against actual outcomes below.
+      An Elo rating model with a pregame starting-pitcher adjustment (season-to-date ERA and WHIP vs league,
+      weighted by workload). Fit chronologically across <strong>{{ state.first_season }}&ndash;{{ state.last_season }}</strong>
+      ({{ state.num_seasons }} seasons, {{ state.total_games }} regular-season games). Team Elo regresses toward 1500 by 1/3
+      at each season boundary; pitcher stats reset per season. Predictions are logged <em>before</em> each game using
+      only stats available pre-first-pitch; the first {{ state.warmup_seasons }} seasons are pure warm-up and the remaining
+      <strong>{{ state.last_season - state.scored_from_season + 1 }} seasons are scored</strong> against actual outcomes below.
     </p>
   </div>
 
@@ -1537,7 +1543,7 @@ svg.calib { max-width: 100%; height: auto; }
     <div class="metric">
       <div class="label">Scored games</div>
       <div class="value">{{ m.n }}</div>
-      <div class="foot">{{ state.score_from }} &rarr; {{ state.score_to }}</div>
+      <div class="foot">seasons {{ state.scored_from_season }} &rarr; {{ state.last_season }}</div>
     </div>
     {% if m.record_baseline_accuracy is not none %}
     <div class="metric">
@@ -1568,6 +1574,33 @@ svg.calib { max-width: 100%; height: auto; }
       <div class="item"><div class="k">ERA weight</div><div class="v">{{ state.hyperparams.ERA_WEIGHT|int }} Elo / 1 ERA</div><div class="expl">vs league {{ state.hyperparams.LEAGUE_ERA }}</div></div>
       <div class="item"><div class="k">WHIP weight</div><div class="v">{{ state.hyperparams.WHIP_WEIGHT|int }} Elo / 1 WHIP</div><div class="expl">vs league {{ state.hyperparams.LEAGUE_WHIP }}</div></div>
       <div class="item"><div class="k">IP full weight</div><div class="v">{{ state.hyperparams.IP_FULL|int }} IP</div><div class="expl">Workload for full pitcher adjustment</div></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Per-season breakdown</h2>
+    <p class="lead">
+      Model performance for each scored season. MLB is famously hard to predict and sits around
+      55&ndash;59% accuracy across sharp models. 2020's short COVID season (900 games) is included
+      but noisier.
+    </p>
+    <div class="table-scroll">
+    <table class="calib-table">
+      <thead><tr>
+        <th>Season</th><th>Games</th><th>Accuracy</th><th>Log loss</th><th>Brier</th>
+      </tr></thead>
+      <tbody>
+        {% for r in per_season_rows %}
+        <tr>
+          <td>{{ r.season }}</td>
+          <td>{{ r.n }}</td>
+          <td>{{ (r.accuracy * 100)|round(2) }}%</td>
+          <td>{{ '%.4f'|format(r.log_loss) }}</td>
+          <td>{{ '%.4f'|format(r.brier) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
     </div>
   </div>
 
@@ -1772,35 +1805,59 @@ def index():
 
 @app.route("/backtest")
 def backtest():
-    if request.args.get("refresh"):
-        _cache.pop(("model_state",), None)
-        try:
-            state = mlb_model.get_or_run_backtest(refresh=True)
-            _cache[("model_state",)] = (state, time.time())
-        except Exception as e:
-            state = None
-    else:
-        state = get_model_state()
+    try:
+        if request.args.get("refresh"):
+            state = mlb_model.get_or_run_multi_season_backtest(refresh=True)
+        else:
+            state = mlb_model.get_or_run_multi_season_backtest()
+    except Exception:
+        state = None
 
     if not state:
         return render_template_string(
             BACKTEST_TEMPLATE,
             fonts_link=FONTS_LINK,
             shared_style=SHARED_STYLE,
+            sport_strip=render_sport_strip("mlb"),
             state=None, m=None,
             top_elo=[], bottom_elo=[],
+            per_season_rows=[],
             sample_preds=[],
             calibration_svg="",
         )
 
     m = state.get("metrics") or mlb_model.compute_metrics(state["predictions"])
 
-    elo_items = sorted(
-        state["final_elo"].items(),
-        key=lambda kv: -kv[1],
-    )
-    top_elo = [(tid, r, state["final_wl"].get(tid, [0, 0])) for tid, r in elo_items[:15]]
-    bottom_elo = [(tid, r, state["final_wl"].get(tid, [0, 0])) for tid, r in elo_items[15:]]
+    # Compute last-season W-L from predictions for the Final Elo display
+    last_season = state["last_season"]
+    final_wl = {}
+    for p in state["predictions"]:
+        if p["season"] != last_season:
+            continue
+        h, a = str(p["home_id"]), str(p["away_id"])
+        final_wl.setdefault(h, [0, 0])
+        final_wl.setdefault(a, [0, 0])
+        if p["home_won"]:
+            final_wl[h][0] += 1
+            final_wl[a][1] += 1
+        else:
+            final_wl[h][1] += 1
+            final_wl[a][0] += 1
+
+    elo_items = sorted(state["final_elo"].items(), key=lambda kv: -kv[1])
+    top_elo = [(tid, r, final_wl.get(tid, [0, 0])) for tid, r in elo_items[:15]]
+    bottom_elo = [(tid, r, final_wl.get(tid, [0, 0])) for tid, r in elo_items[15:]]
+
+    per_season_rows = []
+    for s in sorted(state["per_season"]):
+        st = state["per_season"][s]
+        if st.get("n"):
+            per_season_rows.append({
+                "season": s, "n": st["n"],
+                "accuracy": st["accuracy"],
+                "log_loss": st["log_loss"],
+                "brier": st["brier"],
+            })
 
     sample_preds = state["predictions"][-30:]
 
@@ -1813,6 +1870,7 @@ def backtest():
         m=m,
         top_elo=top_elo,
         bottom_elo=bottom_elo,
+        per_season_rows=per_season_rows,
         sample_preds=sample_preds,
         calibration_svg=render_calibration_svg(m.get("calibration") or []),
     )
