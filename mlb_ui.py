@@ -28,6 +28,8 @@ from flask import Flask, Response, render_template_string, request
 
 import mlb_model
 import mlb_odds
+import generic_odds
+import sports
 
 EASTERN = ZoneInfo("America/New_York")
 
@@ -531,6 +533,37 @@ header {
 .nav-tab:hover { color: var(--ink); background: var(--surface); }
 .nav-tab.active { color: var(--ink); border-color: var(--rule-strong); background: var(--card); }
 
+/* ----- sport switcher strip ----- */
+.sport-strip {
+  border-bottom: 1px solid var(--rule);
+  background: color-mix(in oklab, var(--surface) 60%, var(--bg));
+}
+.sport-strip-inner {
+  display: flex; align-items: center; gap: 4px;
+  padding: 10px 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.sport-pill {
+  padding: 6px 14px; border-radius: 999px;
+  color: var(--muted); text-decoration: none;
+  font-size: 12px; font-weight: 500;
+  border: 1px solid transparent;
+  white-space: nowrap;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+.sport-pill:hover { color: var(--ink); background: var(--card); }
+.sport-pill.active {
+  color: var(--ink); background: var(--card);
+  border-color: var(--ink);
+  font-weight: 600;
+}
+.sport-pill .lbl-sub {
+  margin-left: 6px; font-weight: 400; color: var(--muted-2);
+  font-family: "JetBrains Mono", monospace; font-size: 10px;
+  letter-spacing: 0.08em; text-transform: uppercase;
+}
+
 .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .btn, input[type=date] {
   height: 36px;
@@ -589,6 +622,16 @@ FONTS_LINK = (
     '&family=Public+Sans:wght@400;500;600;700'
     '&family=JetBrains+Mono:wght@400;500&display=swap">'
 )
+
+
+def render_sport_strip(active_slug):
+    parts = ['<div class="sport-strip"><div class="wrap sport-strip-inner">']
+    for sp in sports.SPORTS:
+        cls = "sport-pill active" if sp["slug"] == active_slug else "sport-pill"
+        href = "/" if sp["slug"] == "mlb" else f"/sport/{sp['slug']}"
+        parts.append(f'<a class="{cls}" href="{href}">{sp["name"]}</a>')
+    parts.append('</div></div>')
+    return "".join(parts)
 
 
 # ============================================================================
@@ -887,6 +930,8 @@ INDEX_TEMPLATE = r"""<!doctype html>
     </form>
   </div>
 </header>
+
+{{ sport_strip|safe }}
 
 <main class="wrap reveal">
   <div class="hero">
@@ -1258,6 +1303,8 @@ svg.calib { max-width: 100%; height: auto; }
   </div>
 </header>
 
+{{ sport_strip|safe }}
+
 <main class="wrap reveal">
   {% if not state %}
   <div class="error"><strong>Model not yet fit.</strong> Try again in a moment or click Refit.</div>
@@ -1514,6 +1561,7 @@ def index():
         INDEX_TEMPLATE,
         fonts_link=FONTS_LINK,
         shared_style=SHARED_STYLE,
+        sport_strip=render_sport_strip("mlb"),
         games=games,
         date_str=date_str,
         date_pretty=date_pretty,
@@ -1565,6 +1613,7 @@ def backtest():
         BACKTEST_TEMPLATE,
         fonts_link=FONTS_LINK,
         shared_style=SHARED_STYLE,
+        sport_strip=render_sport_strip("mlb"),
         state=state,
         m=m,
         top_elo=top_elo,
@@ -1779,6 +1828,8 @@ EDGES_TEMPLATE = r"""<!doctype html>
   </div>
 </header>
 
+{{ sport_strip|safe }}
+
 <main class="wrap reveal">
   <div class="hero">
     <h1>Positive-EV plays &middot; {{ date_pretty }}</h1>
@@ -1954,6 +2005,7 @@ def edges():
         EDGES_TEMPLATE,
         fonts_link=FONTS_LINK,
         shared_style=SHARED_STYLE,
+        sport_strip=render_sport_strip("mlb"),
         date_str=date_str,
         date_pretty=d.strftime("%A, %B %d").replace(" 0", " "),
         prev_date=(d - timedelta(days=1)).isoformat(),
@@ -2074,6 +2126,8 @@ MARKET_TEMPLATE = r"""<!doctype html>
   </div>
 </header>
 
+{{ sport_strip|safe }}
+
 <main class="wrap reveal">
   <div class="hero">
     <h1>Market context &middot; {{ date_pretty }}</h1>
@@ -2142,25 +2196,6 @@ MARKET_TEMPLATE = r"""<!doctype html>
         </div>
       </div>
       {% endfor %}
-    </div>
-  </div>
-
-  <div class="section">
-    <h2>About retail splits (public bet %)</h2>
-    <div class="splits-note">
-      <strong>Why there's no public bet% table here:</strong> ScoresAndOdds and VegasInsider load their
-      splits via client-side JavaScript, so plain HTTP scraping returns no data without running a headless
-      browser (fragile and against their terms).<br><br>
-      <strong>Paid options in your budget:</strong>
-      <ul>
-        <li><strong>The Odds API</strong> ($30/mo Starter) &mdash; sportsbook odds across DK/FD/BetMGM/Caesars.
-          Doesn't include public bet%, but gives you shop-the-best-price. Set <code>ODDS_API_KEY</code> env var
-          to activate the integration already scaffolded in <code>mlb_odds.py</code>.</li>
-        <li><strong>SportsGameOdds</strong> (~$10-20/mo pay-as-you-go) &mdash; similar scope.</li>
-      </ul>
-      <strong>Not in budget:</strong> ActionNetwork, BetQL, SharpSide all run $50-100/mo &mdash; those are
-      what carry real public betting splits. If you ever subscribe, the data pattern is the same (fetch per
-      game, show bet% + money%) and plugging it in would be ~50 lines of code.
     </div>
   </div>
 
@@ -2248,6 +2283,7 @@ def market():
         MARKET_TEMPLATE,
         fonts_link=FONTS_LINK,
         shared_style=SHARED_STYLE,
+        sport_strip=render_sport_strip("mlb"),
         date_str=date_str,
         date_pretty=d.strftime("%A, %B %d").replace(" 0", " "),
         prev_date=(d - timedelta(days=1)).isoformat(),
@@ -2256,6 +2292,325 @@ def market():
         is_today=(date_str == today),
         limits_rows=limits_rows,
         futures_top=futures_top,
+        now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
+    )
+
+
+# ============================================================================
+# Generic sport page (NFL, UFC, EPL, La Liga, Liga MX, UCL, Europa, Int'l)
+# ============================================================================
+
+SPORT_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>First Pitch &mdash; {{ sport.name }}</title>
+{{ fonts_link|safe }}
+<style>
+{{ shared_style|safe }}
+
+.hero { padding-bottom: 20px; margin-bottom: 24px; border-bottom: 1px solid var(--rule); }
+.hero h1 {
+  font-family: "Fraunces", Georgia, serif;
+  font-style: italic; font-weight: 400;
+  font-size: clamp(32px, 5vw, 48px);
+  line-height: 1.05; letter-spacing: -0.02em;
+  margin: 0 0 8px; font-variation-settings: "opsz" 144;
+}
+.hero .sub { color: var(--muted); max-width: 760px; font-size: 13.5px; line-height: 1.55; }
+
+.summary {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin-bottom: 20px;
+}
+.summary .metric {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: 10px; padding: 14px 16px;
+}
+.summary .label {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--muted); margin-bottom: 6px;
+}
+.summary .value {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 24px; font-weight: 500; color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.summary .value.good { color: var(--good); }
+
+.filter-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 16px; }
+.filter-chips .chip {
+  padding: 6px 12px; border-radius: 999px;
+  border: 1px solid var(--rule-strong);
+  background: var(--surface); color: var(--muted);
+  font-size: 12px; font-weight: 500; text-decoration: none;
+}
+.filter-chips .chip:hover { color: var(--ink); background: var(--card); }
+.filter-chips .chip.active { color: var(--ink); background: var(--card); border-color: var(--ink); }
+
+.bets {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: 12px; overflow: hidden;
+}
+.bets table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.bets th {
+  text-align: left; padding: 12px 14px;
+  background: var(--surface); color: var(--muted);
+  font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+  font-weight: 500; border-bottom: 1px solid var(--rule);
+}
+.bets td { padding: 10px 14px; border-bottom: 1px solid var(--rule); vertical-align: middle; }
+.bets tr:last-child td { border-bottom: none; }
+.bets tr.pos { background: color-mix(in oklab, var(--good) 6%, transparent); }
+.bets tr.pos.strong { background: color-mix(in oklab, var(--good) 14%, transparent); }
+.bets .num {
+  font-family: "JetBrains Mono", monospace;
+  font-variant-numeric: tabular-nums; text-align: right;
+}
+.bets .pick { font-weight: 500; color: var(--ink); }
+.bets .matchup { color: var(--muted); }
+.bets .matchup b { color: var(--ink); font-weight: 500; }
+
+.mkt-pill {
+  display: inline-block;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px; letter-spacing: 0.08em;
+  text-transform: uppercase; font-weight: 500;
+  padding: 2px 8px; border-radius: 4px;
+  background: var(--chip-bg); color: var(--muted);
+  border: 1px solid var(--rule); white-space: nowrap;
+}
+.mkt-pill.mkt-ml       { color: var(--accent); border-color: color-mix(in oklab, var(--accent) 40%, var(--rule)); }
+.mkt-pill.mkt-total    { color: var(--warn);   border-color: color-mix(in oklab, var(--warn) 40%, var(--rule)); }
+.mkt-pill.mkt-spread, .mkt-pill.mkt-run_line { color: var(--good); border-color: color-mix(in oklab, var(--good) 40%, var(--rule)); }
+.mkt-pill.mkt-1h_ml, .mkt-pill.mkt-1h_spread, .mkt-pill.mkt-1h_total {
+  background: color-mix(in oklab, var(--muted) 15%, var(--chip-bg));
+}
+
+.book-pill {
+  padding: 1px 6px; border-radius: 3px;
+  font-family: "JetBrains Mono", monospace; font-size: 10px;
+  background: var(--surface); border: 1px solid var(--rule);
+  color: var(--muted);
+}
+.book-pill.pinnacle { color: var(--muted-2); }
+.book-pill.draftkings { color: #1b7a4f; }
+.book-pill.fanduel    { color: #0066cc; }
+.book-pill.betmgm     { color: #a66f00; }
+.book-pill.caesars    { color: #a63329; }
+
+.ev-cell.strong { color: var(--good); font-weight: 700; }
+.ev-cell.pos    { color: var(--good); }
+.ev-cell.neg    { color: var(--muted-2); }
+
+.empty-bets {
+  padding: 60px 24px; text-align: center; color: var(--muted);
+}
+.empty-bets h2 {
+  font-family: "Fraunces", Georgia, serif;
+  font-style: italic; font-weight: 400;
+  font-size: 24px; color: var(--ink); margin: 0 0 8px;
+}
+.note {
+  background: var(--surface); border: 1px solid var(--rule);
+  border-radius: 10px; padding: 14px 18px;
+  color: var(--muted); font-size: 12.5px; line-height: 1.6;
+  margin-top: 20px; max-width: 900px;
+}
+.note strong { color: var(--ink); }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap header-row">
+    <div class="brand" style="display: flex; align-items: baseline;">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">First Pitch</span>
+    </div>
+  </div>
+</header>
+
+{{ sport_strip|safe }}
+
+<main class="wrap reveal">
+  <div class="hero">
+    <h1>{{ sport.name }} &middot; model-free edges</h1>
+    <p class="sub">
+      Positive-EV plays identified by comparing each US sportsbook's price to
+      <strong>Pinnacle's devigged fair probability</strong> &mdash; the industry
+      consensus "true" market line. No per-sport model yet; this is pure line-shopping
+      against the sharpest book.
+    </p>
+  </div>
+
+  <div class="summary">
+    <div class="metric">
+      <div class="label">Games with lines</div>
+      <div class="value">{{ game_count }}</div>
+    </div>
+    <div class="metric">
+      <div class="label">+EV plays</div>
+      <div class="value {% if positive_count %}good{% endif %}">{{ positive_count }}</div>
+    </div>
+    <div class="metric">
+      <div class="label">Strong (&ge;2%)</div>
+      <div class="value {% if strong_count %}good{% endif %}">{{ strong_count }}</div>
+    </div>
+    <div class="metric">
+      <div class="label">Odds API books</div>
+      <div class="value" style="font-size:14px;line-height:1.3">{{ 'DK/FD/BMG/C' if odds_api_available else 'Pinnacle only' }}</div>
+    </div>
+  </div>
+
+  <div class="filter-chips">
+    {% set mkts = available_markets %}
+    <a class="chip {% if market_filter == 'ALL' %}active{% endif %}" href="/sport/{{ sport.slug }}">All</a>
+    {% for mk, lab in mkts %}
+      <a class="chip {% if market_filter == mk %}active{% endif %}" href="/sport/{{ sport.slug }}?market={{ mk|lower }}">{{ lab }}</a>
+    {% endfor %}
+    <a class="chip {% if show == 'pos' %}active{% endif %}" href="/sport/{{ sport.slug }}?market={{ market_filter|lower }}&show=pos">+EV only</a>
+  </div>
+
+  <div class="bets">
+    {% if rows %}
+    <table>
+      <thead>
+        <tr>
+          <th>Market</th>
+          <th>Game</th>
+          <th>Pick</th>
+          <th class="num">Fair</th>
+          <th class="num">Pin price</th>
+          <th class="num">Best price</th>
+          <th>Book</th>
+          <th class="num">EV</th>
+          <th class="num">Stake 1/4K</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr class="{% if r.ev_pct >= 2 %}pos strong{% elif r.ev_pct > 0 %}pos{% endif %}">
+          <td><span class="mkt-pill mkt-{{ r.market|replace(' ','_')|lower }}">{{ r.market }}</span></td>
+          <td class="matchup"><b>{{ r.away }}</b> at <b>{{ r.home }}</b><br>
+            <small style="font-size:11px">{{ r.start_time_et }}</small></td>
+          <td class="pick">{{ r.pick }}</td>
+          <td class="num">{{ (r.fair_prob * 100)|round(1) }}%</td>
+          <td class="num">
+            {% if r.pin_american is not none %}
+              {{ ('+' if r.pin_american > 0 else '') ~ r.pin_american }}
+              <span style="color:var(--muted-2)">({{ '%.2f'|format(r.pin_decimal) }})</span>
+            {% else %}&mdash;{% endif %}
+          </td>
+          <td class="num">
+            {% if r.book_american is not none %}
+              {{ ('+' if r.book_american > 0 else '') ~ r.book_american }}
+              <span style="color:var(--muted-2)">({{ '%.2f'|format(r.book_decimal) }})</span>
+            {% else %}&mdash;{% endif %}
+          </td>
+          <td><span class="book-pill {{ r.book }}">{{ r.book }}</span></td>
+          <td class="num ev-cell {% if r.ev_pct >= 2 %}strong{% elif r.ev_pct > 0 %}pos{% else %}neg{% endif %}">
+            {{ '%+.2f'|format(r.ev_pct) }}%
+          </td>
+          <td class="num">{{ '%.1f'|format(r.kelly_pct) }}%</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty-bets">
+      <h2>No bets to show.</h2>
+      <p>{% if game_count %}The current filter has no matches.{% else %}Pinnacle hasn't posted this slate yet.{% endif %}</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="note">
+    <strong>How this works:</strong> Pinnacle has the lowest vig in the industry; after devigging
+    its two-way (or three-way, for soccer) market we treat the result as a close estimate of the
+    "true" probability. Each US book is then compared against that fair probability using
+    <code>EV = fair &middot; book_decimal &minus; 1</code>. Rows where no US book has posted get
+    Pinnacle's own price in the Best column (which, by construction, will be slightly negative EV).
+    {% if sport.has_halves %}<br><br>
+    <strong>1H markets:</strong> First-half lines from Pinnacle's period&nbsp;1 markets.
+    {% endif %}
+  </div>
+
+  <footer>
+    <div>Pinnacle leagueId={{ sport.pinnacle_league_id }} &middot; {% if sport.odds_api_key %}Odds API key: <code>{{ sport.odds_api_key }}</code>{% else %}no Odds API key for this league{% endif %}</div>
+    <div>updated {{ now }}</div>
+  </footer>
+</main>
+</body>
+</html>
+"""
+
+
+def _format_et(iso_utc):
+    if not iso_utc:
+        return ""
+    try:
+        dt = datetime.fromisoformat(iso_utc.replace("Z", "+00:00")).astimezone(EASTERN)
+        return dt.strftime("%a %b %d, %I:%M %p ET").replace(" 0", " ")
+    except (ValueError, TypeError):
+        return iso_utc
+
+
+@app.route("/sport/<slug>")
+def sport_page(slug):
+    sport = sports.by_slug(slug)
+    if not sport or sport.get("dedicated"):
+        from flask import redirect
+        return redirect("/", code=302)
+
+    market_filter = (request.args.get("market") or "all").upper()
+    show = request.args.get("show") or "all"
+
+    try:
+        games = generic_odds.build_sport_games(sport)
+    except Exception as e:
+        games = []
+
+    rows = []
+    for g in games:
+        for b in g.get("bets") or []:
+            mk_key = b["market"].upper().replace(" ", "_")
+            if market_filter != "ALL" and market_filter != mk_key:
+                continue
+            if show == "pos" and b["ev_pct"] <= 0:
+                continue
+            rows.append({**b,
+                         "away": g["away_name"], "home": g["home_name"],
+                         "start_time_et": _format_et(g.get("start_time"))})
+    rows.sort(key=lambda r: -r["ev_pct"])
+    positive_count = sum(1 for r in rows if r["ev_pct"] > 0)
+    strong_count = sum(1 for r in rows if r["ev_pct"] >= 2.0)
+
+    # Available market chips depend on sport
+    markets_meta = [("ML", "Moneyline"), ("TOTAL", "Total")]
+    if sport.get("spread_label"):
+        markets_meta.insert(1, ("SPREAD", sport["spread_label"]))
+    else:
+        markets_meta.insert(1, ("SPREAD", "Spread"))
+    if sport.get("has_halves"):
+        markets_meta += [("1H_ML", "1H ML"), ("1H_SPREAD", "1H Spread"), ("1H_TOTAL", "1H Total")]
+
+    return render_template_string(
+        SPORT_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        sport_strip=render_sport_strip(slug),
+        sport=sport,
+        rows=rows,
+        game_count=len(games),
+        positive_count=positive_count,
+        strong_count=strong_count,
+        odds_api_available=generic_odds.odds_api_available(),
+        market_filter=market_filter,
+        available_markets=markets_meta,
+        show=show,
         now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
     )
 
