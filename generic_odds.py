@@ -381,16 +381,15 @@ def build_sport_games(sport, model_prob_fn=None):
                 p_a = american_to_prob(ml["away_am"])
                 home_fair, away_fair = devig_two_sided(p_h, p_a)
 
-            # Model override for fair probabilities (NFL)
-            if model_prob_fn:
-                mp = model_prob_fn(g)
-                if mp:
-                    if mp.get("home") is not None:
-                        home_fair = mp["home"]
-                    if mp.get("away") is not None:
-                        away_fair = mp["away"]
-                    if mp.get("draw") is not None:
-                        draw_fair = mp["draw"]
+            # NOTE on model probabilities: we previously used the model's
+            # win-prob to override Pinnacle devig as the "fair" input to EV.
+            # In practice that produced misleading double-digit EV numbers on
+            # longshot ML lines because small fair-prob shifts multiply by
+            # large decimal odds. Pinnacle devig is a more reliable anchor
+            # (it incorporates injuries/weather/sharp money). We still expose
+            # the model via /sport/nfl/backtest and attach model_prob to each
+            # game record so a dedicated "model view" could use it later.
+            g["model_prob"] = model_prob_fn(g) if model_prob_fn else None
 
             # Odds API h2h outcome names come as team names
             def pick_name(side):

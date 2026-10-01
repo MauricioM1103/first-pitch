@@ -599,6 +599,25 @@ header {
   letter-spacing: 0.08em; text-transform: uppercase;
 }
 
+.theme-toggle {
+  margin-left: auto; flex-shrink: 0;
+  width: 32px; height: 32px; border-radius: 999px;
+  border: 1px solid var(--rule-strong);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 15px; cursor: pointer; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+.theme-toggle:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 10px var(--accent-glow);
+}
+.theme-toggle:focus-visible {
+  outline: 2px solid var(--focus); outline-offset: 2px;
+}
+
 .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .btn, input[type=date] {
   height: 36px;
@@ -650,7 +669,19 @@ footer {
 
 /* ===== neon / gaming accents ===== */
 .brand-mark {
-  box-shadow: 0 0 10px var(--accent-glow);
+  box-shadow: 0 0 10px var(--accent-glow),
+              0 0 20px var(--accent-glow);
+  animation: pulse 2.4s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% {
+    box-shadow: 0 0 8px var(--accent-glow), 0 0 16px var(--accent-glow);
+    transform: translateY(-2px) scale(1);
+  }
+  50% {
+    box-shadow: 0 0 14px var(--accent-glow), 0 0 28px var(--accent-glow);
+    transform: translateY(-2px) scale(1.15);
+  }
 }
 .brand-name {
   text-shadow: 0 0 0 transparent;
@@ -658,7 +689,7 @@ footer {
 :root[data-theme="dark"] .brand-name,
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .brand-name {
-    text-shadow: 0 0 18px rgba(255, 77, 106, 0.12);
+    text-shadow: 0 0 18px rgba(255, 77, 106, 0.14);
   }
 }
 .nav-tab.active {
@@ -741,7 +772,7 @@ footer {
 .bets tr.pos.strong td.num.ev-cell { color: var(--good); }
 """
 
-FONTS_LINK = (
+_FONTS = (
     '<link rel="preconnect" href="https://fonts.googleapis.com">'
     '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
     '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?'
@@ -749,6 +780,8 @@ FONTS_LINK = (
     '&family=Public+Sans:wght@400;500;600;700'
     '&family=JetBrains+Mono:wght@400;500&display=swap">'
 )
+# Injected into every template's <head> via {{ fonts_link|safe }}
+FONTS_LINK = _FONTS  # keep historical name; THEME_SCRIPT appended below
 
 
 def render_sport_strip(active_slug):
@@ -757,8 +790,43 @@ def render_sport_strip(active_slug):
         cls = "sport-pill active" if sp["slug"] == active_slug else "sport-pill"
         href = "/" if sp["slug"] == "mlb" else f"/sport/{sp['slug']}"
         parts.append(f'<a class="{cls}" href="{href}">{sp["name"]}</a>')
+    # Theme toggle at the far right
+    parts.append(
+        '<button class="theme-toggle" onclick="toggleTheme()" '
+        'title="Toggle dark / light theme" aria-label="Toggle theme">'
+        '<span id="theme-icon">☽</span></button>'
+    )
     parts.append('</div></div>')
     return "".join(parts)
+
+
+THEME_SCRIPT = r"""
+<script>
+// Apply saved theme BEFORE first paint to avoid flash.
+(function(){
+  try {
+    var t = localStorage.getItem('theme');
+    if (t === 'dark' || t === 'light') {
+      document.documentElement.setAttribute('data-theme', t);
+    }
+  } catch (e) {}
+})();
+function toggleTheme(){
+  var cur = document.documentElement.getAttribute('data-theme');
+  if (!cur) {
+    // No explicit setting yet — use OS preference as the starting point.
+    cur = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  var next = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  try { localStorage.setItem('theme', next); } catch (e) {}
+  var icon = document.getElementById('theme-icon');
+  if (icon) icon.textContent = next === 'dark' ? '☼' : '☽';
+}
+</script>
+"""
+# Append the theme script so every template that injects FONTS_LINK gets it.
+FONTS_LINK = _FONTS + THEME_SCRIPT
 
 
 # ============================================================================
@@ -2491,8 +2559,14 @@ SPORT_TEMPLATE = r"""<!doctype html>
 }
 .bets td { padding: 10px 14px; border-bottom: 1px solid var(--rule); vertical-align: middle; }
 .bets tr:last-child td { border-bottom: none; }
-.bets tr.pos { background: color-mix(in oklab, var(--good) 6%, transparent); }
-.bets tr.pos.strong { background: color-mix(in oklab, var(--good) 14%, transparent); }
+.bets tr.pos {
+  background: color-mix(in oklab, var(--good) 10%, transparent);
+  box-shadow: inset 3px 0 0 color-mix(in oklab, var(--good) 60%, transparent);
+}
+.bets tr.pos.strong {
+  background: color-mix(in oklab, var(--good) 20%, transparent);
+  box-shadow: inset 3px 0 0 var(--good);
+}
 .bets .num {
   font-family: "JetBrains Mono", monospace;
   font-variant-numeric: tabular-nums; text-align: right;
@@ -2564,15 +2638,17 @@ SPORT_TEMPLATE = r"""<!doctype html>
 
 <main class="wrap reveal">
   <div class="hero">
-    <h1>{{ sport.name }} &middot; {% if has_model %}model edges{% else %}model-free edges{% endif %}</h1>
+    <h1>{{ sport.name }} &middot; edges</h1>
     <p class="sub">
-      {% if has_model %}
-      Positive-EV plays using the {{ sport.name }} Elo model (team rating blended with starting-QB rating) as the "fair" probability for moneyline. Model fits walk-forward across the regular season with no look-ahead &mdash; see the <a href="/sport/{{ sport.slug }}/backtest" style="color:var(--accent);text-decoration:underline">backtest &rarr;</a> for accuracy, calibration, and QB rankings. Totals and spreads still use Pinnacle devig.
-      {% else %}
       Positive-EV plays identified by comparing each US sportsbook's price to
       <strong>Pinnacle's devigged fair probability</strong> &mdash; the industry
-      consensus "true" market line. No per-sport model yet; this is pure line-shopping
-      against the sharpest book.
+      consensus "true" market line.
+      {% if has_model %}
+      A dedicated {{ sport.name }} Elo+QB model is available in the
+      <a href="/sport/{{ sport.slug }}/backtest" style="color:var(--accent);text-decoration:underline">backtest &rarr;</a>
+      (accuracy, calibration, QB rankings) but it does not drive the EV below &mdash; longshot
+      model/market disagreements inflate EV past realistic levels, so the fair column stays on
+      Pinnacle.
       {% endif %}
     </p>
     {% if has_model %}
@@ -2618,7 +2694,7 @@ SPORT_TEMPLATE = r"""<!doctype html>
           <th>Market</th>
           <th>Game</th>
           <th>Pick</th>
-          <th class="num">{% if has_model %}Model{% else %}Fair{% endif %}</th>
+          <th class="num">Fair</th>
           <th class="num">Pin price</th>
           <th class="num">Best price</th>
           <th>Book</th>
