@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo
 from flask import Flask, Response, render_template_string, request
 
 import mlb_model
+import mlb_odds
 
 EASTERN = ZoneInfo("America/New_York")
 
@@ -393,6 +394,13 @@ def get_games(date_str):
         p_home_pct = round(p_home * 100) if p_home is not None else None
         p_away_pct = (100 - p_home_pct) if p_home_pct is not None else None
 
+        # ---- ODDS (Pinnacle fair + bettable price; Odds API if available) ----
+        odds = mlb_odds.build_game_odds(
+            away_bundle["team_full"],
+            home_bundle["team_full"],
+            model_prob_home=p_home,
+        )
+
         games.append({
             "first_pitch": first_pitch,
             "sort_key": dt or datetime.max.replace(tzinfo=EASTERN),
@@ -413,6 +421,7 @@ def get_games(date_str):
             "p_away_pct": p_away_pct,
             "favors_home": (p_home is not None and p_home >= 0.5),
             "game_pk": game.get("gamePk"),
+            "odds": odds,
         })
     games.sort(key=lambda g: g["sort_key"])
     return games
@@ -699,6 +708,59 @@ INDEX_TEMPLATE = r"""<!doctype html>
   padding: 6px 0;
 }
 
+/* ----- ODDS COMPARISON ----- */
+.odds-block {
+  border-top: 1px dashed var(--rule);
+  padding-top: 14px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.odds-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px;
+}
+.odds-head .limit {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px; color: var(--muted-2); letter-spacing: 0.06em;
+}
+.odds-table {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto auto;
+  gap: 4px 10px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11.5px; font-variant-numeric: tabular-nums;
+  align-items: center;
+}
+.odds-table .hd {
+  color: var(--muted-2); font-size: 9.5px;
+  letter-spacing: 0.08em; text-transform: uppercase;
+}
+.odds-table .side-name { color: var(--ink); font-weight: 500; font-size: 12px; }
+.odds-table .model, .odds-table .fair, .odds-table .price { color: var(--muted); }
+.odds-table .ev { font-weight: 500; text-align: right; }
+.odds-table .ev.pos { color: var(--good); }
+.odds-table .ev.pos.strong {
+  color: var(--good);
+  background: color-mix(in oklab, var(--good) 14%, transparent);
+  padding: 1px 6px; border-radius: 4px;
+}
+.odds-table .ev.neg { color: var(--muted-2); }
+.odds-no-odds {
+  font-size: 12px; color: var(--muted-2); font-style: italic;
+}
+.ev-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 6px; border-radius: 4px;
+  background: color-mix(in oklab, var(--good) 18%, transparent);
+  color: var(--good); font-weight: 600;
+}
+.book-row {
+  display: flex; justify-content: space-between;
+  padding-top: 6px; border-top: 1px dotted var(--rule);
+  font-family: "JetBrains Mono", monospace; font-size: 11px;
+  color: var(--muted);
+}
+.book-row .b { color: var(--ink); }
+
 /* ----- PITCHERS ----- */
 .pitchers {
   border-top: 1px dashed var(--rule); padding-top: 14px;
@@ -787,7 +849,9 @@ INDEX_TEMPLATE = r"""<!doctype html>
       <span class="brand-name">First Pitch</span>
       <nav class="nav-tabs">
         <a class="nav-tab active" href="/">Schedule</a>
-        <a class="nav-tab" href="/backtest">Model &amp; Backtest</a>
+        <a class="nav-tab" href="/edges">Edges</a>
+        <a class="nav-tab" href="/market">Market</a>
+        <a class="nav-tab" href="/backtest">Model</a>
       </nav>
     </div>
     <form class="controls" method="get" action="/">
@@ -877,6 +941,62 @@ INDEX_TEMPLATE = r"""<!doctype html>
         <div class="no-pred">Prediction unavailable (missing pitcher or model state)</div>
         {% endif %}
       </div>
+
+      {# ---- MARKET ODDS vs MODEL ---- #}
+      {% set o = g.odds %}
+      {% if o and o.pinnacle and o.pinnacle.moneyline and o.pinnacle.moneyline.away_am %}
+      <div class="odds-block">
+        <div class="odds-head">
+          <span class="section-label">Pinnacle Moneyline vs Model</span>
+          {% if o.pinnacle.ml_limit %}
+          <span class="limit" title="Max accepted bet — proxy for market confidence">max ${{ '{:,}'.format(o.pinnacle.ml_limit|int) }}</span>
+          {% endif %}
+        </div>
+        <div class="odds-table">
+          <span class="hd"></span>
+          <span class="hd">Model</span>
+          <span class="hd">Fair</span>
+          <span class="hd">Price</span>
+          <span class="hd">EV</span>
+
+          {% set p_fair_a = o.pin_fair.away if o.pin_fair else none %}
+          {% set p_fair_h = o.pin_fair.home if o.pin_fair else none %}
+          {% set am_a = o.pinnacle.moneyline.away_am %}
+          {% set am_h = o.pinnacle.moneyline.home_am %}
+          {% set dec_a = o.pin_decimal.away %}
+          {% set dec_h = o.pin_decimal.home %}
+          {% set ev_a = o.ev_pinnacle.away %}
+          {% set ev_h = o.ev_pinnacle.home %}
+
+          <span class="side-name">{{ g.away.team }}</span>
+          <span class="model">{{ g.p_away_pct ~ '%' if g.p_away_pct is not none else '-' }}</span>
+          <span class="fair">{{ (p_fair_a * 100)|round|int ~ '%' if p_fair_a else '-' }}</span>
+          <span class="price">{{ ('+' if am_a > 0 else '') ~ am_a }}{% if dec_a %} <span style="color:var(--muted-2)">({{ '%.2f'|format(dec_a) }})</span>{% endif %}</span>
+          <span class="ev {{ 'pos strong' if ev_a and ev_a >= 2 else ('pos' if ev_a and ev_a > 0 else 'neg') }}">
+            {{ ('%+.1f'|format(ev_a)) ~ '%' if ev_a is not none else '-' }}
+          </span>
+
+          <span class="side-name">{{ g.home.team }}</span>
+          <span class="model">{{ g.p_home_pct ~ '%' if g.p_home_pct is not none else '-' }}</span>
+          <span class="fair">{{ (p_fair_h * 100)|round|int ~ '%' if p_fair_h else '-' }}</span>
+          <span class="price">{{ ('+' if am_h > 0 else '') ~ am_h }}{% if dec_h %} <span style="color:var(--muted-2)">({{ '%.2f'|format(dec_h) }})</span>{% endif %}</span>
+          <span class="ev {{ 'pos strong' if ev_h and ev_h >= 2 else ('pos' if ev_h and ev_h > 0 else 'neg') }}">
+            {{ ('%+.1f'|format(ev_h)) ~ '%' if ev_h is not none else '-' }}
+          </span>
+        </div>
+        {% if o.odds_api_available and o.best_decimal.home and o.best_decimal.away %}
+        <div class="book-row">
+          <span>Best US book: <span class="b">{{ g.away.team }}</span> {{ '%.2f'|format(o.best_decimal.away) }} @ {{ o.best_book.away }}</span>
+          <span><span class="b">{{ g.home.team }}</span> {{ '%.2f'|format(o.best_decimal.home) }} @ {{ o.best_book.home }}</span>
+        </div>
+        {% endif %}
+      </div>
+      {% else %}
+      <div class="odds-block">
+        <div class="section-label">Pinnacle Moneyline vs Model</div>
+        <div class="odds-no-odds">Odds not available for this game</div>
+      </div>
+      {% endif %}
 
       <div class="pitchers">
         <div class="section-label">Starting Pitchers</div>
@@ -1103,7 +1223,9 @@ svg.calib { max-width: 100%; height: auto; }
       <span class="brand-name">First Pitch</span>
       <nav class="nav-tabs">
         <a class="nav-tab" href="/">Schedule</a>
-        <a class="nav-tab active" href="/backtest">Model &amp; Backtest</a>
+        <a class="nav-tab" href="/edges">Edges</a>
+        <a class="nav-tab" href="/market">Market</a>
+        <a class="nav-tab active" href="/backtest">Model</a>
       </nav>
     </div>
     <div class="controls">
@@ -1481,6 +1603,596 @@ def export_csv():
         output.getvalue(),
         mimetype="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ============================================================================
+# /edges — recommended bets with positive expected value
+# ============================================================================
+
+EDGES_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>First Pitch &mdash; Edges &mdash; {{ date_pretty }}</title>
+{{ fonts_link|safe }}
+<style>
+{{ shared_style|safe }}
+
+.hero {
+  padding-bottom: 20px; margin-bottom: 32px;
+  border-bottom: 1px solid var(--rule);
+}
+.hero h1 {
+  font-family: "Fraunces", Georgia, serif;
+  font-style: italic; font-weight: 400;
+  font-size: clamp(32px, 5vw, 48px);
+  line-height: 1.05; letter-spacing: -0.02em;
+  margin: 0 0 8px; font-variation-settings: "opsz" 144;
+}
+.hero .sub {
+  color: var(--muted); max-width: 760px; font-size: 14px; line-height: 1.6;
+}
+
+.summary {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin-bottom: 24px;
+}
+.summary .metric {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: 10px; padding: 14px 16px;
+}
+.summary .label {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--muted); margin-bottom: 6px;
+}
+.summary .value {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 24px; font-weight: 500; color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.summary .value.good { color: var(--good); }
+
+.edges {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: 12px; overflow: hidden;
+}
+.edges table {
+  width: 100%; border-collapse: collapse;
+  font-family: "Public Sans", sans-serif; font-size: 13.5px;
+}
+.edges th {
+  text-align: left; padding: 12px 14px;
+  background: var(--surface); color: var(--muted);
+  font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+  font-weight: 500; border-bottom: 1px solid var(--rule);
+}
+.edges td {
+  padding: 10px 14px; border-bottom: 1px solid var(--rule);
+  vertical-align: middle;
+}
+.edges tr:last-child td { border-bottom: none; }
+.edges tr:hover { background: color-mix(in oklab, var(--rule) 30%, transparent); }
+.edges .num {
+  font-family: "JetBrains Mono", monospace;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.edges .matchup { font-weight: 500; color: var(--ink); }
+.edges .pick { font-weight: 600; }
+.edges .ev-strong { color: var(--good); font-weight: 600; }
+.edges .ev-mild { color: var(--good); }
+
+.empty-edge {
+  padding: 60px 24px; text-align: center; color: var(--muted);
+}
+.empty-edge h2 {
+  font-family: "Fraunces", Georgia, serif;
+  font-style: italic; font-weight: 400;
+  font-size: 24px; color: var(--ink); margin: 0 0 8px;
+}
+
+.note {
+  background: var(--surface); border: 1px solid var(--rule);
+  border-radius: 10px; padding: 14px 18px;
+  color: var(--muted); font-size: 13px; line-height: 1.6;
+  margin-top: 20px; max-width: 900px;
+}
+.note strong { color: var(--ink); }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap header-row">
+    <div class="brand" style="display: flex; align-items: baseline;">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">First Pitch</span>
+      <nav class="nav-tabs">
+        <a class="nav-tab" href="/">Schedule</a>
+        <a class="nav-tab active" href="/edges">Edges</a>
+        <a class="nav-tab" href="/market">Market</a>
+        <a class="nav-tab" href="/backtest">Model</a>
+      </nav>
+    </div>
+    <form class="controls" method="get" action="/edges">
+      <a class="btn icon" href="/edges?date={{ prev_date }}" title="Previous day">&lsaquo;</a>
+      <input type="date" name="date" value="{{ date_str }}" onchange="this.form.submit()">
+      <a class="btn icon" href="/edges?date={{ next_date }}" title="Next day">&rsaquo;</a>
+      {% if not is_today %}<a class="btn" href="/edges?date={{ today }}">Today</a>{% endif %}
+    </form>
+  </div>
+</header>
+
+<main class="wrap reveal">
+  <div class="hero">
+    <h1>Positive-EV plays &middot; {{ date_pretty }}</h1>
+    <p class="sub">
+      Bets where the model's win probability exceeds the bettable (vig-included) Pinnacle price.
+      EV = (model_prob &middot; decimal_odds) &minus; 1. Suggested stake is quarter-Kelly, floored at 0.
+      This is a tool for identifying candidates, not a guarantee &mdash; the model is ~58% accurate and sample sizes per day are small.
+    </p>
+  </div>
+
+  <div class="summary">
+    <div class="metric">
+      <div class="label">Games with odds</div>
+      <div class="value">{{ games_with_odds }}</div>
+    </div>
+    <div class="metric">
+      <div class="label">Positive EV picks</div>
+      <div class="value {% if positive_count %}good{% endif %}">{{ positive_count }}</div>
+    </div>
+    <div class="metric">
+      <div class="label">Strong edges (&ge;2%)</div>
+      <div class="value {% if strong_count %}good{% endif %}">{{ strong_count }}</div>
+    </div>
+    <div class="metric">
+      <div class="label">Odds API books</div>
+      <div class="value" style="font-size:16px;line-height:1.3">{{ 'DK/FD/BMG/C' if odds_api_available else 'Pinnacle only' }}</div>
+    </div>
+  </div>
+
+  <div class="edges">
+    {% if edges %}
+    <table>
+      <thead>
+        <tr>
+          <th>Game</th>
+          <th>Pick</th>
+          <th class="num">Model</th>
+          <th class="num">Fair</th>
+          <th class="num">Pin price</th>
+          <th class="num">EV</th>
+          <th class="num">Stake (1/4 K)</th>
+          {% if odds_api_available %}<th>Best US book</th>{% endif %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in edges %}
+        <tr>
+          <td class="matchup">{{ e.away }} at {{ e.home }}<br>
+            <small style="color:var(--muted);font-size:11px">{{ e.first_pitch }}</small></td>
+          <td class="pick">{{ e.side_name }}</td>
+          <td class="num">{{ (e.model_prob * 100)|round|int }}%</td>
+          <td class="num" style="color:var(--muted)">{{ (e.fair_prob * 100)|round|int }}%</td>
+          <td class="num">
+            {{ ('+' if e.american > 0 else '') ~ e.american }}
+            <span style="color:var(--muted-2)">({{ '%.2f'|format(e.decimal) }})</span>
+          </td>
+          <td class="num {% if e.ev_pct >= 2 %}ev-strong{% else %}ev-mild{% endif %}">
+            +{{ '%.1f'|format(e.ev_pct) }}%
+          </td>
+          <td class="num">{{ '%.1f'|format(e.kelly_pct) }}%</td>
+          {% if odds_api_available %}
+          <td>
+            {% if e.best_book %}
+              {{ e.best_book }} {{ '%.2f'|format(e.best_decimal) }}
+              {% if e.ev_book_pct and e.ev_book_pct > e.ev_pct %}
+              <span style="color:var(--good);font-size:11px">&nbsp;(EV +{{ '%.1f'|format(e.ev_book_pct) }}%)</span>
+              {% endif %}
+            {% else %}&mdash;{% endif %}
+          </td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty-edge">
+      <h2>No positive-EV moneyline plays today.</h2>
+      <p>Either the market agrees with the model, or there are no games with Pinnacle odds yet.</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="note">
+    <strong>What's shown:</strong> Only full-game moneyline where the model has a prediction and Pinnacle has a price.
+    Run-line and total bets would need their own prediction models (not just the moneyline model you see here) &mdash;
+    I didn't want to show fake EV numbers based on a model that doesn't exist for those markets.
+    &nbsp;<br><br>
+    <strong>Betting splits (public bet %):</strong> Scraping ScoresAndOdds, VegasInsider, etc. failed because
+    they're client-rendered. Paid aggregators (ActionNetwork, BetQL) run $50&ndash;100/mo &mdash; above budget.
+    The Market tab shows Pinnacle's limits as a sharper proxy than retail public%.
+  </div>
+
+  <footer>
+    <div>Pinnacle via guest API &middot; vig-included prices &middot; EV = model_prob &middot; dec - 1</div>
+    <div>updated {{ now }}</div>
+  </footer>
+</main>
+</body>
+</html>
+"""
+
+
+@app.route("/edges")
+def edges():
+    date_str = request.args.get("date") or datetime.now(EASTERN).date().isoformat()
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        d = datetime.now(EASTERN).date()
+        date_str = d.isoformat()
+
+    try:
+        games = get_games(date_str)
+    except Exception:
+        games = []
+
+    today = datetime.now(EASTERN).date().isoformat()
+    edges_list = []
+    games_with_odds = 0
+    for g in games:
+        o = g.get("odds") or {}
+        pin = o.get("pinnacle") or {}
+        ml = pin.get("moneyline") or {}
+        if not ml.get("away_am") or not ml.get("home_am"):
+            continue
+        games_with_odds += 1
+        if g.get("p_home") is None:
+            continue
+
+        # Build row per side when EV > 0
+        for side in ("away", "home"):
+            am = ml["away_am"] if side == "away" else ml["home_am"]
+            dec = o["pin_decimal"][side]
+            ev_pct = (o.get("ev_pinnacle") or {}).get(side)
+            fair = (o.get("pin_fair") or {}).get(side)
+            if ev_pct is None or ev_pct <= 0:
+                continue
+            model_prob = (g["p_home"] if side == "home" else 1 - g["p_home"])
+            kelly = mlb_odds.kelly_fraction(model_prob, dec, cap=0.25)
+            best_dec = (o.get("best_decimal") or {}).get(side)
+            best_book = (o.get("best_book") or {}).get(side)
+            ev_book_pct = (o.get("ev_book") or {}).get(side)
+            edges_list.append({
+                "away": g["away"]["team"],
+                "home": g["home"]["team"],
+                "first_pitch": g["first_pitch"],
+                "side_name": g[side]["team"],
+                "model_prob": model_prob,
+                "fair_prob": fair,
+                "american": am,
+                "decimal": dec,
+                "ev_pct": ev_pct,
+                "kelly_pct": kelly * 100,
+                "best_book": best_book,
+                "best_decimal": best_dec,
+                "ev_book_pct": ev_book_pct,
+            })
+
+    edges_list.sort(key=lambda e: -e["ev_pct"])
+    strong_count = sum(1 for e in edges_list if e["ev_pct"] >= 2.0)
+
+    return render_template_string(
+        EDGES_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        date_str=date_str,
+        date_pretty=d.strftime("%A, %B %d").replace(" 0", " "),
+        prev_date=(d - timedelta(days=1)).isoformat(),
+        next_date=(d + timedelta(days=1)).isoformat(),
+        today=today,
+        is_today=(date_str == today),
+        edges=edges_list,
+        games_with_odds=games_with_odds,
+        positive_count=len(edges_list),
+        strong_count=strong_count,
+        odds_api_available=mlb_odds.odds_api_available(),
+        now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
+    )
+
+
+# ============================================================================
+# /market — Pinnacle limits + Polymarket futures + splits context
+# ============================================================================
+
+MARKET_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>First Pitch &mdash; Market &mdash; {{ date_pretty }}</title>
+{{ fonts_link|safe }}
+<style>
+{{ shared_style|safe }}
+
+.hero { padding-bottom: 20px; margin-bottom: 32px; border-bottom: 1px solid var(--rule); }
+.hero h1 {
+  font-family: "Fraunces", Georgia, serif;
+  font-style: italic; font-weight: 400;
+  font-size: clamp(32px, 5vw, 48px);
+  line-height: 1.05; letter-spacing: -0.02em;
+  margin: 0 0 8px; font-variation-settings: "opsz" 144;
+}
+.hero .sub { color: var(--muted); max-width: 760px; font-size: 14px; line-height: 1.6; }
+
+.section {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: 12px; padding: 20px 24px; margin-bottom: 20px;
+}
+.section h2 {
+  font-family: "Fraunces", Georgia, serif;
+  font-weight: 500; font-size: 20px; margin: 0 0 6px;
+  letter-spacing: -0.01em;
+}
+.section .lead { color: var(--muted); margin: 0 0 18px; font-size: 13px; line-height: 1.6; max-width: 760px; }
+
+.limits-table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+.limits-table th, .limits-table td {
+  padding: 10px 12px; border-bottom: 1px solid var(--rule); text-align: left;
+}
+.limits-table th {
+  color: var(--muted); font-size: 10px; letter-spacing: 0.12em;
+  text-transform: uppercase; font-weight: 500;
+}
+.limits-table td.num {
+  font-family: "JetBrains Mono", monospace; font-variant-numeric: tabular-nums; text-align: right;
+}
+.limits-table .confidence {
+  display: inline-block; height: 6px; border-radius: 3px;
+  background: var(--good); vertical-align: middle;
+}
+
+.futures-grid { display: grid; gap: 12px; grid-template-columns: 1fr; }
+@media (min-width: 900px) { .futures-grid { grid-template-columns: 1fr 1fr; } }
+.future-card {
+  background: var(--surface); border: 1px solid var(--rule);
+  border-radius: 10px; padding: 16px 18px;
+}
+.future-card h3 {
+  font-family: "Public Sans", sans-serif; font-size: 14px; font-weight: 600;
+  margin: 0 0 10px; color: var(--ink);
+}
+.future-rows { display: flex; flex-direction: column; gap: 4px; }
+.future-row {
+  display: grid; grid-template-columns: 1fr auto; gap: 10px;
+  padding: 3px 0;
+  font-family: "JetBrains Mono", monospace; font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.future-row .q { color: var(--ink); font-family: "Public Sans"; font-size: 13px; }
+.future-row .p { color: var(--muted); }
+.future-row .p.high { color: var(--good); font-weight: 600; }
+
+.splits-note {
+  background: color-mix(in oklab, var(--warn) 10%, var(--card));
+  border: 1px solid color-mix(in oklab, var(--warn) 40%, var(--rule));
+  padding: 16px 20px; border-radius: 10px;
+  font-size: 13.5px; line-height: 1.6;
+}
+.splits-note strong { color: var(--ink); }
+.splits-note ul { margin: 10px 0 0 20px; padding: 0; }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap header-row">
+    <div class="brand" style="display: flex; align-items: baseline;">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">First Pitch</span>
+      <nav class="nav-tabs">
+        <a class="nav-tab" href="/">Schedule</a>
+        <a class="nav-tab" href="/edges">Edges</a>
+        <a class="nav-tab active" href="/market">Market</a>
+        <a class="nav-tab" href="/backtest">Model</a>
+      </nav>
+    </div>
+    <form class="controls" method="get" action="/market">
+      <a class="btn icon" href="/market?date={{ prev_date }}">&lsaquo;</a>
+      <input type="date" name="date" value="{{ date_str }}" onchange="this.form.submit()">
+      <a class="btn icon" href="/market?date={{ next_date }}">&rsaquo;</a>
+      {% if not is_today %}<a class="btn" href="/market?date={{ today }}">Today</a>{% endif %}
+    </form>
+  </div>
+</header>
+
+<main class="wrap reveal">
+  <div class="hero">
+    <h1>Market context &middot; {{ date_pretty }}</h1>
+    <p class="sub">
+      Sharp-money signals (Pinnacle limits, line context) and prediction-market futures (Polymarket).
+      Retail public bet% from DraftKings/FanDuel aggregators requires a paid subscription &mdash;
+      see the note at the bottom for options under $35/mo.
+    </p>
+  </div>
+
+  <div class="section">
+    <h2>Pinnacle limits per game</h2>
+    <p class="lead">
+      Pinnacle's maximum accepted wager on each moneyline. Higher limits = sharper price (more books copy it).
+      When limits drop sharply before game time, Pinnacle has seen material sharp action &mdash; a signal retail
+      splits don't capture.
+    </p>
+    {% if limits_rows %}
+    <table class="limits-table">
+      <thead>
+        <tr>
+          <th>Matchup</th>
+          <th class="num">Away ML</th>
+          <th class="num">Home ML</th>
+          <th class="num">Total</th>
+          <th class="num">Limit</th>
+          <th>Confidence</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in limits_rows %}
+        <tr>
+          <td>{{ r.away }} @ {{ r.home }}
+            <br><small style="color:var(--muted);font-size:11px">{{ r.first_pitch }}</small></td>
+          <td class="num">{{ r.away_ml }}</td>
+          <td class="num">{{ r.home_ml }}</td>
+          <td class="num">{{ r.total or '—' }}</td>
+          <td class="num">{% if r.limit %}${{ '{:,}'.format(r.limit|int) }}{% else %}—{% endif %}</td>
+          <td><span class="confidence" style="width: {{ r.limit_bar }}px"></span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="color:var(--muted);">No live Pinnacle markets for this slate.</p>
+    {% endif %}
+  </div>
+
+  <div class="section">
+    <h2>Polymarket futures</h2>
+    <p class="lead">
+      Live prediction-market prices on long-horizon MLB outcomes. Prices are implied probabilities
+      directly &mdash; a 0.165 on "Yankees to win WS" means the market thinks there's a 16.5% chance.
+    </p>
+    <div class="futures-grid">
+      {% for ev in futures_top %}
+      <div class="future-card">
+        <h3>{{ ev.title }}</h3>
+        <div class="future-rows">
+          {% for m in ev.top_markets %}
+          <div class="future-row">
+            <span class="q">{{ m.label }}</span>
+            <span class="p {% if m.prob > 0.3 %}high{% endif %}">{{ (m.prob * 100)|round(1) }}%</span>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>About retail splits (public bet %)</h2>
+    <div class="splits-note">
+      <strong>Why there's no public bet% table here:</strong> ScoresAndOdds and VegasInsider load their
+      splits via client-side JavaScript, so plain HTTP scraping returns no data without running a headless
+      browser (fragile and against their terms).<br><br>
+      <strong>Paid options in your budget:</strong>
+      <ul>
+        <li><strong>The Odds API</strong> ($30/mo Starter) &mdash; sportsbook odds across DK/FD/BetMGM/Caesars.
+          Doesn't include public bet%, but gives you shop-the-best-price. Set <code>ODDS_API_KEY</code> env var
+          to activate the integration already scaffolded in <code>mlb_odds.py</code>.</li>
+        <li><strong>SportsGameOdds</strong> (~$10-20/mo pay-as-you-go) &mdash; similar scope.</li>
+      </ul>
+      <strong>Not in budget:</strong> ActionNetwork, BetQL, SharpSide all run $50-100/mo &mdash; those are
+      what carry real public betting splits. If you ever subscribe, the data pattern is the same (fetch per
+      game, show bet% + money%) and plugging it in would be ~50 lines of code.
+    </div>
+  </div>
+
+  <footer>
+    <div>Pinnacle limits &middot; Polymarket Gamma API &middot; updated {{ now }}</div>
+    <div>No subscription required for any data on this page</div>
+  </footer>
+</main>
+</body>
+</html>
+"""
+
+
+@app.route("/market")
+def market():
+    date_str = request.args.get("date") or datetime.now(EASTERN).date().isoformat()
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        d = datetime.now(EASTERN).date()
+        date_str = d.isoformat()
+
+    try:
+        games = get_games(date_str)
+    except Exception:
+        games = []
+
+    today = datetime.now(EASTERN).date().isoformat()
+
+    # Limits rows for Pinnacle
+    limits_rows = []
+    max_limit = 1
+    for g in games:
+        o = g.get("odds") or {}
+        pin = o.get("pinnacle") or {}
+        ml = pin.get("moneyline") or {}
+        if not ml.get("away_am"):
+            continue
+        lim = pin.get("ml_limit") or 0
+        if lim > max_limit:
+            max_limit = lim
+    for g in games:
+        o = g.get("odds") or {}
+        pin = o.get("pinnacle") or {}
+        ml = pin.get("moneyline") or {}
+        if not ml.get("away_am"):
+            continue
+        total = (pin.get("total") or {}).get("line")
+        am_a = ml.get("away_am")
+        am_h = ml.get("home_am")
+        lim = pin.get("ml_limit") or 0
+        limits_rows.append({
+            "away": g["away"]["team"],
+            "home": g["home"]["team"],
+            "first_pitch": g["first_pitch"],
+            "away_ml": f"{'+' if am_a > 0 else ''}{am_a}",
+            "home_ml": f"{'+' if am_h > 0 else ''}{am_h}",
+            "total": total,
+            "limit": lim,
+            "limit_bar": int(round(140 * lim / max_limit)) if max_limit else 0,
+        })
+
+    # Polymarket futures (top by volume) — top 6
+    pm = mlb_odds.get_polymarket_mlb() or {"futures": [], "single_game": []}
+    futures_top = []
+    for ev in pm.get("futures", [])[:6]:
+        # Compress each event's markets to top 5 by prob (first outcome being "Yes")
+        rows = []
+        for m in ev["markets"]:
+            if not m.get("probs"):
+                continue
+            # Yes/No outcome: use the Yes probability
+            try:
+                p_yes = m["probs"][0] if m["outcomes"][0].lower() == "yes" else max(m["probs"])
+            except (IndexError, AttributeError):
+                p_yes = max(m["probs"] or [0])
+            rows.append({"label": m["question"], "prob": p_yes})
+        rows.sort(key=lambda x: -x["prob"])
+        futures_top.append({
+            "title": ev["title"],
+            "top_markets": rows[:5],
+        })
+
+    return render_template_string(
+        MARKET_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        date_str=date_str,
+        date_pretty=d.strftime("%A, %B %d").replace(" 0", " "),
+        prev_date=(d - timedelta(days=1)).isoformat(),
+        next_date=(d + timedelta(days=1)).isoformat(),
+        today=today,
+        is_today=(date_str == today),
+        limits_rows=limits_rows,
+        futures_top=futures_top,
+        now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
     )
 
 

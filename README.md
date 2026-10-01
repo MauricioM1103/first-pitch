@@ -33,6 +33,22 @@ don't have to refit from scratch.
 
 ## Files
 
-- `mlb_ui.py` — Flask app: `/`, `/backtest`, `/export.csv`
+- `mlb_ui.py` — Flask app: `/`, `/edges`, `/market`, `/backtest`, `/export.csv`
 - `mlb_model.py` — Elo + SP prediction model + walk-forward backtest
+- `mlb_odds.py` — Pinnacle + Polymarket + The Odds API integration, EV + Kelly math
 - `mlb_backtest_cache.json` — pre-fit model state (refit daily)
+
+## Tabs
+
+- **Schedule** `/` — every game with model prediction, Pinnacle odds comparison, EV
+- **Edges** `/edges` — positive-EV moneyline plays sorted by edge, with Kelly stake sizing
+- **Market** `/market` — Pinnacle limits (sharp-money proxy) + Polymarket futures
+- **Model** `/backtest` — walk-forward backtest report with calibration diagram
+
+## Optional: The Odds API integration
+
+To add DraftKings / FanDuel / BetMGM / Caesars best-price lookup to the game cards and Edges tab,
+set the environment variable `ODDS_API_KEY` to your key from https://the-odds-api.com. The Starter
+tier is $30/mo and gives 20k requests, enough to poll hourly during the season. The integration is
+already scaffolded in `mlb_odds.py` and activates automatically when the key is present. On Render,
+set it under Settings → Environment → Add Environment Variable.
