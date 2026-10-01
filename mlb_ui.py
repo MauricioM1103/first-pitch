@@ -2782,12 +2782,15 @@ def sport_page(slug):
 
     # NFL gets a trained model (same walk-forward Elo approach as MLB);
     # other sports fall back to Pinnacle devig for fair probabilities.
+    # Live predictions use the end-of-last-season state from the 12-season
+    # multi-season fit, so team Elo and QB ratings carry career-level signal.
     model_prob_fn = None
     if slug == "nfl":
         try:
             import nfl_model
-            nfl_state = nfl_model.get_or_run_backtest()
+            nfl_state = nfl_model.get_or_run_multi_season_backtest()
             final_elo = nfl_state.get("final_elo", {}) if nfl_state else {}
+            final_qb_elo = nfl_state.get("final_qb_elo", {}) if nfl_state else {}
             def _nfl_prob(g):
                 h = nfl_model.abbr_from_name(g.get("home_name", ""))
                 a = nfl_model.abbr_from_name(g.get("away_name", ""))
@@ -2957,12 +2960,15 @@ svg.calib { max-width: 100%; height: auto; }
 
 <main class="wrap reveal">
   <div class="hero-block">
-    <h1>NFL model &amp; backtest</h1>
+    <h1>NFL model &amp; 12-season backtest</h1>
     <p class="sub">
-      Walk-forward Elo with margin-of-victory damping and a rest-day adjustment.
-      Fit chronologically across all {{ state.total_games }} games of the {{ state.season }} regular season.
-      Predictions are logged <em>before</em> each game using Elo as-of first kickoff; the final
-      {{ state.score_last_weeks }} weeks are scored against actual outcomes below.
+      Walk-forward Elo with margin-of-victory damping, rest-day adjustment, and per-starter QB rating.
+      Fit chronologically across {{ state.total_games }} regular-season games spanning
+      <strong>{{ state.first_season }}&ndash;{{ state.last_season }}</strong> ({{ state.num_seasons }} seasons).
+      Team Elo regresses toward 1500 by 1/3 at each season boundary; QB Elo persists across seasons.
+      Predictions are logged <em>before</em> each game using Elo as-of first kickoff; the first
+      {{ state.warmup_seasons }} seasons are pure warm-up, and the remaining
+      <strong>{{ state.last_season - state.scored_from_season + 1 }} seasons are scored</strong> against actual outcomes below.
     </p>
   </div>
 
@@ -2988,7 +2994,7 @@ svg.calib { max-width: 100%; height: auto; }
     <div class="metric">
       <div class="label">Scored games</div>
       <div class="value">{{ m.n }}</div>
-      <div class="foot">wks {{ state.score_from_week }}&ndash;{{ state.max_week }}</div>
+      <div class="foot">seasons {{ state.scored_from_season }}&ndash;{{ state.last_season }}</div>
     </div>
     {% if m.record_baseline_accuracy is not none %}
     <div class="metric">
@@ -3003,6 +3009,33 @@ svg.calib { max-width: 100%; height: auto; }
         K={{ state.hyperparams.K|int }} &middot; HFA=+{{ state.hyperparams.HFA|int }}
       </div>
       <div class="foot">rest weight {{ state.hyperparams.REST_WEIGHT }} Elo/day</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Per-season breakdown</h2>
+    <p class="lead">
+      Model performance for each scored season. A stable model should hover near its aggregate
+      accuracy; big dips reveal years when the Elo + rest + QB signal mix underfit the slate
+      (injuries, scheme changes, 2021 COVID effects).
+    </p>
+    <div class="table-scroll">
+    <table class="calib-table">
+      <thead><tr>
+        <th>Season</th><th>Games</th><th>Accuracy</th><th>Log loss</th><th>Brier</th>
+      </tr></thead>
+      <tbody>
+        {% for r in per_season_rows %}
+        <tr>
+          <td>{{ r.season }}</td>
+          <td>{{ r.n }}</td>
+          <td>{{ (r.accuracy * 100)|round(2) }}%</td>
+          <td>{{ '%.4f'|format(r.log_loss) }}</td>
+          <td>{{ '%.4f'|format(r.brier) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
     </div>
   </div>
 
@@ -3152,9 +3185,9 @@ def nfl_backtest():
     try:
         import nfl_model
         if request.args.get("refresh"):
-            state = nfl_model.get_or_run_backtest(refresh=True)
+            state = nfl_model.get_or_run_multi_season_backtest(refresh=True)
         else:
-            state = nfl_model.get_or_run_backtest()
+            state = nfl_model.get_or_run_multi_season_backtest()
     except Exception as e:
         state = None
     if not state:
@@ -3164,23 +3197,54 @@ def nfl_backtest():
             shared_style=SHARED_STYLE,
             sport_strip=render_sport_strip("nfl"),
             state=None, m=None, top_elo=[], bottom_elo=[],
+            top_qbs=[], bottom_qbs=[], bottom_qb_rank_start=0,
+            per_season_rows=[],
             sample_preds=[], calibration_svg="",
         )
     m = state.get("metrics") or {}
-    elo_items = sorted(state["final_elo"].items(), key=lambda kv: -kv[1])
-    top_elo = [(ab, r, state["final_wl"].get(ab, [0, 0])) for ab, r in elo_items[:16]]
-    bottom_elo = [(ab, r, state["final_wl"].get(ab, [0, 0])) for ab, r in elo_items[16:]]
 
-    # Quarterback rankings (min 8 games this season)
+    # Compute last-season W-L from predictions (for the Final Elo tables)
+    last_season = state["last_season"]
+    final_wl = {}
+    for p in state["predictions"]:
+        if p["season"] != last_season:
+            continue
+        h, a = p["home_abbr"], p["away_abbr"]
+        final_wl.setdefault(h, [0, 0])
+        final_wl.setdefault(a, [0, 0])
+        if p["home_won"]:
+            final_wl[h][0] += 1
+            final_wl[a][1] += 1
+        else:
+            final_wl[h][1] += 1
+            final_wl[a][0] += 1
+
+    elo_items = sorted(state["final_elo"].items(), key=lambda kv: -kv[1])
+    top_elo = [(ab, r, final_wl.get(ab, [0, 0])) for ab, r in elo_items[:16]]
+    bottom_elo = [(ab, r, final_wl.get(ab, [0, 0])) for ab, r in elo_items[16:]]
+
+    # QB rankings (min 24 career games across the 12-season window)
     qb_games = state.get("qb_games", {}) or {}
     qb_items = sorted(
         [(q, e, qb_games.get(q, 0)) for q, e in (state.get("final_qb_elo") or {}).items()
-         if qb_games.get(q, 0) >= 8],
+         if qb_games.get(q, 0) >= 24],
         key=lambda x: -x[1],
     )
     top_qbs = qb_items[:12]
     bottom_qbs = qb_items[-12:] if len(qb_items) > 24 else qb_items[12:]
     bottom_qb_rank_start = len(qb_items) - len(bottom_qbs) if bottom_qbs else 0
+
+    # Per-season rows (sorted by year ascending for the table)
+    per_season_rows = []
+    for s in sorted(state["per_season"]):
+        st = state["per_season"][s]
+        if st.get("n"):
+            per_season_rows.append({
+                "season": s, "n": st["n"],
+                "accuracy": st["accuracy"],
+                "log_loss": st["log_loss"],
+                "brier": st["brier"],
+            })
 
     sample_preds = state["predictions"][-24:]
     return render_template_string(
@@ -3192,6 +3256,7 @@ def nfl_backtest():
         top_elo=top_elo, bottom_elo=bottom_elo,
         top_qbs=top_qbs, bottom_qbs=bottom_qbs,
         bottom_qb_rank_start=bottom_qb_rank_start,
+        per_season_rows=per_season_rows,
         sample_preds=sample_preds,
         calibration_svg=render_calibration_svg(m.get("calibration") or []),
     )

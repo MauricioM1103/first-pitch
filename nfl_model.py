@@ -50,6 +50,12 @@ WARMUP_SEASONS = 0  # Backtest hyperparam tuning showed warmup hurts team Elo
                     # on the target season only. For live predictions in a
                     # later season you'd want this at 1 — accept the tradeoff.
 
+# Multi-season backtest params: fit across N seasons, use the first
+# `MULTI_WARMUP_SEASONS` as pure warmup (no scoring), score every remaining
+# game. Team Elo regresses toward 1500 by 1/3 at each season boundary.
+NUM_SEASONS = 12
+MULTI_WARMUP_SEASONS = 2
+
 CACHE_MAX_AGE_H = 24
 
 TEAM_NAMES = {
@@ -424,6 +430,9 @@ def _pick_season():
 
 
 def get_or_run_backtest(refresh=False, season=None, score_last_weeks=8, verbose=False):
+    """Legacy single-season backtest. New callers should use
+    `get_or_run_multi_season_backtest` for 12-season aggregate metrics.
+    This function still backs the live NFL page's `final_elo` lookup."""
     if not refresh and os.path.exists(CACHE_FILE):
         try:
             with open(CACHE_FILE) as f:
@@ -438,6 +447,185 @@ def get_or_run_backtest(refresh=False, season=None, score_last_weeks=8, verbose=
     result = run_backtest(season, score_last_weeks=score_last_weeks, verbose=verbose)
     result["metrics"] = compute_metrics(result["predictions"])
     with open(CACHE_FILE, "w") as f:
+        json.dump(result, f)
+    return result
+
+
+# ============================================================================
+# Multi-season backtest (12-season aggregate)
+# ============================================================================
+
+MULTI_CACHE_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "nfl_multi_backtest_cache.json",
+)
+
+
+def run_multi_season_backtest(end_season, num_seasons=NUM_SEASONS,
+                               warmup_seasons=MULTI_WARMUP_SEASONS,
+                               verbose=True):
+    """Walk-forward Elo across `num_seasons` ending at `end_season`.
+
+    First `warmup_seasons` are pure warm-up (not scored). Remaining seasons
+    have every game scored. Team Elo regresses 1/3 toward 1500 at each
+    season boundary; QB Elo persists across seasons.
+
+    Returns a dict with aggregate metrics plus per-season breakdown.
+    """
+    first = end_season - num_seasons + 1
+    seasons = list(range(first, end_season + 1))
+    scored_from = first + warmup_seasons
+
+    if verbose:
+        print(f"[nfl] multi-season backtest {first}-{end_season} "
+              f"(warmup {first}..{scored_from - 1}, scored {scored_from}..{end_season})",
+              flush=True)
+    all_rows = _fetch_games_csv()
+
+    # Pre-filter to our window + REG + completed
+    pool = []
+    for r in all_rows:
+        s = _to_int(r.get("season"))
+        if s is None or s not in seasons:
+            continue
+        if (r.get("game_type") or "").upper() != "REG":
+            continue
+        hs, aw = _to_int(r.get("home_score")), _to_int(r.get("away_score"))
+        if hs is None or aw is None:
+            continue
+        pool.append({
+            "game_id": r.get("game_id"),
+            "season": s,
+            "week": _to_int(r.get("week")),
+            "date": r.get("gameday"),
+            "home_abbr": r.get("home_team"),
+            "away_abbr": r.get("away_team"),
+            "home_name": TEAM_NAMES.get(r.get("home_team"), r.get("home_team") or ""),
+            "away_name": TEAM_NAMES.get(r.get("away_team"), r.get("away_team") or ""),
+            "home_score": hs, "away_score": aw,
+            "home_won": hs > aw,
+            "home_rest": _to_int(r.get("home_rest")) or 7,
+            "away_rest": _to_int(r.get("away_rest")) or 7,
+            "home_qb": r.get("home_qb_name") or "",
+            "away_qb": r.get("away_qb_name") or "",
+        })
+    pool.sort(key=lambda g: (g["date"] or "", g["game_id"] or ""))
+    if verbose:
+        print(f"[nfl]   {len(pool)} games across {len(seasons)} seasons", flush=True)
+
+    elo = {}
+    qb_elo = {}
+    qb_games = {}
+    predictions = []
+    per_season = {s: {"n": 0, "correct": 0, "ll": 0.0, "brier": 0.0} for s in seasons[warmup_seasons:]}
+    seasons_seen = set()
+
+    for g in pool:
+        # Season-boundary regression (team Elo only; QB Elo persists)
+        if g["season"] not in seasons_seen and seasons_seen:
+            for t in list(elo.keys()):
+                elo[t] = INITIAL_ELO + (2.0 / 3.0) * (elo[t] - INITIAL_ELO)
+        seasons_seen.add(g["season"])
+
+        h, a = g["home_abbr"], g["away_abbr"]
+        hqb = g["home_qb"].strip()
+        aqb = g["away_qb"].strip()
+        elo.setdefault(h, INITIAL_ELO)
+        elo.setdefault(a, INITIAL_ELO)
+        if hqb:
+            qb_elo.setdefault(hqb, QB_INITIAL_ELO)
+            qb_games.setdefault(hqb, 0)
+        if aqb:
+            qb_elo.setdefault(aqb, QB_INITIAL_ELO)
+            qb_games.setdefault(aqb, 0)
+        hq = qb_elo.get(hqb) if hqb else None
+        aq = qb_elo.get(aqb) if aqb else None
+
+        p_home = predict_win_prob(elo[h], elo[a],
+                                  g["home_rest"], g["away_rest"],
+                                  home_qb_elo=hq, away_qb_elo=aq)
+
+        if g["season"] >= scored_from:
+            y = 1 if g["home_won"] else 0
+            ph = max(1e-6, min(1 - 1e-6, p_home))
+            correct = (ph >= 0.5) == (y == 1)
+            per_season[g["season"]]["n"] += 1
+            per_season[g["season"]]["correct"] += 1 if correct else 0
+            per_season[g["season"]]["ll"] -= y * math.log(ph) + (1 - y) * math.log(1 - ph)
+            per_season[g["season"]]["brier"] += (ph - y) ** 2
+            # Keep lightweight prediction records for aggregate metrics; drop
+            # verbose fields to keep the cache small.
+            predictions.append({
+                "season": g["season"], "week": g["week"], "date": g["date"],
+                "home_abbr": h, "away_abbr": a,
+                "home": g["home_name"], "away": g["away_name"],
+                "p_home": p_home, "home_won": g["home_won"],
+                "home_score": g["home_score"], "away_score": g["away_score"],
+                "home_qb": hqb, "away_qb": aqb,
+            })
+
+        new_h, new_a, new_hq, new_aq = elo_update(
+            elo[h], elo[a], g["home_won"], g["home_score"], g["away_score"],
+            g["home_rest"], g["away_rest"],
+            home_qb_elo=hq, away_qb_elo=aq,
+        )
+        elo[h], elo[a] = new_h, new_a
+        if hqb and new_hq is not None:
+            qb_elo[hqb] = new_hq
+            qb_games[hqb] += 1
+        if aqb and new_aq is not None:
+            qb_elo[aqb] = new_aq
+            qb_games[aqb] += 1
+
+    # Aggregate metrics
+    for s, stat in per_season.items():
+        if stat["n"] > 0:
+            stat["accuracy"] = stat["correct"] / stat["n"]
+            stat["log_loss"] = stat["ll"] / stat["n"]
+            stat["brier"] = stat["brier"] / stat["n"]
+        else:
+            stat["accuracy"] = stat["log_loss"] = stat["brier"] = None
+
+    team_names = {g["home_abbr"]: g["home_name"] for g in pool}
+    team_names.update({g["away_abbr"]: g["away_name"] for g in pool})
+
+    return {
+        "first_season": first,
+        "last_season": end_season,
+        "num_seasons": num_seasons,
+        "warmup_seasons": warmup_seasons,
+        "scored_from_season": scored_from,
+        "total_games": len(pool),
+        "scored_games": len(predictions),
+        "per_season": per_season,
+        "predictions": predictions,
+        "final_elo": {t: round(e, 1) for t, e in elo.items()},
+        "final_qb_elo": {q: round(e, 1) for q, e in qb_elo.items()},
+        "qb_games": qb_games,
+        "team_names": team_names,
+        "hyperparams": {
+            "K": K_FACTOR, "HFA": HFA, "REST_WEIGHT": REST_WEIGHT,
+            "QB_WEIGHT": QB_WEIGHT, "QB_K": QB_K,
+        },
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
+def get_or_run_multi_season_backtest(refresh=False, end_season=None, verbose=False):
+    if not refresh and os.path.exists(MULTI_CACHE_FILE):
+        try:
+            with open(MULTI_CACHE_FILE) as f:
+                data = json.load(f)
+            gen = datetime.fromisoformat(data.get("generated_at", "1970-01-01"))
+            if (datetime.now() - gen) < timedelta(hours=CACHE_MAX_AGE_H):
+                return data
+        except (json.JSONDecodeError, ValueError, KeyError):
+            pass
+    if end_season is None:
+        end_season = _pick_season()
+    result = run_multi_season_backtest(end_season, verbose=verbose)
+    result["metrics"] = compute_metrics(result["predictions"])
+    with open(MULTI_CACHE_FILE, "w") as f:
         json.dump(result, f)
     return result
 
