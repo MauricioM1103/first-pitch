@@ -1117,6 +1117,7 @@ INDEX_TEMPLATE = r"""<!doctype html>
       <nav class="nav-tabs">
         <a class="nav-tab active" href="/">Schedule</a>
         <a class="nav-tab" href="/edges">Edges</a>
+        <a class="nav-tab" href="/arbitrage">Arbitrage</a>
         <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
         <a class="nav-tab" href="/market">Market</a>
         <a class="nav-tab" href="/backtest">Model</a>
@@ -1494,6 +1495,7 @@ svg.calib { max-width: 100%; height: auto; }
       <nav class="nav-tabs">
         <a class="nav-tab" href="/">Schedule</a>
         <a class="nav-tab" href="/edges">Edges</a>
+        <a class="nav-tab" href="/arbitrage">Arbitrage</a>
         <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
         <a class="nav-tab" href="/market">Market</a>
         <a class="nav-tab active" href="/backtest">Model</a>
@@ -3774,6 +3776,194 @@ def _signed(am):
     if am is None:
         return "—"
     return f"+{am}" if am > 0 else str(am)
+
+
+# ============================================================================
+# Arbitrage finder (/arbitrage)
+# ============================================================================
+
+ARB_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>First Pitch &mdash; Arbitrage</title>
+{{ fonts_link|safe }}
+<style>
+{{ shared_style|safe }}
+
+.hero { padding-bottom: 20px; margin-bottom: 24px; border-bottom: 1px solid var(--rule); }
+.hero h1 { font-family: "Fraunces", Georgia, serif; font-style: italic; font-weight: 400; font-size: clamp(32px, 5vw, 48px); line-height: 1.05; letter-spacing: -0.02em; margin: 0 0 8px; font-variation-settings: "opsz" 144; }
+.hero .sub { color: var(--muted); max-width: 760px; font-size: 13.5px; line-height: 1.6; }
+
+.summary { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom: 24px; }
+.metric { background: var(--card); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px; }
+.metric .label { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+.metric .value { font-family: "JetBrains Mono", monospace; font-size: 24px; font-weight: 500; color: var(--ink); font-variant-numeric: tabular-nums; }
+.metric .value.good { color: var(--good); text-shadow: var(--ev-strong-glow); }
+
+.arb-wrap {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: 12px; overflow: hidden;
+}
+.arb-wrap table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.arb-wrap th {
+  text-align: left; padding: 12px 14px;
+  background: var(--surface); color: var(--muted);
+  font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+  font-weight: 500; border-bottom: 1px solid var(--rule);
+}
+.arb-wrap td { padding: 12px 14px; border-bottom: 1px solid var(--rule); vertical-align: middle; }
+.arb-wrap tr:last-child td { border-bottom: none; }
+.arb-wrap tr.strong { background: color-mix(in oklab, var(--good) 14%, transparent); box-shadow: inset 3px 0 0 var(--good); }
+.arb-wrap .num {
+  font-family: "JetBrains Mono", monospace; font-variant-numeric: tabular-nums; text-align: right;
+}
+.arb-wrap .profit { color: var(--good); font-weight: 600; text-shadow: var(--ev-strong-glow); }
+.arb-wrap .side { color: var(--ink); font-weight: 500; }
+.arb-wrap .book { padding: 1px 6px; border-radius: 3px; font-family: "JetBrains Mono", monospace; font-size: 10.5px; background: var(--surface); border: 1px solid var(--rule); color: var(--muted); }
+.arb-wrap .book.pinnacle { color: var(--muted-2); }
+.arb-wrap .book.draftkings { color: #1b7a4f; }
+.arb-wrap .book.fanduel    { color: #0066cc; }
+.arb-wrap .book.betmgm     { color: #a66f00; }
+.arb-wrap .book.caesars    { color: #a63329; }
+
+.sport-pill-sm { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 8px; border-radius: 4px; background: var(--chip-bg); color: var(--muted); border: 1px solid var(--rule); }
+
+.empty { padding: 60px 24px; text-align: center; color: var(--muted); }
+.empty h2 { font-family: "Fraunces", Georgia, serif; font-style: italic; font-weight: 400; font-size: 24px; color: var(--ink); margin: 0 0 8px; }
+
+.note { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 18px; color: var(--muted); font-size: 12.5px; line-height: 1.6; margin-top: 20px; max-width: 900px; }
+.note strong { color: var(--ink); }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap header-row">
+    <div class="brand" style="display: flex; align-items: baseline;">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">First Pitch</span>
+      <nav class="nav-tabs">
+        <a class="nav-tab" href="/">Schedule</a>
+        <a class="nav-tab" href="/edges">Edges</a>
+        <a class="nav-tab active" href="/arbitrage">Arbitrage</a>
+        <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
+        <a class="nav-tab" href="/market">Market</a>
+      </nav>
+    </div>
+    <div class="controls">
+      <a class="btn" href="/arbitrage?refresh=1">Refresh</a>
+    </div>
+  </div>
+</header>
+
+{{ sport_strip|safe }}
+
+<main class="wrap reveal">
+  <div class="hero">
+    <h1>Arbitrage opportunities</h1>
+    <p class="sub">
+      Two-way markets where betting the best available price on each side at <strong>different books</strong> locks in a profit regardless of outcome.
+      Scanning Pinnacle + DraftKings + FanDuel + BetMGM + Caesars for moneyline and total markets across every sport in the registry.
+      Soccer 3-way lines are skipped (would need prices from up to three books lining up on all outcomes).
+    </p>
+  </div>
+
+  <div class="summary">
+    <div class="metric">
+      <div class="label">Opportunities</div>
+      <div class="value {% if arbs %}good{% endif %}">{{ arbs|length }}</div>
+    </div>
+    <div class="metric">
+      <div class="label">Best profit %</div>
+      <div class="value good">{{ ('%.2f'|format(arbs[0].profit_pct)) ~ '%' if arbs else '—' }}</div>
+    </div>
+    <div class="metric">
+      <div class="label">Scan time</div>
+      <div class="value" style="font-size:18px">{{ scan_time_ms }} ms</div>
+    </div>
+    <div class="metric">
+      <div class="label">Updated</div>
+      <div class="value" style="font-size:14px;line-height:1.4">{{ now }}</div>
+    </div>
+  </div>
+
+  <div class="arb-wrap">
+    {% if arbs %}
+    <table>
+      <thead>
+        <tr>
+          <th>Sport</th>
+          <th>Game</th>
+          <th>Market</th>
+          <th>Side A</th>
+          <th class="num">Book A @ price</th>
+          <th class="num">Stake A</th>
+          <th>Side B</th>
+          <th class="num">Book B @ price</th>
+          <th class="num">Stake B</th>
+          <th class="num">Profit</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in arbs %}
+        <tr class="{% if a.profit_pct >= 1.0 %}strong{% endif %}">
+          <td><span class="sport-pill-sm">{{ a.sport }}</span></td>
+          <td>{{ a.game }}</td>
+          <td>{{ a.market }}</td>
+          <td class="side">{{ a.pick_a }}</td>
+          <td class="num"><span class="book {{ a.a_book }}">{{ a.a_book }}</span> {{ '%.2f'|format(a.a_dec) }}</td>
+          <td class="num">{{ '%.1f'|format(a.a_stake_pct * 100) }}%</td>
+          <td class="side">{{ a.pick_b }}</td>
+          <td class="num"><span class="book {{ a.b_book }}">{{ a.b_book }}</span> {{ '%.2f'|format(a.b_dec) }}</td>
+          <td class="num">{{ '%.1f'|format(a.b_stake_pct * 100) }}%</td>
+          <td class="num profit">+{{ '%.2f'|format(a.profit_pct) }}%</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+      <h2>No arbitrage opportunities right now.</h2>
+      <p>Books tend to self-correct within minutes. Refresh in a few minutes; off-market pricing is most common on small-market slates or during line moves.</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="note">
+    <strong>How to use this:</strong> for each row, split your bankroll between Book A and Book B at the <em>Stake A</em>/<em>Stake B</em> percentages. Your return equals the <em>Profit</em> column no matter which side wins.<br><br>
+    <strong>What this requires:</strong> active accounts at both books and the ability to place bets quickly &mdash; arbs disappear fast. Shop lines carefully; prices can move while you're placing.<br><br>
+    <strong>Caveats:</strong> books penalize arbitrage bettors (limits, account restrictions). Bet sizes matter: a 1% profit on $100 is $1 of lock-in &mdash; the operational risk may exceed the profit on small arbs. Also: this scans only full-game moneyline and total markets. Spread arbs exist but require matching line points across books.
+  </div>
+
+  <footer>
+    <div>Pinnacle + DK/FD/BetMGM/Caesars (via The Odds API)</div>
+    <div>updated {{ now }}</div>
+  </footer>
+</main>
+</body>
+</html>
+"""
+
+
+@app.route("/arbitrage")
+def arbitrage():
+    import arb_finder
+    t0 = time.time()
+    try:
+        arbs = arb_finder.find_all_arbs()
+    except Exception as e:
+        arbs = []
+    scan_time_ms = int((time.time() - t0) * 1000)
+    return render_template_string(
+        ARB_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        sport_strip=render_sport_strip("mlb"),
+        arbs=arbs,
+        scan_time_ms=scan_time_ms,
+        now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
+    )
 
 
 if __name__ == "__main__":
