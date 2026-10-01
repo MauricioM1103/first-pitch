@@ -805,6 +805,46 @@ def render_sport_strip(active_slug):
     return "".join(parts)
 
 
+# Which tabs each sport exposes. Order matters for display.
+_SPORT_TABS = {
+    "mlb": [
+        ("schedule",   "Schedule",    "/"),
+        ("edges",      "Edges",       "/edges"),
+        ("arbitrage",  "Arbitrage",   "/arbitrage"),
+        ("montecarlo", "Monte Carlo", "/montecarlo"),
+        ("analyst",    "AI Analyst",  "/analyst"),
+        ("backtest",   "Backtest",    "/backtest"),
+        ("market",     "Market",      "/market"),
+    ],
+    "nfl": [
+        ("schedule",  "Schedule",   "/sport/nfl"),
+        ("edges",     "Edges",      "/sport/nfl/edges"),
+        ("arbitrage", "Arbitrage",  "/sport/nfl/arbitrage"),
+        ("backtest",  "Backtest",   "/sport/nfl/backtest"),
+    ],
+}
+
+
+def _default_sport_tabs(slug):
+    """Fallback tab set for sports with no bespoke list (UFC, soccer-pre-model)."""
+    return [
+        ("schedule",  "Schedule",   f"/sport/{slug}"),
+        ("edges",     "Edges",      f"/sport/{slug}/edges"),
+        ("arbitrage", "Arbitrage",  f"/sport/{slug}/arbitrage"),
+    ]
+
+
+def render_sport_nav(slug, active):
+    """Return nav-tabs HTML scoped to this sport, with `active` highlighted."""
+    tabs = _SPORT_TABS.get(slug) or _default_sport_tabs(slug)
+    parts = ['<nav class="nav-tabs">']
+    for key, label, href in tabs:
+        cls = "nav-tab active" if key == active else "nav-tab"
+        parts.append(f'<a class="{cls}" href="{href}">{label}</a>')
+    parts.append('</nav>')
+    return "".join(parts)
+
+
 THEME_SCRIPT = r"""
 <script>
 // Apply saved theme BEFORE first paint to avoid flash.
@@ -2701,14 +2741,7 @@ SPORT_TEMPLATE = r"""<!doctype html>
     <div class="brand" style="display: flex; align-items: baseline;">
       <span class="brand-mark" aria-hidden="true"></span>
       <span class="brand-name">First Pitch</span>
-      <nav class="nav-tabs">
-        <a class="nav-tab" href="/">Schedule</a>
-        <a class="nav-tab" href="/edges">Edges</a>
-        <a class="nav-tab" href="/arbitrage">Arbitrage</a>
-        <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
-        <a class="nav-tab" href="/analyst">AI Analyst</a>
-        <a class="nav-tab" href="/market">Market</a>
-      </nav>
+      {{ nav|safe }}
     </div>
   </div>
 </header>
@@ -2849,8 +2882,385 @@ def _format_et(iso_utc):
         return iso_utc
 
 
+SPORT_SCHEDULE_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>First Pitch &mdash; {{ sport.name }}</title>
+{{ fonts_link|safe }}
+<style>
+{{ shared_style|safe }}
+
+.hero { padding-bottom: 20px; margin-bottom: 24px; border-bottom: 1px solid var(--rule); }
+.hero h1 { font-family: "Fraunces", Georgia, serif; font-style: italic; font-weight: 400; font-size: clamp(32px, 5vw, 48px); line-height: 1.05; letter-spacing: -0.02em; margin: 0 0 8px; font-variation-settings: "opsz" 144; }
+.hero .sub { color: var(--muted); max-width: 760px; font-size: 13.5px; line-height: 1.55; }
+
+.count { font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); font-variant-numeric: tabular-nums; }
+.count strong { color: var(--ink); font-weight: 500; }
+.hero-row { display: flex; justify-content: space-between; align-items: baseline; gap: 24px; }
+
+.grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+@media (min-width: 760px)  { .grid { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 1180px) { .grid { grid-template-columns: repeat(3, 1fr); } }
+
+.card {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: 12px; padding: 18px 20px 16px;
+  display: flex; flex-direction: column; gap: 14px;
+  transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+}
+.card:hover { border-color: var(--rule-strong); transform: translateY(-1px); box-shadow: var(--card-hover-shadow); }
+
+.card-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.time { font-family: "JetBrains Mono", monospace; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.chip-live {
+  font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--accent); padding: 2px 7px; border: 1px solid color-mix(in oklab, var(--accent) 40%, var(--rule));
+  border-radius: 999px;
+}
+
+.matchup { display: flex; flex-direction: column; gap: 2px; }
+.team-name { font-weight: 600; font-size: 20px; line-height: 1.15; letter-spacing: -0.01em; color: var(--ink); }
+.at { font-family: "Fraunces", Georgia, serif; font-style: italic; font-size: 13px; color: var(--muted); padding: 2px 0 2px 10px; line-height: 1; }
+
+.market { border-top: 1px dashed var(--rule); padding-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+.market-label { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-bottom: 2px; }
+.market-row { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; font-size: 13px; align-items: baseline; }
+.market-row .side { color: var(--ink); font-weight: 500; }
+.market-row .price { font-family: "JetBrains Mono", monospace; font-variant-numeric: tabular-nums; color: var(--muted); }
+.market-row .price b { color: var(--ink); font-weight: 500; }
+.market-row .fair { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--muted-2); font-variant-numeric: tabular-nums; }
+
+.prob-bar {
+  display: flex; height: 28px; border-radius: 8px; overflow: hidden;
+  background: var(--chip-bg); border: 1px solid var(--rule);
+  font-family: "JetBrains Mono", monospace; font-size: 11px; font-variant-numeric: tabular-nums; letter-spacing: 0.01em;
+}
+.prob-bar .side { display: flex; align-items: center; padding: 0 10px; gap: 6px; color: var(--muted); min-width: 0; white-space: nowrap; }
+.prob-bar .side.away { justify-content: flex-start; background: color-mix(in oklab, var(--muted) 15%, var(--chip-bg)); }
+.prob-bar .side.home { justify-content: flex-end; background: color-mix(in oklab, var(--muted) 10%, var(--chip-bg)); }
+.prob-bar[data-favors="home"] .side.home { background: color-mix(in oklab, var(--good) 26%, var(--chip-bg)); color: var(--ink); }
+.prob-bar[data-favors="home"] .side.home .pct { color: var(--ink); font-weight: 600; text-shadow: var(--ev-strong-glow); }
+.prob-bar[data-favors="away"] .side.away { background: color-mix(in oklab, var(--good) 26%, var(--chip-bg)); color: var(--ink); }
+.prob-bar[data-favors="away"] .side.away .pct { color: var(--ink); font-weight: 600; text-shadow: var(--ev-strong-glow); }
+
+.best-book {
+  padding-top: 6px; border-top: 1px dotted var(--rule);
+  display: flex; justify-content: space-between;
+  font-family: "JetBrains Mono", monospace; font-size: 10.5px; color: var(--muted);
+}
+.best-book b { color: var(--ink); font-weight: 500; }
+
+.empty-sched {
+  padding: 60px 24px; text-align: center; color: var(--muted);
+  grid-column: 1 / -1;
+}
+.empty-sched h2 { font-family: "Fraunces", Georgia, serif; font-style: italic; font-weight: 400; font-size: 24px; color: var(--ink); margin: 0 0 8px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap header-row">
+    <div class="brand" style="display: flex; align-items: baseline;">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">First Pitch</span>
+      {{ nav|safe }}
+    </div>
+  </div>
+</header>
+
+{{ sport_strip|safe }}
+
+<main class="wrap reveal">
+  <div class="hero">
+    <div class="hero-row">
+      <h1>{{ sport.name }} &middot; schedule</h1>
+      <span class="count">{% if cards %}<strong>{{ cards|length }}</strong> game{{ '' if cards|length == 1 else 's' }}{% else %}No games{% endif %}</span>
+    </div>
+    <p class="sub">
+      Each card shows Pinnacle's moneyline, {% if sport.spread_label %}{{ sport.spread_label|lower }}, {% endif %}and main total, with devigged fair probability per side.
+      {% if sport.slug == 'nfl' %}NFL games also show the Elo+QB model's win probability.{% endif %}
+      Click <a href="/sport/{{ sport.slug }}/edges" style="color:var(--accent)">Edges</a> above for the +EV table across every market and book.
+    </p>
+  </div>
+
+  <div class="grid">
+    {% if cards %}
+    {% for g in cards %}
+    <article class="card">
+      <div class="card-head">
+        <span class="time">{{ g.start_time_et }}</span>
+        {% if g.is_live %}<span class="chip-live">Live</span>{% endif %}
+      </div>
+
+      <div class="matchup">
+        <div class="team-name">{{ g.away }}</div>
+        <div class="at">at</div>
+        <div class="team-name">{{ g.home }}</div>
+      </div>
+
+      {% if g.p_home_pct is not none %}
+      <div>
+        <div class="market-label" style="margin-bottom:6px">Model win probability</div>
+        <div class="prob-bar" data-favors="{{ 'home' if g.p_home_pct >= 50 else 'away' }}">
+          <div class="side away" style="width: {{ 100 - g.p_home_pct }}%"><span>{{ g.away_short }}</span> <span class="pct">{{ 100 - g.p_home_pct }}%</span></div>
+          <div class="side home" style="width: {{ g.p_home_pct }}%"><span class="pct">{{ g.p_home_pct }}%</span> <span>{{ g.home_short }}</span></div>
+        </div>
+      </div>
+      {% endif %}
+
+      {% if g.ml %}
+      <div class="market">
+        <div class="market-label">Moneyline</div>
+        {% for row in g.ml %}
+        <div class="market-row">
+          <span class="side">{{ row.label }}</span>
+          <span class="price"><b>{{ row.price }}</b> <span style="color:var(--muted-2)">({{ row.decimal }})</span></span>
+          <span class="fair">{{ row.fair_pct }}% fair</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      {% if g.spread %}
+      <div class="market">
+        <div class="market-label">{{ sport.spread_label or 'Spread' }}</div>
+        {% for row in g.spread %}
+        <div class="market-row">
+          <span class="side">{{ row.label }}</span>
+          <span class="price"><b>{{ row.price }}</b> <span style="color:var(--muted-2)">({{ row.decimal }})</span></span>
+          <span class="fair">&nbsp;</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      {% if g.total %}
+      <div class="market">
+        <div class="market-label">Total {{ g.total_line }}</div>
+        {% for row in g.total %}
+        <div class="market-row">
+          <span class="side">{{ row.label }}</span>
+          <span class="price"><b>{{ row.price }}</b> <span style="color:var(--muted-2)">({{ row.decimal }})</span></span>
+          <span class="fair">{{ row.fair_pct }}% fair</span>
+        </div>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      {% if g.best_book_home or g.best_book_away %}
+      <div class="best-book">
+        {% if g.best_book_away %}<span><b>{{ g.away_short }}</b> {{ g.best_dec_away }} @ {{ g.best_book_away }}</span>{% endif %}
+        {% if g.best_book_home %}<span><b>{{ g.home_short }}</b> {{ g.best_dec_home }} @ {{ g.best_book_home }}</span>{% endif %}
+      </div>
+      {% endif %}
+    </article>
+    {% endfor %}
+    {% else %}
+    <div class="empty-sched">
+      <h2>No games to show.</h2>
+      <p>Pinnacle hasn't posted this slate yet, or {{ sport.name }} is between phases.</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <footer>
+    <div>Pinnacle leagueId={{ sport.pinnacle_league_id }} &middot; {% if odds_api_available %}DK/FanDuel/BetMGM/Caesars via Odds API{% else %}Pinnacle only (set ODDS_API_KEY to enable US books){% endif %}</div>
+    <div>updated {{ now }}</div>
+  </footer>
+</main>
+</body>
+</html>
+"""
+
+
+def _short_name(full):
+    """Best-effort short name: last token for 2-word teams, else as-is."""
+    parts = (full or "").split()
+    if len(parts) >= 2 and len(parts[-1]) > 2:
+        return parts[-1]
+    return full
+
+
+def _signed_am_str(am):
+    if am is None:
+        return "—"
+    return f"+{am}" if am > 0 else str(am)
+
+
 @app.route("/sport/<slug>")
-def sport_page(slug):
+def sport_schedule(slug):
+    sport = sports.by_slug(slug)
+    if not sport or sport.get("dedicated"):
+        from flask import redirect
+        return redirect("/", code=302)
+
+    # NFL model probability (same as sport_edges)
+    model_prob_fn = None
+    if slug == "nfl":
+        try:
+            import nfl_model
+            nfl_state = nfl_model.get_or_run_multi_season_backtest()
+            final_elo = nfl_state.get("final_elo", {}) if nfl_state else {}
+            def _nfl_prob(g):
+                h = nfl_model.abbr_from_name(g.get("home_name", ""))
+                a = nfl_model.abbr_from_name(g.get("away_name", ""))
+                if not h or not a:
+                    return None
+                h_elo = final_elo.get(h, nfl_model.INITIAL_ELO)
+                a_elo = final_elo.get(a, nfl_model.INITIAL_ELO)
+                p = nfl_model.predict_win_prob(h_elo, a_elo)
+                return {"home": p, "away": 1 - p, "draw": None}
+            model_prob_fn = _nfl_prob
+        except Exception:
+            model_prob_fn = None
+
+    try:
+        games = generic_odds.build_sport_games(sport, model_prob_fn=model_prob_fn)
+    except Exception:
+        games = []
+
+    cards = []
+    for g in games:
+        ml_rows, spread_rows, total_rows = [], [], []
+        pin_ml = g.get("ml") or {}
+        if pin_ml.get("home_am") is not None:
+            # Devig for fair %
+            p_h = mlb_odds.american_to_prob(pin_ml["home_am"])
+            p_a = mlb_odds.american_to_prob(pin_ml["away_am"])
+            p_d = mlb_odds.american_to_prob(pin_ml.get("draw_am")) if sport["ml_outcomes"] == 3 else None
+            if sport["ml_outcomes"] == 3 and p_d:
+                total = p_h + p_d + p_a
+                fair_h = p_h / total; fair_d = p_d / total; fair_a = p_a / total
+            else:
+                fh, fa = mlb_odds.devig_two_sided(p_h, p_a)
+                fair_h, fair_a, fair_d = fh, fa, None
+
+            for label, am, fair in [
+                (g["away_name"], pin_ml.get("away_am"), fair_a),
+                (g["home_name"], pin_ml.get("home_am"), fair_h),
+            ]:
+                dec = mlb_odds.american_to_decimal(am)
+                ml_rows.append({
+                    "label": label,
+                    "price": _signed_am_str(am),
+                    "decimal": f"{dec:.2f}" if dec else "—",
+                    "fair_pct": f"{round((fair or 0) * 100)}" if fair else "—",
+                })
+            if fair_d is not None:
+                ml_rows.insert(1, {
+                    "label": "Draw",
+                    "price": _signed_am_str(pin_ml.get("draw_am")),
+                    "decimal": f"{mlb_odds.american_to_decimal(pin_ml['draw_am']):.2f}",
+                    "fair_pct": f"{round(fair_d * 100)}",
+                })
+
+        pin_spread = g.get("spread") or {}
+        if pin_spread.get("home_am") is not None:
+            hpt = pin_spread.get("line_home")
+            apt = -hpt if hpt is not None else None
+            for label, am in [
+                (f"{g['away_name']} {('' if (apt or 0) < 0 else '+')}{apt}", pin_spread.get("away_am")),
+                (f"{g['home_name']} {('' if (hpt or 0) < 0 else '+')}{hpt}", pin_spread.get("home_am")),
+            ]:
+                dec = mlb_odds.american_to_decimal(am)
+                spread_rows.append({
+                    "label": label,
+                    "price": _signed_am_str(am),
+                    "decimal": f"{dec:.2f}" if dec else "—",
+                })
+
+        pin_total = g.get("total") or {}
+        total_line = None
+        if pin_total.get("line") is not None:
+            total_line = pin_total["line"]
+            p_o = mlb_odds.american_to_prob(pin_total.get("over_am"))
+            p_u = mlb_odds.american_to_prob(pin_total.get("under_am"))
+            fo, fu = mlb_odds.devig_two_sided(p_o, p_u)
+            for label, am, fair in [
+                (f"Over {total_line}", pin_total.get("over_am"), fo),
+                (f"Under {total_line}", pin_total.get("under_am"), fu),
+            ]:
+                dec = mlb_odds.american_to_decimal(am)
+                total_rows.append({
+                    "label": label,
+                    "price": _signed_am_str(am),
+                    "decimal": f"{dec:.2f}" if dec else "—",
+                    "fair_pct": f"{round((fair or 0) * 100)}" if fair else "—",
+                })
+
+        # Best US book pulled from bets list (any ML side's best_book/best_decimal)
+        best_book_home = best_book_away = None
+        best_dec_home = best_dec_away = None
+        for b in (g.get("bets") or []):
+            if b["market"] == "ML":
+                if b["side"] == "home" and b.get("book") not in (None, "pinnacle"):
+                    best_book_home = b["book"]
+                    best_dec_home = f"{b['book_decimal']:.2f}" if b.get("book_decimal") else None
+                elif b["side"] == "away" and b.get("book") not in (None, "pinnacle"):
+                    best_book_away = b["book"]
+                    best_dec_away = f"{b['book_decimal']:.2f}" if b.get("book_decimal") else None
+
+        # Model probability
+        p_home_pct = None
+        mp = g.get("model_prob")
+        if mp and mp.get("home") is not None:
+            p_home_pct = round(mp["home"] * 100)
+
+        cards.append({
+            "away": g["away_name"], "home": g["home_name"],
+            "away_short": _short_name(g["away_name"]), "home_short": _short_name(g["home_name"]),
+            "start_time_et": _format_et(g.get("start_time")),
+            "is_live": bool(g.get("is_live")),
+            "ml": ml_rows, "spread": spread_rows, "total": total_rows,
+            "total_line": total_line,
+            "best_book_home": best_book_home, "best_book_away": best_book_away,
+            "best_dec_home": best_dec_home, "best_dec_away": best_dec_away,
+            "p_home_pct": p_home_pct,
+        })
+
+    return render_template_string(
+        SPORT_SCHEDULE_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        sport_strip=render_sport_strip(slug),
+        nav=render_sport_nav(slug, "schedule"),
+        sport=sport,
+        cards=cards,
+        odds_api_available=generic_odds.odds_api_available(),
+        now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
+    )
+
+
+@app.route("/sport/<slug>/arbitrage")
+def sport_arbitrage(slug):
+    """Arbitrage filtered to one sport."""
+    sport = sports.by_slug(slug)
+    if not sport or sport.get("dedicated"):
+        from flask import redirect
+        return redirect("/arbitrage", code=302)
+    import arb_finder
+    t0 = time.time()
+    try:
+        all_arbs = arb_finder.find_sport_arbs(sport)
+    except Exception:
+        all_arbs = []
+    scan_time_ms = int((time.time() - t0) * 1000)
+    return render_template_string(
+        ARB_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        sport_strip=render_sport_strip(slug),
+        nav=render_sport_nav(slug, "arbitrage"),
+        arbs=all_arbs,
+        scan_time_ms=scan_time_ms,
+        now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
+    )
+
+
+@app.route("/sport/<slug>/edges")
+def sport_edges(slug):
     sport = sports.by_slug(slug)
     if not sport or sport.get("dedicated"):
         from flask import redirect
@@ -2917,6 +3327,7 @@ def sport_page(slug):
         fonts_link=FONTS_LINK,
         shared_style=SHARED_STYLE,
         sport_strip=render_sport_strip(slug),
+        nav=render_sport_nav(slug, "edges"),
         sport=sport,
         rows=rows,
         game_count=len(games),
@@ -3028,14 +3439,7 @@ svg.calib { max-width: 100%; height: auto; }
     <div class="brand" style="display: flex; align-items: baseline;">
       <span class="brand-mark" aria-hidden="true"></span>
       <span class="brand-name">First Pitch</span>
-      <nav class="nav-tabs">
-        <a class="nav-tab" href="/">Schedule</a>
-        <a class="nav-tab" href="/edges">Edges</a>
-        <a class="nav-tab" href="/arbitrage">Arbitrage</a>
-        <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
-        <a class="nav-tab" href="/analyst">AI Analyst</a>
-        <a class="nav-tab" href="/market">Market</a>
-      </nav>
+      {{ nav|safe }}
     </div>
     <div class="controls">
       <a class="btn" href="/sport/nfl/backtest?refresh=1">Refit</a>
@@ -3283,6 +3687,7 @@ def nfl_backtest():
             fonts_link=FONTS_LINK,
             shared_style=SHARED_STYLE,
             sport_strip=render_sport_strip("nfl"),
+            nav=render_sport_nav("nfl", "backtest"),
             state=None, m=None, top_elo=[], bottom_elo=[],
             top_qbs=[], bottom_qbs=[], bottom_qb_rank_start=0,
             per_season_rows=[],
@@ -3339,6 +3744,7 @@ def nfl_backtest():
         fonts_link=FONTS_LINK,
         shared_style=SHARED_STYLE,
         sport_strip=render_sport_strip("nfl"),
+        nav=render_sport_nav("nfl", "backtest"),
         state=state, m=m,
         top_elo=top_elo, bottom_elo=bottom_elo,
         top_qbs=top_qbs, bottom_qbs=bottom_qbs,
@@ -3867,13 +4273,7 @@ ARB_TEMPLATE = r"""<!doctype html>
     <div class="brand" style="display: flex; align-items: baseline;">
       <span class="brand-mark" aria-hidden="true"></span>
       <span class="brand-name">First Pitch</span>
-      <nav class="nav-tabs">
-        <a class="nav-tab" href="/">Schedule</a>
-        <a class="nav-tab" href="/edges">Edges</a>
-        <a class="nav-tab active" href="/arbitrage">Arbitrage</a>
-        <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
-        <a class="nav-tab" href="/market">Market</a>
-      </nav>
+      {{ nav|safe }}
     </div>
     <div class="controls">
       <a class="btn" href="/arbitrage?refresh=1">Refresh</a>
@@ -3984,6 +4384,7 @@ def arbitrage():
         fonts_link=FONTS_LINK,
         shared_style=SHARED_STYLE,
         sport_strip=render_sport_strip("mlb"),
+        nav=render_sport_nav("mlb", "arbitrage"),
         arbs=arbs,
         scan_time_ms=scan_time_ms,
         now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
