@@ -321,7 +321,17 @@ def get_games(date_str):
             stats = team_stats_by_id.get(tid) or {"hitting": {}, "pitching": {}}
             hitting = stats.get("hitting") or {}
             pitching = stats.get("pitching") or {}
+            # numeric derivatives for the totals/F5 model
+            runs = hitting.get("runs")
+            gp = hitting.get("gamesPlayed")
+            rpg = (runs / gp) if (runs and gp) else None
+            try:
+                team_era_num = float(pitching.get("era")) if pitching.get("era") else None
+            except (TypeError, ValueError):
+                team_era_num = None
             return {
+                "rpg": rpg,
+                "team_era_num": team_era_num,
                 "id": tid,
                 "team": t.get("teamName") or t.get("name", ""),
                 "team_full": t.get("name", ""),
@@ -395,10 +405,24 @@ def get_games(date_str):
         p_away_pct = (100 - p_home_pct) if p_home_pct is not None else None
 
         # ---- ODDS (Pinnacle fair + bettable price; Odds API if available) ----
+        # Build game context for the totals/RL/F5 scoring model
+        h_sp_m = sp_stats_for_model(pitcher_by_id.get(home_pitcher.get("id")) if home_pitcher.get("id") else None)
+        a_sp_m = sp_stats_for_model(pitcher_by_id.get(away_pitcher.get("id")) if away_pitcher.get("id") else None)
+        game_ctx = {
+            "home_rpg": home_bundle.get("rpg"),
+            "away_rpg": away_bundle.get("rpg"),
+            "home_team_era": home_bundle.get("team_era_num"),
+            "away_team_era": away_bundle.get("team_era_num"),
+            "home_sp_era": h_sp_m.get("era") if h_sp_m else None,
+            "home_sp_ip": h_sp_m.get("ip") if h_sp_m else None,
+            "away_sp_era": a_sp_m.get("era") if a_sp_m else None,
+            "away_sp_ip": a_sp_m.get("ip") if a_sp_m else None,
+        }
         odds = mlb_odds.build_game_odds(
             away_bundle["team_full"],
             home_bundle["team_full"],
             model_prob_home=p_home,
+            game_ctx=game_ctx,
         )
 
         games.append({
@@ -1686,6 +1710,35 @@ EDGES_TEMPLATE = r"""<!doctype html>
 .edges .ev-strong { color: var(--good); font-weight: 600; }
 .edges .ev-mild { color: var(--good); }
 
+.filter-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 16px; }
+.filter-chips .chip {
+  padding: 6px 12px; border-radius: 999px;
+  border: 1px solid var(--rule-strong);
+  background: var(--surface); color: var(--muted);
+  font-size: 12px; font-weight: 500; text-decoration: none;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.filter-chips .chip:hover { color: var(--ink); background: var(--card); }
+.filter-chips .chip.active {
+  color: var(--ink); background: var(--card);
+  border-color: var(--ink);
+}
+
+.mkt-pill {
+  display: inline-block;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px; letter-spacing: 0.08em;
+  text-transform: uppercase; font-weight: 500;
+  padding: 2px 8px; border-radius: 4px;
+  background: var(--chip-bg); color: var(--muted);
+  border: 1px solid var(--rule);
+}
+.mkt-pill.mkt-ml       { color: var(--accent); border-color: color-mix(in oklab, var(--accent) 40%, var(--rule)); }
+.mkt-pill.mkt-total    { color: var(--warn);   border-color: color-mix(in oklab, var(--warn) 40%, var(--rule)); }
+.mkt-pill.mkt-run_line { color: var(--good);   border-color: color-mix(in oklab, var(--good) 40%, var(--rule)); }
+.mkt-pill.mkt-f5_ml    { color: var(--accent); background: color-mix(in oklab, var(--accent) 8%, var(--chip-bg)); }
+.mkt-pill.mkt-f5_total { color: var(--warn);   background: color-mix(in oklab, var(--warn) 8%, var(--chip-bg)); }
+
 .empty-edge {
   padding: 60px 24px; text-align: center; color: var(--muted);
 }
@@ -1755,11 +1808,19 @@ EDGES_TEMPLATE = r"""<!doctype html>
     </div>
   </div>
 
+  <div class="filter-chips">
+    {% set mkts = [('ALL','All'),('ML','Moneyline'),('TOTAL','Total'),('RUN_LINE','Run Line'),('F5_ML','F5 ML'),('F5_TOTAL','F5 Total')] %}
+    {% for mk, lab in mkts %}
+      <a class="chip {% if market_filter == mk %}active{% endif %}" href="/edges?date={{ date_str }}&market={{ mk|lower }}">{{ lab }}</a>
+    {% endfor %}
+  </div>
+
   <div class="edges">
     {% if edges %}
     <table>
       <thead>
         <tr>
+          <th>Market</th>
           <th>Game</th>
           <th>Pick</th>
           <th class="num">Model</th>
@@ -1773,11 +1834,12 @@ EDGES_TEMPLATE = r"""<!doctype html>
       <tbody>
         {% for e in edges %}
         <tr>
+          <td><span class="mkt-pill mkt-{{ e.market|replace(' ','_')|lower }}">{{ e.market }}</span></td>
           <td class="matchup">{{ e.away }} at {{ e.home }}<br>
             <small style="color:var(--muted);font-size:11px">{{ e.first_pitch }}</small></td>
-          <td class="pick">{{ e.side_name }}</td>
-          <td class="num">{{ (e.model_prob * 100)|round|int }}%</td>
-          <td class="num" style="color:var(--muted)">{{ (e.fair_prob * 100)|round|int }}%</td>
+          <td class="pick">{{ e.pick }}</td>
+          <td class="num">{{ (e.model_prob * 100)|round(1) }}%</td>
+          <td class="num" style="color:var(--muted)">{{ (e.fair_prob * 100)|round(1) if e.fair_prob else '—' }}{{ '%' if e.fair_prob else '' }}</td>
           <td class="num">
             {{ ('+' if e.american > 0 else '') ~ e.american }}
             <span style="color:var(--muted-2)">({{ '%.2f'|format(e.decimal) }})</span>
@@ -1802,20 +1864,16 @@ EDGES_TEMPLATE = r"""<!doctype html>
     </table>
     {% else %}
     <div class="empty-edge">
-      <h2>No positive-EV moneyline plays today.</h2>
-      <p>Either the market agrees with the model, or there are no games with Pinnacle odds yet.</p>
+      <h2>No positive-EV plays {% if market_filter != 'ALL' %}in this market{% endif %} today.</h2>
+      <p>Either the market agrees with the model, or Pinnacle hasn't posted this slate yet.</p>
     </div>
     {% endif %}
   </div>
 
   <div class="note">
-    <strong>What's shown:</strong> Only full-game moneyline where the model has a prediction and Pinnacle has a price.
-    Run-line and total bets would need their own prediction models (not just the moneyline model you see here) &mdash;
-    I didn't want to show fake EV numbers based on a model that doesn't exist for those markets.
-    &nbsp;<br><br>
-    <strong>Betting splits (public bet %):</strong> Scraping ScoresAndOdds, VegasInsider, etc. failed because
-    they're client-rendered. Paid aggregators (ActionNetwork, BetQL) run $50&ndash;100/mo &mdash; above budget.
-    The Market tab shows Pinnacle's limits as a sharper proxy than retail public%.
+    <strong>Markets covered:</strong> Full moneyline (Elo+SP model), Full total (Poisson, team RPG × opp SP+bullpen rate), Run Line -1.5 (Poisson margin), F5 moneyline + F5 total (Poisson with SP-heavy weighting). F5 ML has a tie-push rule baked into EV.
+    <br><br>
+    <strong>Betting splits (public bet %):</strong> Still not scraped — ScoresAndOdds/VegasInsider are client-rendered. The Market tab shows Pinnacle's limits per market as a sharper-money proxy.
   </div>
 
   <footer>
@@ -1831,6 +1889,7 @@ EDGES_TEMPLATE = r"""<!doctype html>
 @app.route("/edges")
 def edges():
     date_str = request.args.get("date") or datetime.now(EASTERN).date().isoformat()
+    market_filter = (request.args.get("market") or "all").upper()
     try:
         d = datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
@@ -1848,40 +1907,44 @@ def edges():
     for g in games:
         o = g.get("odds") or {}
         pin = o.get("pinnacle") or {}
-        ml = pin.get("moneyline") or {}
-        if not ml.get("away_am") or not ml.get("home_am"):
+        if not pin:
             continue
         games_with_odds += 1
-        if g.get("p_home") is None:
-            continue
-
-        # Build row per side when EV > 0
-        for side in ("away", "home"):
-            am = ml["away_am"] if side == "away" else ml["home_am"]
-            dec = o["pin_decimal"][side]
-            ev_pct = (o.get("ev_pinnacle") or {}).get(side)
-            fair = (o.get("pin_fair") or {}).get(side)
-            if ev_pct is None or ev_pct <= 0:
+        bets = o.get("bets") or []
+        for b in bets:
+            if b["ev_pct"] <= 0:
                 continue
-            model_prob = (g["p_home"] if side == "home" else 1 - g["p_home"])
-            kelly = mlb_odds.kelly_fraction(model_prob, dec, cap=0.25)
-            best_dec = (o.get("best_decimal") or {}).get(side)
-            best_book = (o.get("best_book") or {}).get(side)
-            ev_book_pct = (o.get("ev_book") or {}).get(side)
+            if market_filter not in ("ALL", b["market"].upper().replace(" ", "_")):
+                # allow filter like market=ml, market=total, market=run_line, market=f5_ml, market=f5_total
+                mkt_key = b["market"].upper().replace(" ", "_")
+                if market_filter != mkt_key:
+                    continue
+            # best US book price only applies to full-game ML + spreads + totals
+            best_book = best_dec = ev_book = None
+            if b["market"] in ("ML", "Run Line", "Total"):
+                best_book = (o.get("best_book") or {}).get(b["side"])
+                best_dec = (o.get("best_decimal") or {}).get(b["side"])
+                if b["market"] == "ML":
+                    ev_book = (o.get("ev_book") or {}).get(b["side"])
+                elif best_dec and b.get("model_prob") is not None:
+                    ev_book = (b["model_prob"] * best_dec - (1 - b.get("push_prob", 0))) * 100
             edges_list.append({
+                "market": b["market"],
                 "away": g["away"]["team"],
                 "home": g["home"]["team"],
                 "first_pitch": g["first_pitch"],
-                "side_name": g[side]["team"],
-                "model_prob": model_prob,
-                "fair_prob": fair,
-                "american": am,
-                "decimal": dec,
-                "ev_pct": ev_pct,
-                "kelly_pct": kelly * 100,
+                "pick": b["pick"],
+                "model_prob": b["model_prob"],
+                "fair_prob": b["fair_prob"],
+                "american": b["american"],
+                "decimal": b["decimal"],
+                "ev_pct": b["ev_pct"],
+                "kelly_pct": b["kelly_pct"],
+                "push_prob": b.get("push_prob", 0),
+                "limit": b.get("limit"),
                 "best_book": best_book,
                 "best_decimal": best_dec,
-                "ev_book_pct": ev_book_pct,
+                "ev_book_pct": ev_book,
             })
 
     edges_list.sort(key=lambda e: -e["ev_pct"])
@@ -1902,6 +1965,7 @@ def edges():
         positive_count=len(edges_list),
         strong_count=strong_count,
         odds_api_available=mlb_odds.odds_api_available(),
+        market_filter=market_filter,
         now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
     )
 

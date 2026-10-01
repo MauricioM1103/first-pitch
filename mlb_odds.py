@@ -194,11 +194,40 @@ def get_pinnacle_odds():
     return _cached(("pinnacle",), 300, _get_pinnacle_odds)
 
 
+def _extract_total_line(key):
+    """Parse '7.5' from 's;0;ou;7.5' / 's;1;ou;4.5'."""
+    try:
+        return float(key.split(";")[-1])
+    except (ValueError, IndexError):
+        return None
+
+
+def _extract_spread_line(key):
+    """Parse '1.5' from 's;0;s;1.5'. Pinnacle lists as magnitude; sign comes from
+    participant via home_am vs away_am (favorite has negative price)."""
+    try:
+        return float(key.split(";")[-1])
+    except (ValueError, IndexError):
+        return None
+
+
+def _best_main_total(candidates):
+    """Pick the 'main' total line from a list of candidates: the one whose
+    over/under prices are closest to -110 (least sided). Fallback: first."""
+    if not candidates:
+        return None
+    def score(c):
+        o, u = c.get("over_am"), c.get("under_am")
+        if o is None or u is None:
+            return 10000
+        return abs(abs(o) - 110) + abs(abs(u) - 110)
+    return min(candidates, key=score)
+
+
 def _get_pinnacle_odds():
     matchups = _fetch_pinnacle_matchups() or []
     markets = _fetch_pinnacle_straight_markets() or []
 
-    # Index markets by matchupId
     by_mu = {}
     for m in markets:
         by_mu.setdefault(m.get("matchupId"), []).append(m)
@@ -210,12 +239,9 @@ def _get_pinnacle_odds():
         parts = mu.get("participants") or []
         if len(parts) < 2:
             continue
-        # Pinnacle: first participant is "away", second is "home" by their convention
-        # Verify via alignment: alignment == "home"/"away" field on participant
         home = next((p for p in parts if p.get("alignment") == "home"), None)
         away = next((p for p in parts if p.get("alignment") == "away"), None)
         if not home or not away:
-            # fall back to position
             away, home = parts[0], parts[1]
 
         home_name = home.get("name", "")
@@ -223,58 +249,86 @@ def _get_pinnacle_odds():
         home_id = home.get("id")
         away_id = away.get("id")
         mu_id = mu.get("id")
-
         mkts = by_mu.get(mu_id, [])
-        pinnacle_entry = {
+
+        entry = {
             "matchup_id": mu_id,
             "start_time": mu.get("startTime"),
             "is_live": mu.get("isLive"),
-            "home_name": home_name,
-            "away_name": away_name,
-            "moneyline": None,
-            "total": None,
-            "run_line": None,
-            "team_total_home": None,
-            "team_total_away": None,
-            "ml_limit": None,
+            "home_name": home_name, "away_name": away_name,
+            # period 0 (full game) — key "moneyline" kept for backward-compat with schedule card
+            "moneyline": None, "total": None, "run_line": None,
+            "ml_limit": None, "total_limit": None,
+            # period 1 (first 5 innings)
+            "ml_f5": None, "total_f5": None,
+            "ml_limit_f5": None, "total_limit_f5": None,
         }
 
+        total_full_candidates = []
+        total_f5_candidates = []
+
         for m in mkts:
-            if m.get("period") != 0:  # full-game only (period 0)
+            period = m.get("period")
+            if period not in (0, 1):
                 continue
             key = m.get("key", "")
             typ = m.get("type")
             prices = m.get("prices", []) or []
             limits = m.get("limits", []) or []
-            max_limit = max([lim.get("amount", 0) for lim in limits] + [0]) if limits else None
+            max_limit = max([lim.get("amount", 0) for lim in limits]) if limits else None
 
             if typ == "moneyline":
-                home_price = next((p.get("price") for p in prices if p.get("participantId") == home_id), None)
-                away_price = next((p.get("price") for p in prices if p.get("participantId") == away_id), None)
-                pinnacle_entry["moneyline"] = {"home_am": home_price, "away_am": away_price}
-                pinnacle_entry["ml_limit"] = max_limit
-            elif typ == "total" and ";0;ou;" not in key and key.startswith("s;0;ou"):
-                # Main total only (first encountered)
+                hp = next((p.get("price") for p in prices if p.get("participantId") == home_id), None)
+                ap = next((p.get("price") for p in prices if p.get("participantId") == away_id), None)
+                if period == 0:
+                    entry["moneyline"] = {"home_am": hp, "away_am": ap}
+                    entry["ml_limit"] = max_limit
+                else:
+                    entry["ml_f5"] = {"home_am": hp, "away_am": ap}
+                    entry["ml_limit_f5"] = max_limit
+            elif typ == "total":
                 over = next((p.get("price") for p in prices if p.get("designation") == "over"), None)
                 under = next((p.get("price") for p in prices if p.get("designation") == "under"), None)
-                total_line = m.get("units")
-                try:
-                    total_line = float(key.split(";")[-1])
-                except (ValueError, IndexError):
-                    pass
-                if pinnacle_entry["total"] is None:
-                    pinnacle_entry["total"] = {
-                        "line": total_line, "over_am": over, "under_am": under,
-                    }
-            elif typ == "spread" and key == "s;0;s;1.5":
-                home_price = next((p.get("price") for p in prices if p.get("participantId") == home_id), None)
-                away_price = next((p.get("price") for p in prices if p.get("participantId") == away_id), None)
-                pinnacle_entry["run_line"] = {
-                    "line": 1.5, "home_am": home_price, "away_am": away_price,
+                line = _extract_total_line(key)
+                if line is None or over is None or under is None:
+                    continue
+                cand = {"line": line, "over_am": over, "under_am": under, "limit": max_limit}
+                if period == 0:
+                    total_full_candidates.append(cand)
+                else:
+                    total_f5_candidates.append(cand)
+            elif typ == "spread" and period == 0:
+                line = _extract_spread_line(key)
+                if line != 1.5:
+                    continue
+                hp = next((p.get("price") for p in prices if p.get("participantId") == home_id), None)
+                ap = next((p.get("price") for p in prices if p.get("participantId") == away_id), None)
+                # home_am being negative means home is favored (-1.5 for home)
+                entry["run_line"] = {
+                    "line": line, "home_am": hp, "away_am": ap,
+                    "limit": max_limit,
                 }
 
+        # Pick main total lines by proximity to -110 vig
+        main_full = _best_main_total(total_full_candidates)
+        if main_full:
+            entry["total"] = {
+                "line": main_full["line"],
+                "over_am": main_full["over_am"],
+                "under_am": main_full["under_am"],
+            }
+            entry["total_limit"] = main_full.get("limit")
+        main_f5 = _best_main_total(total_f5_candidates)
+        if main_f5:
+            entry["total_f5"] = {
+                "line": main_f5["line"],
+                "over_am": main_f5["over_am"],
+                "under_am": main_f5["under_am"],
+            }
+            entry["total_limit_f5"] = main_f5.get("limit")
+
         key = (_team_key(away_name), _team_key(home_name))
-        out[key] = pinnacle_entry
+        out[key] = entry
     return out
 
 
@@ -383,18 +437,52 @@ def _get_odds_api_mlb():
 # Game-level odds assembly
 # ============================================================================
 
-def build_game_odds(away_team, home_team, model_prob_home=None):
-    """Join every source and compute EV for the given matchup.
+def _add_two_sided_bets(bets, market, side_data, limit, decimal_only=False):
+    """side_data: dict of side_key -> (label, american, model_prob, fair_prob, push_prob).
 
-    Returns a dict with pinnacle (devigged), odds_api, polymarket (if any
-    single-game market matches), ev calculations against model_prob_home.
+    Appends a bet entry per side (keeping negative-EV too; filter at display).
     """
+    for side_key, (label, am, model_p, fair_p, push_p) in side_data.items():
+        if am is None or model_p is None:
+            continue
+        dec = american_to_decimal(am)
+        if not dec:
+            continue
+        push_p = push_p or 0.0
+        # EV = p_win * d - (1 - p_push). For push_p=0 this reduces to p*d - 1.
+        ev = model_p * dec - (1 - push_p)
+        # Kelly: use conditional (no-push) prob when ties push
+        p_eff = model_p if push_p == 0 else model_p / max(1e-9, 1 - push_p)
+        kelly = kelly_fraction(p_eff, dec, cap=0.25)
+        bets.append({
+            "market": market,
+            "side": side_key,
+            "pick": label,
+            "model_prob": model_p,
+            "fair_prob": fair_p,
+            "american": am,
+            "decimal": dec,
+            "ev_pct": ev * 100,
+            "kelly_pct": kelly * 100,
+            "push_prob": push_p,
+            "limit": limit,
+        })
+
+
+def build_game_odds(away_team, home_team, model_prob_home=None, game_ctx=None):
+    """Join every source and compute EV across all markets for the matchup.
+
+    `game_ctx` carries the inputs needed by the totals/RL/F5 models:
+        home_rpg, away_rpg, home_team_era, away_team_era,
+        home_sp_era, home_sp_ip, away_sp_era, away_sp_ip
+    """
+    import mlb_model as M
     key = (_team_key(away_team), _team_key(home_team))
 
     pin = (get_pinnacle_odds() or {}).get(key)
     oapi = (get_odds_api_mlb() or {}).get(key)
 
-    # Pinnacle devigged moneyline → fair probs
+    # ------- Pinnacle moneyline (full game) -------
     pin_home_fair = pin_away_fair = None
     pin_home_dec = pin_away_dec = None
     if pin and pin.get("moneyline"):
@@ -405,7 +493,6 @@ def build_game_odds(away_team, home_team, model_prob_home=None):
         pin_home_dec = american_to_decimal(ml.get("home_am"))
         pin_away_dec = american_to_decimal(ml.get("away_am"))
 
-    # EV versus Pinnacle (model vs. actual bettable odds — vig stays)
     ev_home_pin = ev_away_pin = None
     kelly_home_pin = kelly_away_pin = 0.0
     if model_prob_home is not None and pin_home_dec:
@@ -416,7 +503,7 @@ def build_game_odds(away_team, home_team, model_prob_home=None):
         ev_away_pin = ev_percent(model_prob_away, pin_away_dec)
         kelly_away_pin = kelly_fraction(model_prob_away, pin_away_dec)
 
-    # Odds API — pick best price across books for each side
+    # ------- The Odds API (best US book, full ML + spreads + totals) -------
     best_books = {"home": None, "away": None}
     best_decimal = {"home": None, "away": None}
     if oapi:
@@ -430,12 +517,75 @@ def build_game_odds(away_team, home_team, model_prob_home=None):
                 if price and (best_decimal[side] is None or price > best_decimal[side]):
                     best_decimal[side] = price
                     best_books[side] = bname
-
     ev_home_book = ev_away_book = None
     if model_prob_home is not None and best_decimal["home"]:
         ev_home_book = ev_percent(model_prob_home, best_decimal["home"])
     if model_prob_home is not None and best_decimal["away"]:
         ev_away_book = ev_percent(1 - model_prob_home, best_decimal["away"])
+
+    # ======= BETS LIST — all markets, each side =======
+    bets = []
+
+    # ---- Full ML ----
+    if pin and pin.get("moneyline") and model_prob_home is not None:
+        ml = pin["moneyline"]
+        _add_two_sided_bets(bets, "ML", {
+            "away": (away_team, ml.get("away_am"), 1 - model_prob_home, pin_away_fair, 0.0),
+            "home": (home_team, ml.get("home_am"), model_prob_home, pin_home_fair, 0.0),
+        }, limit=pin.get("ml_limit"))
+
+    # ---- Full Total ----
+    if pin and pin.get("total") and game_ctx:
+        t = pin["total"]
+        pred = M.predict_full_total(game_ctx, t["line"])
+        if pred:
+            # devig
+            p_over_raw = american_to_prob(t.get("over_am"))
+            p_under_raw = american_to_prob(t.get("under_am"))
+            fair_o, fair_u = devig_two_sided(p_over_raw, p_under_raw)
+            _add_two_sided_bets(bets, "Total", {
+                "over":  (f"Over {t['line']}",  t.get("over_am"),  pred["p_over"],  fair_o, pred["p_push"]),
+                "under": (f"Under {t['line']}", t.get("under_am"), pred["p_under"], fair_u, pred["p_push"]),
+            }, limit=pin.get("total_limit"))
+
+    # ---- Run Line (home -1.5 / away +1.5) ----
+    if pin and pin.get("run_line") and game_ctx:
+        rl = pin["run_line"]
+        pred = M.predict_run_line(game_ctx, line=1.5)
+        if pred:
+            p_h_raw = american_to_prob(rl.get("home_am"))
+            p_a_raw = american_to_prob(rl.get("away_am"))
+            fair_h, fair_a = devig_two_sided(p_h_raw, p_a_raw)
+            _add_two_sided_bets(bets, "Run Line", {
+                "home": (f"{home_team} -1.5", rl.get("home_am"), pred["p_home_covers"], fair_h, 0.0),
+                "away": (f"{away_team} +1.5", rl.get("away_am"), pred["p_away_covers"], fair_a, 0.0),
+            }, limit=rl.get("limit"))
+
+    # ---- F5 Moneyline (2-way with tie push) ----
+    if pin and pin.get("ml_f5") and game_ctx:
+        f5ml = pin["ml_f5"]
+        pred = M.predict_f5_moneyline(game_ctx)
+        if pred:
+            p_h_raw = american_to_prob(f5ml.get("home_am"))
+            p_a_raw = american_to_prob(f5ml.get("away_am"))
+            fair_h, fair_a = devig_two_sided(p_h_raw, p_a_raw)
+            _add_two_sided_bets(bets, "F5 ML", {
+                "home": (f"{home_team} (F5)", f5ml.get("home_am"), pred["p_home"], fair_h, pred["p_tie"]),
+                "away": (f"{away_team} (F5)", f5ml.get("away_am"), pred["p_away"], fair_a, pred["p_tie"]),
+            }, limit=pin.get("ml_limit_f5"))
+
+    # ---- F5 Total ----
+    if pin and pin.get("total_f5") and game_ctx:
+        t5 = pin["total_f5"]
+        pred = M.predict_f5_total(game_ctx, t5["line"])
+        if pred:
+            p_o_raw = american_to_prob(t5.get("over_am"))
+            p_u_raw = american_to_prob(t5.get("under_am"))
+            fair_o, fair_u = devig_two_sided(p_o_raw, p_u_raw)
+            _add_two_sided_bets(bets, "F5 Total", {
+                "over":  (f"Over {t5['line']} (F5)",  t5.get("over_am"),  pred["p_over"],  fair_o, pred["p_push"]),
+                "under": (f"Under {t5['line']} (F5)", t5.get("under_am"), pred["p_under"], fair_u, pred["p_push"]),
+            }, limit=pin.get("total_limit_f5"))
 
     return {
         "pinnacle": pin,
@@ -448,6 +598,7 @@ def build_game_odds(away_team, home_team, model_prob_home=None):
         "best_decimal": best_decimal,
         "ev_book": {"home": ev_home_book, "away": ev_away_book},
         "odds_api_available": odds_api_available(),
+        "bets": bets,
     }
 
 

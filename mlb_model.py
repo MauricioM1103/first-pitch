@@ -261,6 +261,244 @@ def elo_update(elo_home, elo_away, home_won, home_score, away_score, k=K_FACTOR)
 
 
 # ============================================================================
+# Totals / Run-Line / F5 scoring model (Poisson)
+# ============================================================================
+#
+# Project runs scored per side from team offense, opponent starting pitcher,
+# and opponent team pitching (bullpen proxy). Then compute market probabilities
+# from independent Poisson distributions over each side's runs.
+#
+# Poisson is slightly under-dispersed vs real MLB (clumping in innings), but
+# as a bettor-grade first-pass model it's defensible, and it's analytical so
+# no simulation noise.
+
+LEAGUE_RPG = 4.50              # team runs per full game, league-wide
+LEAGUE_F5_PER_TEAM = 2.20      # team runs per first 5 innings
+MAX_RUNS_FULL = 25             # Poisson summation cap, full game
+MAX_RUNS_F5 = 15               # Poisson summation cap, F5
+
+
+def _sp_blend(sp_era, sp_ip, team_era):
+    """Blend SP ERA with team pitching staff ERA by SP's workload."""
+    if sp_era is None:
+        return team_era
+    weight = min(1.0, (sp_ip or 0) / 40.0)
+    return weight * sp_era + (1 - weight) * (team_era if team_era is not None else sp_era)
+
+
+def project_runs(team_rpg, opp_sp_era, opp_sp_ip, opp_team_era, scope="full"):
+    """Expected runs for a team.
+
+    scope: 'full' (whole game, SP+bullpen blend) or 'f5' (SP dominates).
+    Returns None if inputs are insufficient.
+    """
+    if team_rpg is None or opp_team_era is None:
+        return None
+    if scope == "f5":
+        # F5 is almost entirely SP's innings; blend heavily toward SP
+        pitcher_rate = _sp_blend(opp_sp_era, opp_sp_ip, opp_team_era)
+        base = LEAGUE_F5_PER_TEAM
+    else:
+        # Full game: SP ~5-6 IP, bullpen ~3-4 IP, 60/40 blend
+        sp_rate = _sp_blend(opp_sp_era, opp_sp_ip, opp_team_era)
+        pitcher_rate = 0.60 * sp_rate + 0.40 * opp_team_era
+        base = LEAGUE_RPG
+    offense_factor = team_rpg / LEAGUE_RPG
+    pitching_factor = pitcher_rate / LEAGUE_ERA
+    return base * offense_factor * pitching_factor
+
+
+def _poisson_pmf(k, lam):
+    if lam is None or lam <= 0:
+        return 1.0 if k == 0 else 0.0
+    try:
+        return math.exp(-lam) * (lam ** k) / math.factorial(k)
+    except (OverflowError, ValueError):
+        return 0.0
+
+
+def _poisson_cdf_array(lam, max_k):
+    """Return [pmf(0), pmf(1), ..., pmf(max_k)]."""
+    return [_poisson_pmf(k, lam) for k in range(max_k + 1)]
+
+
+def _joint_summary(lam_home, lam_away, max_k):
+    """Compute joint distribution summaries needed for market probabilities.
+
+    Returns dict with:
+      p_total_over[t]       = P(home + away > t)       for t in 0..2*max_k
+      p_margin_ge[m + max_k] = P(home - away >= m)     for m in -max_k..max_k
+    """
+    pmf_h = _poisson_cdf_array(lam_home, max_k)
+    pmf_a = _poisson_cdf_array(lam_away, max_k)
+    N = max_k + 1
+
+    # P(home - away = m) for m in -max_k..max_k
+    diff_pmf = [0.0] * (2 * N - 1)  # index 0 = margin -max_k, index N-1 = 0
+    # P(home + away = s) for s in 0..2*max_k
+    sum_pmf = [0.0] * (2 * max_k + 1)
+
+    for h in range(N):
+        ph = pmf_h[h]
+        if ph == 0:
+            continue
+        for a in range(N):
+            pa = pmf_a[a]
+            if pa == 0:
+                continue
+            joint = ph * pa
+            diff_pmf[h - a + max_k] += joint
+            sum_pmf[h + a] += joint
+
+    # Build P(home + away > t)
+    cum_from_bottom = 0.0
+    p_total_over = [0.0] * (2 * max_k + 1)
+    for t in range(2 * max_k, -1, -1):
+        cum_from_bottom += sum_pmf[t]
+        # P(total > t) = sum of pmf[t+1..]
+    # Redo correctly:
+    p_total_over = [0.0] * (2 * max_k + 1)
+    running = 0.0
+    for t in range(2 * max_k, -1, -1):
+        p_total_over[t] = running
+        running += sum_pmf[t]
+
+    # P(home margin >= m)
+    p_margin_ge = [0.0] * (2 * N - 1)
+    running = 0.0
+    for i in range(2 * N - 2, -1, -1):
+        running += diff_pmf[i]
+        p_margin_ge[i] = running
+
+    return {
+        "p_total_over": p_total_over,
+        "p_margin_ge": p_margin_ge,
+        "sum_pmf": sum_pmf,
+        "diff_pmf": diff_pmf,
+        "max_k": max_k,
+    }
+
+
+def prob_total_over(line, lam_home, lam_away, scope="full"):
+    """P(home_runs + away_runs > line). Handles X.5 and X.0 lines."""
+    max_k = MAX_RUNS_FULL if scope == "full" else MAX_RUNS_F5
+    j = _joint_summary(lam_home, lam_away, max_k)
+    # For a .5 line (e.g. 8.5), P(total > 8.5) = P(total >= 9) = p_total_over[8]
+    # For a .0 line (e.g. 8), P(total > 8) = p_total_over[8] excluding the push.
+    floor = int(math.floor(line))
+    if line - floor >= 0.5:
+        return j["p_total_over"][floor]
+    # X.0 line: exclude pushes (bet is refunded, so EV uses p_win conditional)
+    return j["p_total_over"][floor]
+
+
+def prob_total_push(line, lam_home, lam_away, scope="full"):
+    """P(push on total). Non-zero only when line is a whole number."""
+    if line - math.floor(line) >= 0.5:
+        return 0.0
+    max_k = MAX_RUNS_FULL if scope == "full" else MAX_RUNS_F5
+    j = _joint_summary(lam_home, lam_away, max_k)
+    return j["sum_pmf"][int(line)]
+
+
+def prob_home_margin_ge(k, lam_home, lam_away, scope="full"):
+    """P(home_runs - away_runs >= k)."""
+    max_k = MAX_RUNS_FULL if scope == "full" else MAX_RUNS_F5
+    j = _joint_summary(lam_home, lam_away, max_k)
+    idx = k + max_k
+    if idx < 0:
+        return 1.0
+    if idx > 2 * max_k:
+        return 0.0
+    return j["p_margin_ge"][idx]
+
+
+def predict_full_total(game_ctx, line):
+    """Return dict with lambda_home, lambda_away, expected_total, p_over, p_under."""
+    lam_h = project_runs(game_ctx.get("home_rpg"), game_ctx.get("away_sp_era"),
+                         game_ctx.get("away_sp_ip"), game_ctx.get("away_team_era"),
+                         scope="full")
+    lam_a = project_runs(game_ctx.get("away_rpg"), game_ctx.get("home_sp_era"),
+                         game_ctx.get("home_sp_ip"), game_ctx.get("home_team_era"),
+                         scope="full")
+    if lam_h is None or lam_a is None or line is None:
+        return None
+    p_over = prob_total_over(line, lam_h, lam_a, "full")
+    p_push = prob_total_push(line, lam_h, lam_a, "full")
+    return {
+        "lambda_home": lam_h, "lambda_away": lam_a,
+        "expected_total": lam_h + lam_a,
+        "p_over": p_over, "p_under": 1 - p_over - p_push,
+        "p_push": p_push,
+    }
+
+
+def predict_f5_total(game_ctx, line):
+    lam_h = project_runs(game_ctx.get("home_rpg"), game_ctx.get("away_sp_era"),
+                         game_ctx.get("away_sp_ip"), game_ctx.get("away_team_era"),
+                         scope="f5")
+    lam_a = project_runs(game_ctx.get("away_rpg"), game_ctx.get("home_sp_era"),
+                         game_ctx.get("home_sp_ip"), game_ctx.get("home_team_era"),
+                         scope="f5")
+    if lam_h is None or lam_a is None or line is None:
+        return None
+    p_over = prob_total_over(line, lam_h, lam_a, "f5")
+    p_push = prob_total_push(line, lam_h, lam_a, "f5")
+    return {
+        "lambda_home": lam_h, "lambda_away": lam_a,
+        "expected_total": lam_h + lam_a,
+        "p_over": p_over, "p_under": 1 - p_over - p_push,
+        "p_push": p_push,
+    }
+
+
+def predict_run_line(game_ctx, line=1.5):
+    """Return dict with p_home_covers (home -1.5), p_away_covers (away +1.5).
+    Since 1.5 is non-integer, there is no push. Home covers iff margin >= 2."""
+    lam_h = project_runs(game_ctx.get("home_rpg"), game_ctx.get("away_sp_era"),
+                         game_ctx.get("away_sp_ip"), game_ctx.get("away_team_era"),
+                         scope="full")
+    lam_a = project_runs(game_ctx.get("away_rpg"), game_ctx.get("home_sp_era"),
+                         game_ctx.get("home_sp_ip"), game_ctx.get("home_team_era"),
+                         scope="full")
+    if lam_h is None or lam_a is None:
+        return None
+    # home -1.5 wins if home_runs - away_runs >= 2
+    threshold = int(math.ceil(line + 0.5))  # 1.5 -> 2
+    p_home_covers = prob_home_margin_ge(threshold, lam_h, lam_a, "full")
+    return {
+        "lambda_home": lam_h, "lambda_away": lam_a,
+        "line_home": -line, "line_away": +line,
+        "p_home_covers": p_home_covers,
+        "p_away_covers": 1 - p_home_covers,
+    }
+
+
+def predict_f5_moneyline(game_ctx):
+    """F5 can tie — return p_home / p_away / p_push for 2-way-with-tie-push markets."""
+    lam_h = project_runs(game_ctx.get("home_rpg"), game_ctx.get("away_sp_era"),
+                         game_ctx.get("away_sp_ip"), game_ctx.get("away_team_era"),
+                         scope="f5")
+    lam_a = project_runs(game_ctx.get("away_rpg"), game_ctx.get("home_sp_era"),
+                         game_ctx.get("home_sp_ip"), game_ctx.get("home_team_era"),
+                         scope="f5")
+    if lam_h is None or lam_a is None:
+        return None
+    p_home = prob_home_margin_ge(1, lam_h, lam_a, "f5")  # margin >= 1
+    p_away = prob_home_margin_ge(-100, lam_h, lam_a, "f5") - prob_home_margin_ge(0, lam_h, lam_a, "f5")
+    # Clean up: p_away = P(margin < 0) = 1 - P(margin >= 0) = 1 - p_home - p_tie
+    p_tie_or_home = prob_home_margin_ge(0, lam_h, lam_a, "f5")
+    p_away = 1 - p_tie_or_home
+    p_tie = p_tie_or_home - p_home
+    # numerical cleanup
+    p_tie = max(0.0, min(1.0, p_tie))
+    return {
+        "lambda_home": lam_h, "lambda_away": lam_a,
+        "p_home": p_home, "p_away": p_away, "p_tie": p_tie,
+    }
+
+
+# ============================================================================
 # backtest
 # ============================================================================
 
