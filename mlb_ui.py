@@ -823,6 +823,15 @@ _SPORT_TABS = {
         ("backtest",  "Backtest",   "/sport/nfl/backtest"),
     ],
 }
+# Soccer leagues share the same tab set — Schedule/Edges/Arbitrage/Backtest
+_SOCCER_SLUGS_WITH_MODEL = {"epl", "laliga", "ligamx"}
+for _s in _SOCCER_SLUGS_WITH_MODEL:
+    _SPORT_TABS[_s] = [
+        ("schedule",  "Schedule",   f"/sport/{_s}"),
+        ("edges",     "Edges",      f"/sport/{_s}/edges"),
+        ("arbitrage", "Arbitrage",  f"/sport/{_s}/arbitrage"),
+        ("backtest",  "Backtest",   f"/sport/{_s}/backtest"),
+    ]
 
 
 def _default_sport_tabs(slug):
@@ -3752,6 +3761,307 @@ def nfl_backtest():
         per_season_rows=per_season_rows,
         sample_preds=sample_preds,
         calibration_svg=render_calibration_svg(m.get("calibration") or []),
+    )
+
+
+# ============================================================================
+# Soccer backtest (EPL / La Liga / Liga MX)
+# ============================================================================
+
+SOCCER_BACKTEST_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>First Pitch &mdash; {{ state.league_name }} &mdash; Backtest</title>
+{{ fonts_link|safe }}
+<style>
+{{ shared_style|safe }}
+
+.hero-block { padding-bottom: 20px; margin-bottom: 24px; border-bottom: 1px solid var(--rule); }
+.hero-block h1 {
+  font-family: "Fraunces", Georgia, serif;
+  font-style: italic; font-weight: 400;
+  font-size: clamp(32px, 5vw, 48px);
+  line-height: 1.05; letter-spacing: -0.02em;
+  margin: 0 0 8px; font-variation-settings: "opsz" 144;
+}
+.hero-block .sub { color: var(--muted); max-width: 760px; font-size: 13.5px; line-height: 1.55; }
+
+.grid-metrics {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin-bottom: 24px;
+}
+.metric {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: 10px; padding: 14px 16px;
+}
+.metric .label {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--muted); margin-bottom: 6px;
+}
+.metric .value {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 24px; font-weight: 500; color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.metric .value.accent { color: var(--accent); }
+.metric .value.good { color: var(--good); text-shadow: var(--ev-strong-glow); }
+.metric .foot { margin-top: 6px; font-size: 11.5px; color: var(--muted); font-family: "JetBrains Mono", monospace; }
+
+.section {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: 12px; padding: 20px 24px; margin-bottom: 20px;
+}
+.section h2 {
+  font-family: "Fraunces", Georgia, serif;
+  font-weight: 500; font-size: 20px; margin: 0 0 10px;
+  letter-spacing: -0.01em;
+}
+.section .lead { color: var(--muted); margin: 0 0 16px; font-size: 13px; line-height: 1.6; max-width: 760px; }
+
+.data-table {
+  width: 100%; border-collapse: collapse;
+  font-family: "JetBrains Mono", monospace;
+  font-variant-numeric: tabular-nums; font-size: 12.5px;
+}
+.data-table th, .data-table td {
+  padding: 7px 10px; border-bottom: 1px solid var(--rule); text-align: right;
+}
+.data-table th:first-child, .data-table td:first-child { text-align: left; }
+.data-table th {
+  color: var(--muted); font-size: 10px; letter-spacing: 0.1em;
+  text-transform: uppercase; font-weight: 500;
+}
+.elo-cols { display: grid; grid-template-columns: 1fr; gap: 20px; }
+@media (min-width: 900px) { .elo-cols { grid-template-columns: 1fr 1fr; } }
+
+.pred-correct { color: var(--good); font-weight: 600; }
+.pred-wrong { color: var(--muted-2); }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap header-row">
+    <div class="brand" style="display: flex; align-items: baseline;">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">First Pitch</span>
+      {{ nav|safe }}
+    </div>
+    <div class="controls">
+      <a class="btn" href="?refresh=1">Refit</a>
+    </div>
+  </div>
+</header>
+
+{{ sport_strip|safe }}
+
+<main class="wrap reveal">
+  <div class="hero-block">
+    <h1>{{ state.league_name }} &middot; 12-season backtest</h1>
+    <p class="sub">
+      3-way Elo model (home / draw / away) with margin-of-victory damping and a soccer-grade home-field
+      advantage (+{{ state.hyperparams.HFA|int }} Elo &approx; ~0.4 goals). Fit chronologically across
+      {{ state.total_matches }} matches spanning <strong>{{ state.first_season }}/{{ state.first_season + 1 }}&ndash;{{ state.last_season }}/{{ state.last_season + 1 }}</strong>
+      ({{ state.num_seasons }} seasons). Team Elo regresses 1/3 toward 1500 at each season boundary.
+      The first {{ state.warmup_seasons }} seasons are pure warm-up; the remaining
+      <strong>{{ state.last_season - state.scored_from_season + 1 }} seasons are scored</strong> below.
+      Data from football-data.co.uk.
+    </p>
+  </div>
+
+  <div class="grid-metrics">
+    <div class="metric">
+      <div class="label">Accuracy</div>
+      <div class="value accent">{{ '%.1f'|format(m.accuracy * 100) }}%</div>
+      <div class="foot">home-only baseline {{ '%.1f'|format(m.home_baseline_accuracy * 100) }}%</div>
+    </div>
+    <div class="metric">
+      <div class="label">Log loss</div>
+      <div class="value">{{ '%.4f'|format(m.log_loss) }}</div>
+      <div class="foot">baseline {{ '%.4f'|format(m.home_baseline_log_loss) }} &middot; uniform 1.0986</div>
+    </div>
+    <div class="metric">
+      <div class="label">Brier</div>
+      <div class="value">{{ '%.4f'|format(m.brier_score) }}</div>
+      <div class="foot">3-way per-outcome</div>
+    </div>
+    <div class="metric">
+      <div class="label">Scored matches</div>
+      <div class="value">{{ m.n }}</div>
+      <div class="foot">from {{ state.scored_from_season }}/{{ state.scored_from_season + 1 }}</div>
+    </div>
+    <div class="metric">
+      <div class="label">Home / Draw / Away</div>
+      <div class="value" style="font-size:15px;line-height:1.4">
+        {{ (m.home_rate * 100)|round(1) }}% / {{ (m.draw_rate * 100)|round(1) }}% / {{ (m.away_rate * 100)|round(1) }}%
+      </div>
+      <div class="foot">empirical this window</div>
+    </div>
+    <div class="metric">
+      <div class="label">Hyperparams</div>
+      <div class="value" style="font-size:14px;line-height:1.4">
+        K={{ state.hyperparams.K|int }} &middot; HFA=+{{ state.hyperparams.HFA|int }}
+      </div>
+      <div class="foot">draw factor {{ state.hyperparams.DRAW_FACTOR }}</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Per-season breakdown</h2>
+    <p class="lead">
+      3-way soccer prediction is harder than 2-way sports — random guessing is 33%, home-only baseline sits
+      around 45%. A sharp Elo model lands 50-55% depending on the league's parity.
+    </p>
+    <div class="table-scroll">
+      <table class="data-table">
+        <thead><tr>
+          <th>Season</th><th>Matches</th><th>Accuracy</th><th>Log loss</th><th>Brier</th>
+        </tr></thead>
+        <tbody>
+          {% for r in per_season_rows %}
+          <tr>
+            <td>{{ r.season }}/{{ r.season + 1 }}</td>
+            <td>{{ r.n }}</td>
+            <td>{{ (r.accuracy * 100)|round(2) }}%</td>
+            <td>{{ '%.4f'|format(r.log_loss) }}</td>
+            <td>{{ '%.4f'|format(r.brier) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Final team Elo</h2>
+    <p class="lead">End-of-window ratings. Updates after every scored match; regresses 1/3 toward 1500 between seasons.</p>
+    <div class="elo-cols">
+      <div>
+        <table class="data-table">
+          <thead><tr><th>#</th><th>Team</th><th>Elo</th></tr></thead>
+          <tbody>
+            {% for team, elo in top_elo %}
+            <tr>
+              <td style="color:var(--muted)">{{ loop.index }}</td>
+              <td>{{ team }}</td>
+              <td>{{ elo|round|int }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div>
+        <table class="data-table">
+          <thead><tr><th>#</th><th>Team</th><th>Elo</th></tr></thead>
+          <tbody>
+            {% for team, elo in bottom_elo %}
+            <tr>
+              <td style="color:var(--muted)">{{ loop.index + top_elo|length }}</td>
+              <td>{{ team }}</td>
+              <td>{{ elo|round|int }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Sample of scored predictions</h2>
+    <p class="lead">Last 24 scored matches.</p>
+    <table class="data-table">
+      <thead><tr>
+        <th>Date</th><th>Match</th><th>Model (H / D / A)</th><th>Result</th><th></th>
+      </tr></thead>
+      <tbody>
+      {% for p in sample_preds %}
+        <tr>
+          <td>{{ p.date }}</td>
+          <td>{{ p.home }} vs {{ p.away }}</td>
+          <td>{{ (p.p_home * 100)|round|int }}% / {{ (p.p_draw * 100)|round|int }}% / {{ (p.p_away * 100)|round|int }}%</td>
+          <td>{{ p.hg }}&ndash;{{ p.ag }} ({{ p.result }})</td>
+          <td>
+            {% set pred = 'H' if p.p_home >= p.p_draw and p.p_home >= p.p_away else ('D' if p.p_draw >= p.p_away else 'A') %}
+            {% if pred == p.result %}<span class="pred-correct">&check;</span>
+            {% else %}<span class="pred-wrong">&times;</span>{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <footer>
+    <div>Fit on {{ state.total_matches }} matches &middot; data: football-data.co.uk</div>
+    <div>last refit {{ state.generated_at }}</div>
+  </footer>
+</main>
+</body>
+</html>
+"""
+
+
+_SOCCER_BACKTEST_SLUGS = {"epl", "laliga", "ligamx"}
+
+
+@app.route("/sport/<slug>/backtest")
+def soccer_backtest(slug):
+    """Soccer backtest route. NFL has its own route defined separately."""
+    if slug == "nfl":
+        from flask import redirect
+        return redirect("/sport/nfl/backtest", code=307)
+    if slug not in _SOCCER_BACKTEST_SLUGS:
+        from flask import abort
+        return abort(404)
+
+    import soccer_model
+    try:
+        if request.args.get("refresh"):
+            state = soccer_model.get_or_run_backtest(slug, refresh=True)
+        else:
+            state = soccer_model.get_or_run_backtest(slug)
+    except Exception:
+        state = None
+
+    if not state:
+        from flask import abort
+        return abort(500)
+
+    m = state.get("metrics") or {}
+
+    elo_items = sorted(state["final_elo"].items(), key=lambda kv: -kv[1])
+    top_n = 10
+    top_elo = elo_items[:top_n]
+    bottom_elo = elo_items[top_n:top_n * 2]
+
+    per_season_rows = []
+    # JSON loading turns year keys into strings — coerce back to int.
+    for s_key in sorted(state["per_season"], key=lambda x: int(x)):
+        st = state["per_season"][s_key]
+        if st.get("n"):
+            per_season_rows.append({
+                "season": int(s_key), "n": st["n"],
+                "accuracy": st["accuracy"],
+                "log_loss": st["log_loss"],
+                "brier": st["brier"],
+            })
+
+    sample_preds = state["predictions"][-24:]
+
+    return render_template_string(
+        SOCCER_BACKTEST_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        sport_strip=render_sport_strip(slug),
+        nav=render_sport_nav(slug, "backtest"),
+        state=state, m=m,
+        top_elo=top_elo, bottom_elo=bottom_elo,
+        per_season_rows=per_season_rows,
+        sample_preds=sample_preds,
     )
 
 
