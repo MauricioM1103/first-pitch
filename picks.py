@@ -154,46 +154,99 @@ def _sport_bets(sport):
     return out
 
 
+# ============================================================================
+# Confidence-based filter and ranking (reverse-engineered from Blacksmith Bets
+# / The Syndicate's pick style: mostly 1.60-2.00 decimal, favorites rather
+# than longshots, picks the model has real conviction on, not pure EV).
+# ============================================================================
+
+MIN_FAIR_PROB      = 0.46   # fair/sharp AND model probability threshold
+MIN_DECIMAL        = 1.70   # don't show short-favorite picks (-150+)
+SOCCER_DRAW_MAX_DEC = 3.70  # soccer draws only when market has them in reach
+STRONG_PROB_TIER   = 0.60   # "strong" badge for high-conviction picks
+
+
+def _is_soccer(slug):
+    return slug in {"epl", "laliga", "ligamx", "ucl", "europa", "international"}
+
+
+def _is_draw_pick(pick):
+    """Detect a soccer draw bet (pick text contains 'Draw')."""
+    return _is_soccer(pick.get("sport_slug", "")) and "draw" in pick.get("pick", "").lower()
+
+
+def _passes_filter(p):
+    """Reverse-engineered filter from the reference picks."""
+    fair = p.get("fair_prob") or 0.0
+    dec = p.get("decimal") or 0.0
+    if fair < MIN_FAIR_PROB:
+        return False
+    if dec < MIN_DECIMAL:
+        return False
+    if _is_draw_pick(p) and dec >= SOCCER_DRAW_MAX_DEC:
+        return False
+    return True
+
+
 def collect_picks(date_str):
-    """Return every +EV pick for the given date, ranked by EV desc."""
+    """Return filtered picks ranked by model probability (not EV).
+
+    The reference picks (Blacksmith Bets, The Syndicate) target confidence
+    over value — they'll take a -150 (barely over 60% implied) favorite in a
+    parlay if the probability is right, rather than hunt +400 longshots with
+    nominally positive EV. We mirror that: filter on probability thresholds
+    first, then rank by model probability descending.
+    """
     all_picks = []
     all_picks.extend(_mlb_bets(date_str))
     for sport in sports.SPORTS:
         if sport.get("dedicated"):
             continue
         all_picks.extend(_sport_bets(sport))
-    all_picks.sort(key=lambda x: -x["ev_pct"])
-    # Enrich with bulletin
-    for p in all_picks:
+
+    # Filter to confidence picks
+    filtered = [p for p in all_picks if _passes_filter(p)]
+
+    # Rank by model probability (desc), with EV as a tiebreaker
+    filtered.sort(key=lambda x: (-(x.get("fair_prob") or 0.0),
+                                  -(x.get("ev_pct") or 0.0)))
+
+    # Tag strong tier (MC-style conviction >= 60%)
+    for p in filtered:
+        p["strong"] = (p.get("fair_prob") or 0.0) >= STRONG_PROB_TIER
         p["bulletin"] = generate_bulletin(p)
-    return all_picks
+    return filtered
 
 
 def generate_bulletin(pick):
-    """Short template-based 1-2 sentence rationale per pick."""
-    bits = []
-    market_implied = (1.0 / pick["decimal"]) * 100 if pick.get("decimal") else None
+    """Confidence-first 1-2 sentence rationale.
+
+    Leads with model probability (what MC would simulate), then supporting
+    EV + Kelly, then sport-specific color line about the model source.
+    """
     fair_pct = (pick.get("fair_prob") or 0) * 100
-    if market_implied is not None and fair_pct:
-        gap = fair_pct - market_implied
-        bits.append(
-            f"Our model gives {pick['pick']} a {fair_pct:.0f}% chance to hit "
-            f"vs the book's implied {market_implied:.0f}%, a {gap:+.1f}-point edge"
-        )
+    dec = pick.get("decimal") or 0
+    market_implied = (1.0 / dec) * 100 if dec else 0
+
+    conviction = "high-conviction" if fair_pct >= STRONG_PROB_TIER * 100 else "selective"
+    bits = []
     bits.append(
-        f"EV +{pick['ev_pct']:.1f}% at {pick['book']}; quarter-Kelly "
-        f"suggests {pick['kelly_pct']:.1f}% of bankroll"
+        f"Model simulates {pick['pick']} to hit {fair_pct:.0f}% of the time "
+        f"({conviction} pick) vs market's implied {market_implied:.0f}% at "
+        f"{pick.get('american','?')}"
+    )
+    bits.append(
+        f"EV +{pick['ev_pct']:.1f}% at {pick['book']}, quarter-Kelly "
+        f"stake {pick['kelly_pct']:.1f}% of bankroll"
     )
     base = ". ".join(bits) + "."
-    # Add sport-specific color
     slug = pick["sport_slug"]
     if slug == "mlb":
-        base += " MLB model is Elo + starting-pitcher ERA/WHIP + Poisson."
+        base += " MLB model: Elo + starting-pitcher ERA/WHIP + Poisson."
     elif slug == "nfl":
-        base += " NFL model blends team Elo with per-QB Elo (12-season fit)."
+        base += " NFL model: team Elo blended with per-QB rating (12-season fit)."
     elif slug in _SOCCER_WITH_MODEL:
-        base += " Soccer model is 3-way Elo (home/draw/away) with +100 HFA."
+        base += " Soccer model: 3-way Elo (home/draw/away) with +100 HFA."
     else:
-        base += (" No bespoke model for this sport — fair probability is "
-                 "Pinnacle devigged, treat edges as line-shopping only.")
+        base += " (No bespoke model for this sport — fair prob is Pinnacle devig.)"
     return base

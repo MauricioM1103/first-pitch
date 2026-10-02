@@ -442,6 +442,78 @@ def compute_metrics(predictions):
 # caching
 # ============================================================================
 
+_GOAL_RATES_CACHE = {}
+_GOAL_RATES_TTL_S = 6 * 3600
+
+
+def get_team_goal_rates(league_slug, as_of_date=None):
+    """Return {team_name: {gs_per_match, ga_per_match, matches}} for the current
+    season up to as_of_date (default: use whole current season).
+
+    Used to estimate BTTS and over/under probabilities per matchup.
+    """
+    cache_key = (league_slug, as_of_date or "latest")
+    now = time.time()
+    hit = _GOAL_RATES_CACHE.get(cache_key)
+    if hit and now - hit[1] < _GOAL_RATES_TTL_S:
+        return hit[0]
+    end_season = _pick_season()
+    try:
+        matches = load_league_matches(LEAGUES[league_slug], end_season, num_seasons=1)
+    except Exception:
+        matches = []
+    out = {}
+    for m in matches:
+        if as_of_date and m["date"] >= as_of_date:
+            continue
+        for team, scored, allowed in [(m["home"], m["hg"], m["ag"]),
+                                       (m["away"], m["ag"], m["hg"])]:
+            e = out.setdefault(team, {"gs": 0, "ga": 0, "matches": 0})
+            e["gs"] += scored
+            e["ga"] += allowed
+            e["matches"] += 1
+    rates = {
+        t: {
+            "gs_per_match": s["gs"] / max(s["matches"], 1),
+            "ga_per_match": s["ga"] / max(s["matches"], 1),
+            "matches": s["matches"],
+        }
+        for t, s in out.items()
+    }
+    _GOAL_RATES_CACHE[cache_key] = (rates, now)
+    return rates
+
+
+# League average goals per team per match — fallback when a team has no data
+_LEAGUE_GOAL_PRIORS = {
+    "epl": 1.40, "laliga": 1.25, "ligamx": 1.45, "bundesliga": 1.50,
+    "seriea": 1.35, "ligue1": 1.30,
+}
+
+
+def predict_btts(home_team, away_team, league_slug):
+    """Probability that both teams score at least once.
+
+    Blends team-level attack rate with opponent defense rate to project
+    expected goals per side, then applies the independent-Poisson identity:
+        P(team scores ≥ 1) = 1 − exp(−λ)
+        P(BTTS Yes) = P(home scores) × P(away scores)
+    Home teams get a +15% attack boost, away a −10% penalty (standard HFA).
+    """
+    rates = get_team_goal_rates(league_slug)
+    prior = _LEAGUE_GOAL_PRIORS.get(league_slug, 1.35)
+    default = {"gs_per_match": prior, "ga_per_match": prior, "matches": 0}
+    hr = rates.get(home_team, default)
+    ar = rates.get(away_team, default)
+    # Blend own attack with opponent defense
+    lam_home = (hr["gs_per_match"] + ar["ga_per_match"]) / 2.0 * 1.15
+    lam_away = (ar["gs_per_match"] + hr["ga_per_match"]) / 2.0 * 0.90
+    p_home_scores = 1.0 - math.exp(-lam_home)
+    p_away_scores = 1.0 - math.exp(-lam_away)
+    p_yes = p_home_scores * p_away_scores
+    return {"yes": p_yes, "no": 1.0 - p_yes}
+
+
 def _pick_season():
     """Current soccer "season" year (year that this season started)."""
     today = date.today()

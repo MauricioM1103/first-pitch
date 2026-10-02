@@ -256,10 +256,15 @@ def fetch_odds_api(sport_key):
 
 def _fetch_odds_api(sport_key):
     key = os.environ["ODDS_API_KEY"]
+    # Soccer additionally supports btts (both teams to score). Odds API ignores
+    # unsupported markets per sport, so including it is cheap.
+    markets = "h2h,spreads,totals"
+    if sport_key.startswith("soccer_"):
+        markets += ",btts"
     params = urlencode({
         "apiKey": key,
         "regions": "us",
-        "markets": "h2h,spreads,totals",
+        "markets": markets,
         "oddsFormat": "decimal",
         "bookmakers": "draftkings,fanduel,betmgm,caesars",
     })
@@ -520,6 +525,56 @@ def build_sport_games(sport, model_prob_fn=None):
                          fo, o_dec, None, None)
                 _add_bet(bets, "1H Total", "under", f"Under {t['line']} (1H)",
                          fu, u_dec, None, None)
+
+        # ===== BTTS (soccer only) — Both Teams To Score =====
+        # Only produced for soccer sports that pass btts through the Odds API.
+        if sport.get("ml_outcomes") == 3 and books:
+            btts_by_book = {}
+            for bname, markets_dict in books.items():
+                btts_outcomes = markets_dict.get("btts") or []
+                for out_item in btts_outcomes:
+                    name = (out_item.get("name") or "").strip().lower()
+                    price = out_item.get("price")
+                    if name in ("yes", "no") and price:
+                        btts_by_book.setdefault(bname, {})[name] = price
+            if btts_by_book:
+                # Best book price per side
+                best_yes_dec = best_no_dec = None
+                best_yes_book = best_no_book = None
+                for bname, prices in btts_by_book.items():
+                    y = prices.get("yes")
+                    n = prices.get("no")
+                    if y and (best_yes_dec is None or y > best_yes_dec):
+                        best_yes_dec, best_yes_book = y, bname
+                    if n and (best_no_dec is None or n > best_no_dec):
+                        best_no_dec, best_no_book = n, bname
+
+                # Model probability via soccer model (fall back to market devig)
+                btts_fair_yes = btts_fair_no = None
+                if sport["slug"] in {"epl", "laliga", "ligamx"}:
+                    try:
+                        import soccer_model
+                        btts_p = soccer_model.predict_btts(
+                            home_name, away_name, sport["slug"]
+                        )
+                        btts_fair_yes = btts_p["yes"]
+                        btts_fair_no = btts_p["no"]
+                    except Exception:
+                        pass
+                if btts_fair_yes is None and best_yes_dec and best_no_dec:
+                    # Market devig fallback
+                    p_y_raw = 1.0 / best_yes_dec
+                    p_n_raw = 1.0 / best_no_dec
+                    s = p_y_raw + p_n_raw
+                    btts_fair_yes = p_y_raw / s
+                    btts_fair_no = p_n_raw / s
+
+                if best_yes_dec and btts_fair_yes is not None:
+                    _add_bet(bets, "BTTS", "yes", "BTTS Yes",
+                             btts_fair_yes, None, best_yes_dec, best_yes_book)
+                if best_no_dec and btts_fair_no is not None:
+                    _add_bet(bets, "BTTS", "no", "BTTS No",
+                             btts_fair_no, None, best_no_dec, best_no_book)
 
         out.append({**g, "bets": bets,
                     "fair": {"home": home_fair, "draw": draw_fair, "away": away_fair}})

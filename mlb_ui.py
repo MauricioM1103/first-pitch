@@ -1995,16 +1995,19 @@ PICKS_TEMPLATE = r"""<!doctype html>
   <div class="hero">
     <h1>Today's Picks &middot; {{ date_pretty }}</h1>
     <p class="sub">
-      Every positive-EV play across every sport, ranked by model edge. Each pick comes from a
-      sport-specific model (MLB Elo+SP+Poisson, NFL Elo+QB, soccer 3-way Elo) compared to the
-      best bettable price. Click <strong>Expand with AI</strong> on any pick for a Claude-written
-      structured take.
+      Confidence-ranked picks across every sport. Hard filters applied: model/fair probability &ge; 46%,
+      decimal odds &ge; 1.70, soccer draws only when decimal &lt; 3.70. Ranked by <strong>model
+      probability</strong> (what Monte Carlo would simulate hit) rather than EV &mdash; the Blacksmith /
+      Syndicate style of taking a confident favorite over a longshot with headline EV.
+      Picks tagged <span style="color:var(--good);text-shadow:var(--ev-strong-glow);font-weight:600">&#9733; Strong</span>
+      clear the 60% model probability threshold. Click <strong>Expand with AI</strong> for a
+      Claude-written structured take.
     </p>
   </div>
 
   <div class="summary">
     <span class="pill"><b>{{ picks|length }}</b> picks</span>
-    <span class="pill {% if strong_count %}good{% endif %}"><b>{{ strong_count }}</b> strong (&ge;2% EV)</span>
+    <span class="pill {% if strong_count %}good{% endif %}"><b>{{ strong_count }}</b> strong (&ge;60% model)</span>
     {% for s in sport_counts %}
       <span class="pill"><b>{{ s.count }}</b> {{ s.name }}</span>
     {% endfor %}
@@ -2021,7 +2024,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
   {% if picks %}
   <div class="pick-list">
     {% for p in picks %}
-    <article class="pick-card {% if p.ev_pct >= 2 %}strong{% endif %}" data-pick-id="{{ p.id }}">
+    <article class="pick-card {% if p.strong %}strong{% endif %}" data-pick-id="{{ p.id }}">
       <div class="rank">{{ loop.index }}</div>
       <div class="pick-main">
         <div class="pick-meta">
@@ -2032,6 +2035,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
         </div>
         <div class="pick-headline">
           {{ p.pick }}
+          {% if p.strong %}<span style="color:var(--good);font-size:13px;margin-left:6px;text-shadow:var(--ev-strong-glow)" title="Model probability >= 60%">&#9733; Strong</span>{% endif %}
           <span class="price">{{ ('+' if p.american > 0 else '') ~ p.american }} ({{ '%.2f'|format(p.decimal) }})</span>
           <span class="book">@ {{ p.book }}</span>
         </div>
@@ -2143,7 +2147,7 @@ def picks_landing():
     else:
         picks = all_picks
 
-    strong_count = sum(1 for p in picks if p["ev_pct"] >= 2.0)
+    strong_count = sum(1 for p in picks if p.get("strong"))
     today = datetime.now(EASTERN).date().isoformat()
 
     return render_template_string(
