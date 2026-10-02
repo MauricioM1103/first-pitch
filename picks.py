@@ -159,7 +159,7 @@ def _sport_bets(sport):
 # ============================================================================
 
 MIN_FAIR_PROB      = 0.46   # fair/sharp AND model probability threshold
-MIN_DECIMAL        = 1.70   # don't show short-favorite picks (-150+)
+MIN_DECIMAL        = 1.60   # don't show short-favorite picks (-167+)
 SOCCER_DRAW_MAX_DEC = 3.70  # soccer draws only when market has them in reach
 STRONG_PROB_TIER   = 0.60   # "strong" badge for high-conviction picks
 MAX_PICKS          = 30     # cap list length (concise board, not firehose)
