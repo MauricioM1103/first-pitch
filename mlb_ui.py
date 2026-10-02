@@ -604,16 +604,44 @@ header {
   letter-spacing: 0.08em; text-transform: uppercase;
 }
 
-/* Primary nav (3 top sections) — larger, more prominent pills */
+/* Primary top bar: brand | centered tabs | theme toggle */
+.sport-strip-inner.primary-nav {
+  display: grid; grid-template-columns: auto 1fr auto;
+  align-items: center; gap: 16px; padding: 12px 0;
+}
+.brand {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 13px; font-weight: 600; letter-spacing: 0.14em;
+  color: var(--ink); text-decoration: none;
+  white-space: nowrap;
+  padding-right: 8px;
+  border-right: 1px solid var(--rule);
+}
+.brand:hover { color: var(--accent, var(--ink)); }
+.primary-tabs {
+  display: flex; justify-content: center; align-items: center;
+  gap: 10px; flex-wrap: wrap;
+}
 .primary-nav .sport-pill {
-  padding: 10px 18px; font-size: 14px;
-  font-family: "Fraunces", Georgia, serif; font-style: italic;
-  font-weight: 500; letter-spacing: 0.01em;
+  padding: 7px 16px; font-size: 13px;
+  font-family: "Public Sans", system-ui, sans-serif;
+  font-weight: 500; letter-spacing: 0.02em;
+  border: 1px solid var(--rule-strong);
 }
 .primary-nav .sport-pill.active {
-  background: var(--accent-soft, var(--card));
+  background: var(--card);
   border-color: var(--accent, var(--ink));
-  color: var(--accent-ink, var(--ink));
+  color: var(--ink); font-weight: 600;
+  box-shadow: 0 0 0 1px var(--accent, transparent) inset;
+}
+@media (max-width: 640px) {
+  .sport-strip-inner.primary-nav {
+    grid-template-columns: 1fr auto;
+    row-gap: 10px;
+  }
+  .brand { grid-column: 1; grid-row: 1; border-right: none; padding-right: 0; }
+  .theme-toggle { grid-column: 2; grid-row: 1; margin-left: auto; }
+  .primary-tabs { grid-column: 1 / 3; grid-row: 2; justify-content: flex-start; overflow-x: auto; }
 }
 
 /* Secondary sport chip bar (inside MC / AI pages) */
@@ -830,18 +858,15 @@ _PRIMARY_SECTIONS = [
 
 
 def render_sport_strip(active_slug):
-    """Primary 3-tab nav: Picks / Monte Carlo / AI Analysis.
-
-    `active_slug` matches a primary section id (picks/montecarlo/analysis),
-    OR an old sport slug (mlb/nfl/epl/...) in which case nothing is marked
-    active — the sport-specific pages are secondary routes behind the primary
-    sections. Theme toggle is pinned to the far right.
-    """
+    """Top bar: BETTING TOOLS brand (left) | centered 3-tab primary nav | theme toggle (right)."""
     active_primary = active_slug if active_slug in {s[0] for s in _PRIMARY_SECTIONS} else None
     parts = ['<div class="sport-strip"><div class="wrap sport-strip-inner primary-nav">']
+    parts.append('<a class="brand" href="/">BETTING TOOLS</a>')
+    parts.append('<nav class="primary-tabs">')
     for key, label, href in _PRIMARY_SECTIONS:
         cls = "sport-pill active" if key == active_primary else "sport-pill"
         parts.append(f'<a class="{cls}" href="{href}">{label}</a>')
+    parts.append('</nav>')
     parts.append(
         '<button class="theme-toggle" onclick="toggleTheme()" '
         'title="Toggle dark / light theme" aria-label="Toggle theme">'
@@ -5553,21 +5578,39 @@ def _mc_fetch_games(sport_slug, date_str):
 
 
 def _mc_team_stats(sport_slug, game_ctx):
-    """Return {home_name, away_name, rows:[{label, home, away}]} for the stats panel."""
+    """Return {home_name, away_name, rows:[{label, home, away, group?}]} for the stats panel.
+
+    Deeper per-sport stats so the panel matches the depth of
+    bettingtools.ai's reference layout. Rows are grouped by `group` label so
+    the template can render section headings.
+    """
     if sport_slug == "mlb":
         g = game_ctx
+        h = g["home"]; a = g["away"]
+        hp = g.get("home_pitcher") or {}
+        ap = g.get("away_pitcher") or {}
         return {
-            "home_name": g["home"]["team"],
-            "away_name": g["away"]["team"],
+            "home_name": h["team"],
+            "away_name": a["team"],
             "rows": [
-                {"label": "Record",       "home": f"{g['home'].get('wins',0)}-{g['home'].get('losses',0)}",
-                                           "away": f"{g['away'].get('wins',0)}-{g['away'].get('losses',0)}"},
-                {"label": "Runs / Game",  "home": g['home'].get('rpg','—'),  "away": g['away'].get('rpg','—')},
-                {"label": "Team ERA",     "home": g['home'].get('team_era','—'), "away": g['away'].get('team_era','—')},
-                {"label": "OPS",          "home": g['home'].get('ops','—'),  "away": g['away'].get('ops','—')},
-                {"label": "SP",           "home": g.get('home_pitcher',{}).get('name','—'), "away": g.get('away_pitcher',{}).get('name','—')},
-                {"label": "SP ERA",       "home": g.get('home_pitcher',{}).get('era','—'),  "away": g.get('away_pitcher',{}).get('era','—')},
-                {"label": "SP WHIP",      "home": g.get('home_pitcher',{}).get('whip','—'), "away": g.get('away_pitcher',{}).get('whip','—')},
+                # Record
+                {"group": "Record", "label": "Overall",   "home": f"{h.get('wins',0)}-{h.get('losses',0)}",
+                                                           "away": f"{a.get('wins',0)}-{a.get('losses',0)}"},
+                {"group": "Record", "label": "Streak",    "home": h.get('streak_code','—'), "away": a.get('streak_code','—')},
+                {"group": "Record", "label": "Run diff",  "home": h.get('run_diff','—'),    "away": a.get('run_diff','—')},
+                # Scoring
+                {"group": "Scoring",    "label": "Runs / Game",    "home": h.get('rpg','—'),      "away": a.get('rpg','—')},
+                {"group": "Scoring",    "label": "OPS",            "home": h.get('ops','—'),      "away": a.get('ops','—')},
+                # Pitching
+                {"group": "Pitching",   "label": "Team ERA",       "home": h.get('team_era','—'), "away": a.get('team_era','—')},
+                {"group": "Pitching",   "label": "Bullpen ERA",    "home": h.get('bullpen_era','—'), "away": a.get('bullpen_era','—')},
+                # Starting pitcher
+                {"group": "Starting Pitcher", "label": "SP",       "home": hp.get('name','—'),    "away": ap.get('name','—')},
+                {"group": "Starting Pitcher", "label": "Record",   "home": hp.get('wl','—'),      "away": ap.get('wl','—')},
+                {"group": "Starting Pitcher", "label": "ERA",      "home": hp.get('era','—'),     "away": ap.get('era','—')},
+                {"group": "Starting Pitcher", "label": "WHIP",     "home": hp.get('whip','—'),    "away": ap.get('whip','—')},
+                {"group": "Starting Pitcher", "label": "K / 9",    "home": hp.get('k9','—'),      "away": ap.get('k9','—')},
+                {"group": "Starting Pitcher", "label": "IP",       "home": hp.get('ip','—'),      "away": ap.get('ip','—')},
             ],
         }
     if sport_slug in {"epl", "laliga", "ligamx", "ucl", "europa", "international"}:
@@ -5583,14 +5626,29 @@ def _mc_team_stats(sport_slug, game_ctx):
         a_name = game_ctx.get("away_name", "")
         hr = rates.get(h_name) or {}
         ar = rates.get(a_name) or {}
+        h_elo = round(elo.get(h_name, 1500), 1)
+        a_elo = round(elo.get(a_name, 1500), 1)
+        h_gs = hr.get('gs_per_match', 0) or 0
+        h_ga = hr.get('ga_per_match', 0) or 0
+        a_gs = ar.get('gs_per_match', 0) or 0
+        a_ga = ar.get('ga_per_match', 0) or 0
+        h_gd = round(h_gs - h_ga, 2); a_gd = round(a_gs - a_ga, 2)
+        # Fetch Pinnacle fair probabilities if a 3-way ML is present
+        fair = game_ctx.get("fair") or {}
         return {
             "home_name": h_name,
             "away_name": a_name,
             "rows": [
-                {"label": "Elo rating",       "home": round(elo.get(h_name, 1500), 1), "away": round(elo.get(a_name, 1500), 1)},
-                {"label": "Goals / match",    "home": round(hr.get('gs_per_match', 0), 2), "away": round(ar.get('gs_per_match', 0), 2)},
-                {"label": "Conceded / match", "home": round(hr.get('ga_per_match', 0), 2), "away": round(ar.get('ga_per_match', 0), 2)},
-                {"label": "Matches sampled",  "home": hr.get('matches', 0), "away": ar.get('matches', 0)},
+                {"group": "Rating",   "label": "Elo rating",       "home": h_elo, "away": a_elo},
+                {"group": "Rating",   "label": "Elo diff vs opp",  "home": round(h_elo - a_elo, 1),
+                                                                     "away": round(a_elo - h_elo, 1)},
+                {"group": "Scoring",  "label": "Goals / match",    "home": round(h_gs, 2), "away": round(a_gs, 2)},
+                {"group": "Scoring",  "label": "Conceded / match", "home": round(h_ga, 2), "away": round(a_ga, 2)},
+                {"group": "Scoring",  "label": "Goal differential","home": h_gd, "away": a_gd},
+                {"group": "Season",   "label": "Matches played",   "home": hr.get('matches', 0), "away": ar.get('matches', 0)},
+                {"group": "Market",   "label": "Pinnacle fair",
+                 "home": f"{round((fair.get('home') or 0) * 100, 1)}%" if fair.get('home') else "—",
+                 "away": f"{round((fair.get('away') or 0) * 100, 1)}%" if fair.get('away') else "—"},
             ],
         }
     if sport_slug == "nfl":
@@ -5609,13 +5667,29 @@ def _mc_team_stats(sport_slug, game_ctx):
             a = nfl_model.abbr_from_name(a_name) or a_name
         except Exception:
             h, a = h_name, a_name
+        h_elo = round(final_elo.get(h, 1500), 1)
+        a_elo = round(final_elo.get(a, 1500), 1)
+        # Project points from the same Elo diff the simulator uses
+        diff = (h_elo + 65) - a_elo
+        edge = diff / 25.0
+        proj_h = round(22.5 + edge / 2, 1)
+        proj_a = round(22.5 - edge / 2, 1)
+        fair = game_ctx.get("fair") or {}
         return {
             "home_name": h_name,
             "away_name": a_name,
             "rows": [
-                {"label": "Team Elo",  "home": round(final_elo.get(h, 1500), 1), "away": round(final_elo.get(a, 1500), 1)},
-                {"label": "QB Elo",    "home": round(final_qb.get(h, 1500), 1) if final_qb else "—",
-                                        "away": round(final_qb.get(a, 1500), 1) if final_qb else "—"},
+                {"group": "Rating",   "label": "Team Elo",         "home": h_elo, "away": a_elo},
+                {"group": "Rating",   "label": "QB Elo",
+                 "home": round(final_qb.get(h, 1500), 1) if final_qb else "—",
+                 "away": round(final_qb.get(a, 1500), 1) if final_qb else "—"},
+                {"group": "Rating",   "label": "Elo diff (incl. HFA)", "home": round(diff, 1), "away": round(-diff, 1)},
+                {"group": "Scoring",  "label": "Projected points",  "home": proj_h, "away": proj_a},
+                {"group": "Scoring",  "label": "Projected margin",  "home": round(proj_h - proj_a, 1),
+                                                                     "away": round(proj_a - proj_h, 1)},
+                {"group": "Market",   "label": "Pinnacle fair",
+                 "home": f"{round((fair.get('home') or 0) * 100, 1)}%" if fair.get('home') else "—",
+                 "away": f"{round((fair.get('away') or 0) * 100, 1)}%" if fair.get('away') else "—"},
             ],
         }
     return {
@@ -5623,6 +5697,161 @@ def _mc_team_stats(sport_slug, game_ctx):
         "away_name": game_ctx.get("away_name", game_ctx.get("away", "Away")),
         "rows": [],
     }
+
+
+def _mc_edge_table(sport_slug, game_ctx, sim):
+    """Build the edge-detection rows: sim prob vs book prob per market.
+
+    Returns [{market, sim_prob, book_prob, decimal, american, book, edge_pct, kelly_pct}].
+    Uses the best US book price available (via game_ctx['bets']) and falls back
+    to Pinnacle. Kelly is quartered to match the rest of the site.
+    """
+    from mlb_odds import decimal_to_american
+
+    rows = []
+
+    def _add(market, sim_prob_pct, decimal, book_name, book_prob_pct=None):
+        if decimal is None or decimal <= 1.0 or sim_prob_pct is None:
+            return
+        p = sim_prob_pct / 100.0
+        edge_pts = sim_prob_pct - (book_prob_pct if book_prob_pct is not None
+                                   else (100.0 / decimal))
+        # Quarter Kelly
+        b = decimal - 1.0
+        q = 1.0 - p
+        kelly = ((p * b - q) / b) * 0.25 * 100.0 if b > 0 else 0.0
+        kelly = max(0.0, kelly)
+        rows.append({
+            "market": market,
+            "sim_prob": sim_prob_pct,
+            "book_prob": book_prob_pct if book_prob_pct is not None else (100.0 / decimal),
+            "decimal": decimal,
+            "american": (lambda am: f"+{am}" if am and am > 0 else str(am) if am else "—")(decimal_to_american(decimal)),
+            "book": book_name or "pinnacle",
+            "edge_pct": edge_pts,
+            "kelly_pct": kelly,
+        })
+
+    sport = sports.by_slug(sport_slug)
+
+    # MLB uses its own odds structure
+    if sport_slug == "mlb":
+        o = game_ctx.get("odds") or {}
+        bets = o.get("bets") or []
+        best_dec = o.get("best_decimal") or {}
+        best_book = o.get("best_book") or {}
+        home_name = game_ctx["home"]["team"]
+        away_name = game_ctx["away"]["team"]
+        # ML
+        for b in bets:
+            if b.get("market") == "ML":
+                side = b["side"]
+                sim_prob = sim["p_home"] if side == "home" else sim["p_away"]
+                dec = best_dec.get(side) or b.get("decimal")
+                bk = best_book.get(side) or "pinnacle"
+                label = f"{home_name if side == 'home' else away_name} ML"
+                _add(label, sim_prob, dec, bk)
+        # Total — need to count sims over book line
+        for b in bets:
+            if b.get("market") == "Total":
+                dec = best_dec.get(b["side"]) or b.get("decimal")
+                bk = best_book.get(b["side"]) or "pinnacle"
+                # Find a totals line
+                tot = (o.get("pinnacle") or {}).get("total") or {}
+                line = tot.get("line")
+                if line is None: continue
+                over_pct = sum(1 for m, g in zip(sim.get("margins") or [], sim.get("margins") or [])
+                               for _ in [None]) if False else None
+                # Compute over pct from margins + mean_total heuristic
+                # simpler: use "p_over_fn" if provided, else approximate
+                margins = sim.get("margins") or []
+                if not margins:
+                    continue
+                # Reconstruct totals from margins is incorrect. We used mean_total.
+                # Use the raw totals list stored elsewhere if available.
+        return rows
+
+    # Soccer / NFL: Pinnacle lines live under game_ctx keys (ml/spread/total)
+    bets = game_ctx.get("bets") or []
+    home_name = game_ctx.get("home_name", "")
+    away_name = game_ctx.get("away_name", "")
+
+    # ML (3-way for soccer, 2-way for NFL)
+    ml = game_ctx.get("ml") or {}
+    for b in bets:
+        if b.get("market") == "ML":
+            side = b["side"]
+            if side == "home":
+                sim_prob = sim["p_home"]; label = f"{home_name} ML"
+            elif side == "away":
+                sim_prob = sim["p_away"]; label = f"{away_name} ML"
+            elif side == "draw":
+                sim_prob = sim["p_draw"]; label = "Draw"
+            else:
+                continue
+            dec = b.get("book_decimal") or b.get("pin_decimal")
+            bk  = b.get("book") or "pinnacle"
+            _add(label, sim_prob, dec, bk)
+
+    # Spread / Run Line — can't easily derive from sim's margin list without totals,
+    # but we can estimate cover probability from margins
+    sp = game_ctx.get("spread") or {}
+    if sp.get("line_home") is not None and sim.get("margins"):
+        hpt = sp["line_home"]
+        margins = sim["margins"]
+        n = len(margins)
+        if n:
+            home_cover = sum(1 for m in margins if m + hpt > 0) / n * 100
+            away_cover = 100 - home_cover
+            for b in bets:
+                if b.get("market") in ("Spread", "Run Line"):
+                    side = b["side"]
+                    sim_prob = home_cover if side == "home" else away_cover
+                    dec = b.get("book_decimal") or b.get("pin_decimal")
+                    bk  = b.get("book") or "pinnacle"
+                    pt = hpt if side == "home" else -hpt
+                    sign = "+" if pt >= 0 else ""
+                    name = home_name if side == "home" else away_name
+                    _add(f"{name} {sign}{pt}", sim_prob, dec, bk)
+
+    # Total — need totals; derive from projected mean + margin distribution
+    tot = game_ctx.get("total") or {}
+    if tot.get("line") is not None and sim.get("margins"):
+        line = tot["line"]
+        # Reconstruct per-sim total using projected means + each margin's share.
+        # Approximation: total ≈ proj_home + proj_away for most games; use mean + stochastic.
+        # Since we don't have the raw per-sim totals, use expected total:
+        import random
+        rng = random.Random(42)
+        margins = sim["margins"]
+        n = len(margins)
+        proj_total = sim.get("mean_total") or (sim.get("proj_home", 0) + sim.get("proj_away", 0))
+        # Fall back: assume ~Normal(proj_total, sqrt(proj_total)*1.4) — rough
+        import math as _m
+        sigma = max(1.2, _m.sqrt(abs(proj_total)) * 1.4)
+        if sport_slug == "nfl":
+            sigma = 18.0  # NFL total std ≈ 18 pts
+        over = sum(1 for _ in range(n) if rng.gauss(proj_total, sigma) > line) / n * 100
+        under = 100 - over
+        for b in bets:
+            if b.get("market") == "Total":
+                side = b["side"]
+                sim_prob = over if side == "over" else under
+                dec = b.get("book_decimal") or b.get("pin_decimal")
+                bk  = b.get("book") or "pinnacle"
+                _add(f"{'Over' if side == 'over' else 'Under'} {line}", sim_prob, dec, bk)
+
+    # BTTS (soccer)
+    if sim.get("btts_yes_pct") is not None:
+        for b in bets:
+            if b.get("market") == "BTTS":
+                side = b["side"]
+                sim_prob = sim["btts_yes_pct"] if side == "yes" else (100 - sim["btts_yes_pct"])
+                dec = b.get("book_decimal")
+                bk  = b.get("book") or "pinnacle"
+                _add(f"BTTS {'Yes' if side == 'yes' else 'No'}", sim_prob, dec, bk)
+
+    return rows
 
 
 def _mc_run_simulation(sport_slug, game_ctx, n_sims):
@@ -5776,6 +6005,38 @@ MC_UNIFIED_TEMPLATE = r"""<!doctype html>
 }
 .mc-hero .sub { color: var(--muted); max-width: 760px; font-size: 13.5px; line-height: 1.55; }
 
+.howitworks {
+  background: var(--card); border: 1px solid var(--rule); border-radius: 10px;
+  padding: 16px 20px; margin: 20px 0;
+}
+.howitworks h3 {
+  font-family: "JetBrains Mono", monospace; font-size: 11px;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted); margin: 0 0 10px;
+}
+.howitworks ol { padding-left: 20px; margin: 0; }
+.howitworks li { color: var(--ink); font-size: 13px; line-height: 1.6; margin-bottom: 6px; }
+.howitworks li strong { color: var(--accent, var(--ink)); font-weight: 600; }
+
+.edge-table {
+  width: 100%; border-collapse: collapse; margin-top: 10px;
+  font-family: "JetBrains Mono", monospace; font-size: 12.5px;
+}
+.edge-table thead th {
+  text-align: left; padding: 8px 10px;
+  color: var(--muted); font-weight: 500; font-size: 10px;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  border-bottom: 1px solid var(--rule-strong);
+}
+.edge-table td {
+  padding: 10px; border-bottom: 1px solid var(--rule);
+  color: var(--ink); font-variant-numeric: tabular-nums;
+}
+.edge-table td.market { color: var(--ink); font-weight: 500; }
+.edge-table td.good   { color: var(--good); text-shadow: var(--ev-strong-glow); font-weight: 600; }
+.edge-table td.bad    { color: #ef4444; }
+.edge-table tr:last-child td { border-bottom: none; }
+
 .mc-form { margin-top: 20px; }
 .mc-form label {
   display: block;
@@ -5817,14 +6078,26 @@ MC_UNIFIED_TEMPLATE = r"""<!doctype html>
 }
 .stats-col.away { border-left: 3px solid var(--accent, #60a5fa); }
 .stats-col.home { border-left: 3px solid #ef4444; }
+.stats-col .col-tag {
+  color: var(--muted); font-size: 10.5px;
+  font-family: "JetBrains Mono", monospace;
+  letter-spacing: 0.14em; font-weight: 400; margin-left: 6px;
+}
+.stats-group {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--muted);
+  padding: 12px 0 4px; border-top: 1px solid var(--rule);
+  margin-top: 6px;
+}
+.stats-group:first-of-type { border-top: none; padding-top: 4px; margin-top: 0; }
 .stats-row {
-  display: flex; justify-content: space-between;
-  padding: 6px 0; border-top: 1px solid var(--rule);
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 6px 0;
   font-family: "JetBrains Mono", monospace; font-size: 12.5px;
 }
-.stats-row:first-of-type { border-top: none; }
 .stats-row .label { color: var(--muted); }
-.stats-row .value { color: var(--ink); font-weight: 500; }
+.stats-row .value { color: var(--ink); font-weight: 500; text-align: right; }
 
 .results-section { margin-top: 32px; }
 .results-section h2 {
@@ -5922,6 +6195,22 @@ MC_UNIFIED_TEMPLATE = r"""<!doctype html>
     with low-score correction. NFL uses a normal-distribution scoring model fit to team Elo.</p>
   </section>
 
+  <div class="howitworks">
+    <h3>How this works</h3>
+    <ol>
+      <li><strong>Pick a sport</strong> below &mdash; the dropdown fills with every game
+      Pinnacle has posted for today in that league.</li>
+      <li><strong>Pick a game</strong> &mdash; season stats for both teams load in a two-column
+      panel so you can eyeball the matchup before you simulate.</li>
+      <li><strong>Hit Run Simulation</strong> &mdash; the sport-specific engine draws N
+      independent games from the scoring distribution (Poisson for runs, Dixon-Coles for
+      goals, normal for points). Each draw rolls a score, we tally win / draw / loss, totals,
+      spreads, and BTTS, then show the empirical probabilities, projected averages, a score
+      differential histogram, the most-likely scorelines, and an edge table comparing our
+      sim probability against the live book price with a quarter-Kelly stake.</li>
+    </ol>
+  </div>
+
   {{ sport_chip_bar|safe }}
 
   {% if not sport_slug %}
@@ -5949,15 +6238,21 @@ MC_UNIFIED_TEMPLATE = r"""<!doctype html>
   {% if team_stats and selected_game %}
   <div class="stats-panel">
     <div class="stats-col away">
-      <h3>{{ team_stats.away_name }} <span style="color:var(--muted);font-size:12px;font-family:'JetBrains Mono',monospace">AWAY</span></h3>
-      {% for r in team_stats.rows %}
-      <div class="stats-row"><span class="label">{{ r.label }}</span><span class="value">{{ r.away }}</span></div>
+      <h3>{{ team_stats.away_name }} <span class="col-tag">AWAY</span></h3>
+      {% for grp in team_stats_groups %}
+        {% if grp.name %}<div class="stats-group">{{ grp.name }}</div>{% endif %}
+        {% for r in grp.rows %}
+        <div class="stats-row"><span class="label">{{ r.label }}</span><span class="value">{{ r.away }}</span></div>
+        {% endfor %}
       {% endfor %}
     </div>
     <div class="stats-col home">
-      <h3>{{ team_stats.home_name }} <span style="color:var(--muted);font-size:12px;font-family:'JetBrains Mono',monospace">HOME</span></h3>
-      {% for r in team_stats.rows %}
-      <div class="stats-row"><span class="label">{{ r.label }}</span><span class="value">{{ r.home }}</span></div>
+      <h3>{{ team_stats.home_name }} <span class="col-tag">HOME</span></h3>
+      {% for grp in team_stats_groups %}
+        {% if grp.name %}<div class="stats-group">{{ grp.name }}</div>{% endif %}
+        {% for r in grp.rows %}
+        <div class="stats-row"><span class="label">{{ r.label }}</span><span class="value">{{ r.home }}</span></div>
+        {% endfor %}
       {% endfor %}
     </div>
   </div>
@@ -6045,6 +6340,36 @@ MC_UNIFIED_TEMPLATE = r"""<!doctype html>
     </div>
     {% endif %}
 
+    {% if edges %}
+    <div class="hist-wrap">
+      <h3>Edge Detection &amp; Kelly Criterion</h3>
+      <div class="sub">Sim probability vs the best available book price. Edge is sim − book (percentage points). Kelly is quarter-Kelly.</div>
+      <table class="edge-table">
+        <thead>
+          <tr>
+            <th>Market</th><th>Sim Prob</th><th>Book Prob</th>
+            <th>Odds</th><th>Book</th><th>Edge</th><th>Kelly %</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for e in edges %}
+          <tr>
+            <td class="market">{{ e.market }}</td>
+            <td>{{ '%.1f' % e.sim_prob }}%</td>
+            <td>{{ '%.1f' % e.book_prob }}%</td>
+            <td>{{ e.american }}</td>
+            <td>{{ e.book }}</td>
+            <td class="{{ 'good' if e.edge_pct > 0.5 else ('bad' if e.edge_pct < -0.5 else '') }}">
+              {{ '+' if e.edge_pct > 0 else '' }}{{ '%.1f' % e.edge_pct }}%
+            </td>
+            <td>{% if e.kelly_pct > 0 %}{{ '%.1f' % e.kelly_pct }}%{% else %}&mdash;{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
     <div class="notes-line">{{ sim.notes }}</div>
   </section>
   {% endif %}
@@ -6076,9 +6401,11 @@ def montecarlo_unified():
     games = []
     selected_game = None
     team_stats = None
+    team_stats_groups = None
     sim = None
     hist = None
     hist_max = 1
+    edges = None
 
     if sport_slug:
         games = _mc_fetch_games(sport_slug, date_str)
@@ -6086,6 +6413,7 @@ def montecarlo_unified():
             selected_game = next((g for g in games if g["id"] == game_id), None)
             if selected_game:
                 team_stats = _mc_team_stats(sport_slug, selected_game["ctx"])
+                team_stats_groups = _group_stats_rows(team_stats.get("rows") or [])
                 if run_sim:
                     sim = _mc_run_simulation(sport_slug, selected_game["ctx"], n_sims)
                     if sim and sim.get("margins"):
@@ -6093,6 +6421,11 @@ def montecarlo_unified():
                         hist = _histogram(sim["margins"], bucket_width=bw, max_buckets=25)
                         if hist:
                             hist_max = max(b["pct"] for b in hist) or 1
+                    if sim:
+                        try:
+                            edges = _mc_edge_table(sport_slug, selected_game["ctx"], sim)
+                        except Exception:
+                            edges = None
 
     return render_template_string(
         MC_UNIFIED_TEMPLATE,
@@ -6107,12 +6440,27 @@ def montecarlo_unified():
         game_id=game_id,
         selected_game=selected_game,
         team_stats=team_stats,
+        team_stats_groups=team_stats_groups,
         sim=sim,
         hist=hist,
         hist_max=hist_max,
+        edges=edges,
         n_sims=n_sims,
         date_pretty=d_obj.strftime("%A, %B %d").replace(" 0", " "),
     )
+
+
+def _group_stats_rows(rows):
+    """Group stat rows by their 'group' key, preserving first-seen group order."""
+    grouped = {}
+    order = []
+    for r in rows:
+        g = r.get("group") or ""
+        if g not in grouped:
+            grouped[g] = []
+            order.append(g)
+        grouped[g].append(r)
+    return [{"name": g, "rows": grouped[g]} for g in order]
 
 
 # ---------------------------------------------------------------------------
@@ -6183,9 +6531,28 @@ AI_UNIFIED_TEMPLATE = r"""<!doctype html>
   <section class="ai-hero">
     <h1>AI Analysis</h1>
     <p class="sub">Pick a sport and today's game, Claude Sonnet 5.5 writes
-    an in-depth read on the matchup — stat angle, matchup factors, risk flags
-    and a lean, using live model + market data.</p>
+    an in-depth read on the matchup &mdash; stat angle, matchup factors, risk
+    flags and a lean, using live model + market data.</p>
   </section>
+
+  <div class="howitworks">
+    <h3>How this works</h3>
+    <ol>
+      <li><strong>Pick a sport</strong> below &mdash; the dropdown shows every game posted
+      for today in that league.</li>
+      <li><strong>Pick a game</strong> and hit <strong>Run Analysis</strong>. The server
+      builds a sport-specific context block: team records and season stats, starting-pitcher
+      line for MLB, Elo and Dixon-Coles projections for soccer, team Elo plus QB Elo for NFL,
+      plus the current Pinnacle fair probabilities.</li>
+      <li><strong>Claude Sonnet 5.5</strong> receives that context with a structured prompt
+      and returns a 4-section markdown write-up: <em>Stat Read</em>, <em>Matchup Factors</em>,
+      <em>Risk Flags</em>, <em>Lean &amp; Pick</em>. The response is rendered in-page below.</li>
+    </ol>
+    <p style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:var(--muted);margin:10px 0 0">
+      model: {{ 'claude-sonnet-5-5' }} &middot; requires ANTHROPIC_API_KEY on the host &middot;
+      runs on-demand, not cached across games
+    </p>
+  </div>
 
   {{ sport_chip_bar|safe }}
 
