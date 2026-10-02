@@ -604,6 +604,39 @@ header {
   letter-spacing: 0.08em; text-transform: uppercase;
 }
 
+/* Primary nav (3 top sections) — larger, more prominent pills */
+.primary-nav .sport-pill {
+  padding: 10px 18px; font-size: 14px;
+  font-family: "Fraunces", Georgia, serif; font-style: italic;
+  font-weight: 500; letter-spacing: 0.01em;
+}
+.primary-nav .sport-pill.active {
+  background: var(--accent-soft, var(--card));
+  border-color: var(--accent, var(--ink));
+  color: var(--accent-ink, var(--ink));
+}
+
+/* Secondary sport chip bar (inside MC / AI pages) */
+.sport-chip-bar {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  padding: 14px 0 18px; margin-bottom: 20px;
+  border-bottom: 1px solid var(--rule);
+}
+.sport-chip {
+  padding: 7px 14px; border-radius: 999px;
+  color: var(--muted); text-decoration: none;
+  font-size: 12.5px; font-weight: 500;
+  border: 1px solid var(--rule-strong);
+  background: var(--surface);
+  white-space: nowrap;
+}
+.sport-chip:hover { color: var(--ink); background: var(--card); }
+.sport-chip.active {
+  color: var(--ink); background: var(--card);
+  border-color: var(--accent, var(--ink));
+  box-shadow: 0 0 0 1px var(--accent, transparent) inset;
+}
+
 .theme-toggle {
   margin-left: auto; flex-shrink: 0;
   width: 32px; height: 32px; border-radius: 999px;
@@ -789,22 +822,47 @@ _FONTS = (
 FONTS_LINK = _FONTS  # keep historical name; THEME_SCRIPT appended below
 
 
+_PRIMARY_SECTIONS = [
+    ("picks",      "Picks",        "/"),
+    ("montecarlo", "Monte Carlo",  "/montecarlo"),
+    ("analysis",   "AI Analysis",  "/ai-analysis"),
+]
+
+
 def render_sport_strip(active_slug):
-    parts = ['<div class="sport-strip"><div class="wrap sport-strip-inner">']
-    # "All picks" pill as the first/leftmost item, always visible
-    picks_cls = "sport-pill active" if active_slug == "picks" else "sport-pill"
-    parts.append(f'<a class="{picks_cls}" href="/" title="Daily recommended picks across every sport">Picks</a>')
-    for sp in sports.SPORTS:
-        cls = "sport-pill active" if sp["slug"] == active_slug else "sport-pill"
-        href = "/mlb/schedule" if sp["slug"] == "mlb" else f"/sport/{sp['slug']}"
-        parts.append(f'<a class="{cls}" href="{href}">{sp["name"]}</a>')
-    # Theme toggle at the far right
+    """Primary 3-tab nav: Picks / Monte Carlo / AI Analysis.
+
+    `active_slug` matches a primary section id (picks/montecarlo/analysis),
+    OR an old sport slug (mlb/nfl/epl/...) in which case nothing is marked
+    active — the sport-specific pages are secondary routes behind the primary
+    sections. Theme toggle is pinned to the far right.
+    """
+    active_primary = active_slug if active_slug in {s[0] for s in _PRIMARY_SECTIONS} else None
+    parts = ['<div class="sport-strip"><div class="wrap sport-strip-inner primary-nav">']
+    for key, label, href in _PRIMARY_SECTIONS:
+        cls = "sport-pill active" if key == active_primary else "sport-pill"
+        parts.append(f'<a class="{cls}" href="{href}">{label}</a>')
     parts.append(
         '<button class="theme-toggle" onclick="toggleTheme()" '
         'title="Toggle dark / light theme" aria-label="Toggle theme">'
         '<span id="theme-icon">☽</span></button>'
     )
     parts.append('</div></div>')
+    return "".join(parts)
+
+
+def render_sport_chip_bar(selected_slug, base_url):
+    """Horizontal sport chip selector for Monte Carlo / AI Analysis pages.
+
+    Renders every sport as a chip link to the same base_url with ?sport=slug.
+    """
+    parts = ['<div class="sport-chip-bar">']
+    for sp in sports.SPORTS:
+        cls = "sport-chip active" if sp["slug"] == selected_slug else "sport-chip"
+        parts.append(
+            f'<a class="{cls}" href="{base_url}?sport={sp["slug"]}">{sp["name"]}</a>'
+        )
+    parts.append('</div>')
     return "".join(parts)
 
 
@@ -4943,8 +5001,8 @@ def _american_from_prob(p):
     return int(round(-100 / (dec - 1)))
 
 
-@app.route("/montecarlo")
-def montecarlo():
+@app.route("/mlb/montecarlo")
+def mlb_montecarlo():
     date_str = request.args.get("date") or datetime.now(EASTERN).date().isoformat()
     try:
         d = datetime.strptime(date_str, "%Y-%m-%d").date()
@@ -5345,8 +5403,8 @@ function renderAnalysis(d) {
 """
 
 
-@app.route("/analyst")
-def analyst_page():
+@app.route("/mlb/analyst")
+def mlb_analyst_page():
     import analyst as analyst_mod
     date_str = request.args.get("date") or datetime.now(EASTERN).date().isoformat()
     try:
@@ -5419,6 +5477,916 @@ def analyst_api_game():
     return Response(json.dumps(result), mimetype="application/json")
 
 
+# ============================================================================
+# Unified Monte Carlo + AI Analysis (three primary nav sections)
+# ============================================================================
+
+def _mc_sports_options():
+    """Return list of sports available in the unified MC/AI pages."""
+    return [{"slug": s["slug"], "name": s["name"]} for s in sports.SPORTS]
+
+
+def _in_eastern_date(iso_str, date_str):
+    """True if the UTC iso timestamp falls on date_str in Eastern time."""
+    if not iso_str:
+        return False
+    try:
+        from datetime import datetime as _dt, timezone, timedelta as _td
+        dt = _dt.fromisoformat(iso_str.replace("Z", "+00:00"))
+        est_date = dt.astimezone(timezone(_td(hours=-4))).date().isoformat()
+        return est_date == date_str
+    except Exception:
+        return False
+
+
+_MC_GAMES_CACHE = {}
+_MC_GAMES_TTL_S = 300
+
+
+def _mc_fetch_games(sport_slug, date_str):
+    """Return [{id, home, away, start_time, ctx}] for sport's games on date."""
+    key = (sport_slug, date_str)
+    now = time.time()
+    hit = _MC_GAMES_CACHE.get(key)
+    if hit and now - hit[1] < _MC_GAMES_TTL_S:
+        return hit[0]
+
+    out = []
+    if sport_slug == "mlb":
+        try:
+            games = get_games(date_str)
+        except Exception:
+            games = []
+        for g in games:
+            if not g.get("game_pk"):
+                continue
+            out.append({
+                "id": str(g["game_pk"]),
+                "home": g["home"]["team"],
+                "away": g["away"]["team"],
+                "start_time": g.get("first_pitch"),
+                "ctx": g,
+            })
+    else:
+        sport = sports.by_slug(sport_slug)
+        if not sport or sport.get("dedicated"):
+            _MC_GAMES_CACHE[key] = (out, now)
+            return out
+        try:
+            games = generic_odds.build_sport_games(sport)
+        except Exception:
+            games = []
+        for g in games:
+            st = g.get("start_time") or ""
+            if not _in_eastern_date(st, date_str):
+                continue
+            gid = g.get("matchup_id") or f"{g.get('home_name','')}vs{g.get('away_name','')}"
+            out.append({
+                "id": str(gid),
+                "home": g.get("home_name", ""),
+                "away": g.get("away_name", ""),
+                "start_time": st,
+                "ctx": g,
+            })
+    _MC_GAMES_CACHE[key] = (out, now)
+    return out
+
+
+def _mc_team_stats(sport_slug, game_ctx):
+    """Return {home_name, away_name, rows:[{label, home, away}]} for the stats panel."""
+    if sport_slug == "mlb":
+        g = game_ctx
+        return {
+            "home_name": g["home"]["team"],
+            "away_name": g["away"]["team"],
+            "rows": [
+                {"label": "Record",       "home": f"{g['home'].get('wins',0)}-{g['home'].get('losses',0)}",
+                                           "away": f"{g['away'].get('wins',0)}-{g['away'].get('losses',0)}"},
+                {"label": "Runs / Game",  "home": g['home'].get('rpg','—'),  "away": g['away'].get('rpg','—')},
+                {"label": "Team ERA",     "home": g['home'].get('team_era','—'), "away": g['away'].get('team_era','—')},
+                {"label": "OPS",          "home": g['home'].get('ops','—'),  "away": g['away'].get('ops','—')},
+                {"label": "SP",           "home": g.get('home_pitcher',{}).get('name','—'), "away": g.get('away_pitcher',{}).get('name','—')},
+                {"label": "SP ERA",       "home": g.get('home_pitcher',{}).get('era','—'),  "away": g.get('away_pitcher',{}).get('era','—')},
+                {"label": "SP WHIP",      "home": g.get('home_pitcher',{}).get('whip','—'), "away": g.get('away_pitcher',{}).get('whip','—')},
+            ],
+        }
+    if sport_slug in {"epl", "laliga", "ligamx", "ucl", "europa", "international"}:
+        import soccer_model
+        model_slug = sport_slug if sport_slug in {"epl","laliga","ligamx"} else "epl"
+        try:
+            rates = soccer_model.get_team_goal_rates(model_slug)
+            state = soccer_model.get_or_run_backtest(model_slug)
+            elo = state.get("final_elo", {}) if state else {}
+        except Exception:
+            rates, elo = {}, {}
+        h_name = game_ctx.get("home_name", "")
+        a_name = game_ctx.get("away_name", "")
+        hr = rates.get(h_name) or {}
+        ar = rates.get(a_name) or {}
+        return {
+            "home_name": h_name,
+            "away_name": a_name,
+            "rows": [
+                {"label": "Elo rating",       "home": round(elo.get(h_name, 1500), 1), "away": round(elo.get(a_name, 1500), 1)},
+                {"label": "Goals / match",    "home": round(hr.get('gs_per_match', 0), 2), "away": round(ar.get('gs_per_match', 0), 2)},
+                {"label": "Conceded / match", "home": round(hr.get('ga_per_match', 0), 2), "away": round(ar.get('ga_per_match', 0), 2)},
+                {"label": "Matches sampled",  "home": hr.get('matches', 0), "away": ar.get('matches', 0)},
+            ],
+        }
+    if sport_slug == "nfl":
+        try:
+            import nfl_model
+            state = nfl_model.get_or_run_multi_season_backtest()
+            final_elo = state.get("final_elo", {}) if state else {}
+            final_qb = state.get("final_qb_elo", {}) if state else {}
+        except Exception:
+            final_elo, final_qb = {}, {}
+        h_name = game_ctx.get("home_name", "")
+        a_name = game_ctx.get("away_name", "")
+        try:
+            import nfl_model
+            h = nfl_model.abbr_from_name(h_name) or h_name
+            a = nfl_model.abbr_from_name(a_name) or a_name
+        except Exception:
+            h, a = h_name, a_name
+        return {
+            "home_name": h_name,
+            "away_name": a_name,
+            "rows": [
+                {"label": "Team Elo",  "home": round(final_elo.get(h, 1500), 1), "away": round(final_elo.get(a, 1500), 1)},
+                {"label": "QB Elo",    "home": round(final_qb.get(h, 1500), 1) if final_qb else "—",
+                                        "away": round(final_qb.get(a, 1500), 1) if final_qb else "—"},
+            ],
+        }
+    return {
+        "home_name": game_ctx.get("home_name", game_ctx.get("home", "Home")),
+        "away_name": game_ctx.get("away_name", game_ctx.get("away", "Away")),
+        "rows": [],
+    }
+
+
+def _mc_run_simulation(sport_slug, game_ctx, n_sims):
+    """Run the per-sport simulator and return a normalized result dict."""
+    if sport_slug == "mlb":
+        try:
+            import mlb_model
+            sim = mlb_model.simulate_from_game_ctx(game_ctx, n_sims=n_sims)
+        except Exception:
+            sim = None
+        if not sim:
+            return None
+        return {
+            "n_sims": n_sims,
+            "home_team": game_ctx["home"]["team"],
+            "away_team": game_ctx["away"]["team"],
+            "p_home": sim["p_home"] * 100,
+            "p_away": sim["p_away"] * 100,
+            "p_draw": 0.0,
+            "proj_home": round(sim["lambda_home"], 2),
+            "proj_away": round(sim["lambda_away"], 2),
+            "mean_total": round(sim["mean_total"], 1),
+            "margins": sim["margins"],
+            "has_draw": False,
+            "notes": f"Poisson scoring, extras resolved coin-flip ({sim['extras_pct']*100:.0f}% extras rate)",
+            "sport_name": "MLB",
+        }
+    if sport_slug in {"epl", "laliga", "ligamx", "ucl", "europa", "international"}:
+        import soccer_model
+        model_slug = sport_slug if sport_slug in {"epl","laliga","ligamx"} else "epl"
+        try:
+            sim = soccer_model.simulate_match(
+                game_ctx["home_name"], game_ctx["away_name"], model_slug, n=n_sims
+            )
+        except Exception:
+            sim = None
+        if not sim:
+            return None
+        # Build a margin array from most-likely scores for histogram
+        margins = []
+        for sc in sim["most_likely_scores"]:
+            try:
+                hg, ag = sc["score"].split("-")
+                k = int(sc["pct"] * n_sims / 100)
+                margins.extend([int(hg) - int(ag)] * max(1, k))
+            except Exception: pass
+        return {
+            "n_sims": n_sims,
+            "home_team": sim["home_team"],
+            "away_team": sim["away_team"],
+            "p_home": sim["home_win_pct"],
+            "p_away": sim["away_win_pct"],
+            "p_draw": sim["draw_pct"],
+            "proj_home": round(sim["avg_home_goals"], 2),
+            "proj_away": round(sim["avg_away_goals"], 2),
+            "mean_total": round(sim["expected_total"], 2),
+            "btts_yes_pct": sim["btts_yes_pct"],
+            "most_likely_scores": sim["most_likely_scores"],
+            "margins": margins,
+            "has_draw": True,
+            "notes": f"Dixon-Coles sampler (ρ = {soccer_model.DC_RHO_DEFAULT})",
+            "sport_name": sports.by_slug(sport_slug)["name"] if sports.by_slug(sport_slug) else sport_slug,
+        }
+    if sport_slug == "nfl":
+        try:
+            import nfl_model
+            state = nfl_model.get_or_run_multi_season_backtest()
+            final_elo = state.get("final_elo", {}) if state else {}
+            h_name = game_ctx.get("home_name", "")
+            a_name = game_ctx.get("away_name", "")
+            h = nfl_model.abbr_from_name(h_name) or h_name
+            a = nfl_model.abbr_from_name(a_name) or a_name
+            h_elo = final_elo.get(h, nfl_model.INITIAL_ELO)
+            a_elo = final_elo.get(a, nfl_model.INITIAL_ELO)
+            # Elo diff → point edge. HFA ≈ 65 Elo ≈ 2.5 pts; scale ~4 pts per 100 Elo.
+            diff = (h_elo + 65) - a_elo
+            edge = diff / 25.0
+            proj_h = 22.5 + edge / 2
+            proj_a = 22.5 - edge / 2
+            import random
+            rng = random.Random()
+            margins = []
+            h_wins = a_wins = ties = 0
+            for _ in range(n_sims):
+                hs = max(0.0, rng.gauss(proj_h, 13.0))
+                asc = max(0.0, rng.gauss(proj_a, 13.0))
+                m = hs - asc
+                margins.append(m)
+                if abs(m) < 0.5:
+                    ties += 1
+                elif hs > asc:
+                    h_wins += 1
+                else:
+                    a_wins += 1
+            return {
+                "n_sims": n_sims,
+                "home_team": h_name,
+                "away_team": a_name,
+                "p_home": h_wins / n_sims * 100,
+                "p_away": a_wins / n_sims * 100,
+                "p_draw": ties / n_sims * 100,
+                "proj_home": round(proj_h, 1),
+                "proj_away": round(proj_a, 1),
+                "mean_total": round(proj_h + proj_a, 1),
+                "margins": margins,
+                "has_draw": False,
+                "notes": "Normal-distribution scoring from Elo (σ ≈ 13 pts)",
+                "sport_name": "NFL",
+            }
+        except Exception:
+            return None
+    return None
+
+
+def _histogram(values, bucket_width=1, max_buckets=25):
+    """Return [(center, pct)] bucket list from a list of numeric values."""
+    if not values:
+        return []
+    import math as _m
+    lo = min(values); hi = max(values)
+    span = hi - lo if hi > lo else 1
+    bw = max(1, _m.ceil(span / max_buckets)) if bucket_width is None else bucket_width
+    # Centered around 0 for margin histograms — bucket by integer division
+    buckets = {}
+    for v in values:
+        b = int(round(v / bw)) * bw
+        buckets[b] = buckets.get(b, 0) + 1
+    total = sum(buckets.values())
+    rows = sorted(buckets.items())
+    return [{"center": k, "pct": v / total * 100} for k, v in rows]
+
+
+MC_UNIFIED_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>First Pitch &mdash; Monte Carlo</title>
+{{ fonts_link|safe }}
+<style>
+{{ shared_style|safe }}
+.mc-hero {
+  padding: 24px 0 20px; margin-bottom: 10px; border-bottom: 1px solid var(--rule);
+}
+.mc-hero h1 {
+  font-family: "Fraunces", Georgia, serif;
+  font-style: italic; font-weight: 400;
+  font-size: clamp(32px, 5vw, 52px);
+  line-height: 1.05; letter-spacing: -0.02em;
+  margin: 0 0 8px;
+}
+.mc-hero .sub { color: var(--muted); max-width: 760px; font-size: 13.5px; line-height: 1.55; }
+
+.mc-form { margin-top: 20px; }
+.mc-form label {
+  display: block;
+  font-family: "JetBrains Mono", monospace; font-size: 10px;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 8px;
+}
+.mc-form select, .mc-form input[type="number"] {
+  width: 100%; max-width: 520px;
+  background: var(--card); border: 1px solid var(--rule-strong);
+  color: var(--ink); padding: 10px 12px; border-radius: 8px;
+  font-family: "Public Sans", system-ui, sans-serif; font-size: 14px;
+}
+.mc-form .controls-row {
+  display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; margin-top: 14px;
+}
+.mc-form .trials-input { width: 140px; }
+
+.btn-run {
+  background: var(--good, #22c55e); color: #052311;
+  border: none; padding: 12px 24px; border-radius: 8px;
+  font-family: "Public Sans", system-ui, sans-serif;
+  font-weight: 600; font-size: 14px; cursor: pointer;
+  margin-top: 18px;
+}
+.btn-run:hover { filter: brightness(1.08); }
+
+.stats-panel {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+  margin-top: 22px;
+}
+.stats-col {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: 10px; padding: 16px 18px;
+}
+.stats-col h3 {
+  font-family: "Fraunces", Georgia, serif; font-style: italic;
+  font-weight: 500; font-size: 20px; margin: 0 0 10px;
+}
+.stats-col.away { border-left: 3px solid var(--accent, #60a5fa); }
+.stats-col.home { border-left: 3px solid #ef4444; }
+.stats-row {
+  display: flex; justify-content: space-between;
+  padding: 6px 0; border-top: 1px solid var(--rule);
+  font-family: "JetBrains Mono", monospace; font-size: 12.5px;
+}
+.stats-row:first-of-type { border-top: none; }
+.stats-row .label { color: var(--muted); }
+.stats-row .value { color: var(--ink); font-weight: 500; }
+
+.results-section { margin-top: 32px; }
+.results-section h2 {
+  font-family: "Fraunces", Georgia, serif; font-style: italic;
+  font-weight: 400; font-size: 28px; margin: 0 0 16px;
+}
+
+.probs-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px; margin-bottom: 20px;
+}
+.prob-tile {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: 10px; padding: 14px 16px;
+}
+.prob-tile .label {
+  font-family: "JetBrains Mono", monospace; font-size: 10px;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 6px;
+}
+.prob-tile .value {
+  font-family: "JetBrains Mono", monospace; font-size: 24px;
+  color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 500;
+}
+.prob-tile .value.good { color: var(--good); text-shadow: var(--ev-strong-glow); }
+
+.proj-row {
+  display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px;
+  text-align: center; margin: 24px 0 20px;
+  background: var(--card); border: 1px solid var(--rule); border-radius: 10px;
+  padding: 18px;
+}
+.proj-row .cell .val {
+  font-family: "JetBrains Mono", monospace; font-size: 32px;
+  font-weight: 500; color: var(--ink); display: block;
+}
+.proj-row .cell .lbl {
+  font-family: "JetBrains Mono", monospace; font-size: 11px;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted);
+  margin-top: 4px;
+}
+
+.hist-wrap {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: 10px; padding: 20px; margin-top: 10px;
+}
+.hist-wrap h3 {
+  font-family: "Fraunces", Georgia, serif; font-style: italic;
+  font-weight: 500; font-size: 18px; margin: 0 0 4px;
+}
+.hist-wrap .sub {
+  font-family: "JetBrains Mono", monospace; font-size: 11px;
+  color: var(--muted); margin-bottom: 14px;
+}
+.hist-bars {
+  display: flex; align-items: flex-end; gap: 2px; height: 160px; margin-bottom: 8px;
+}
+.hist-bar {
+  flex: 1; min-width: 6px; border-radius: 3px 3px 0 0;
+  background: var(--good);
+}
+.hist-bar.neg { background: #ef4444; }
+.hist-x {
+  display: flex; justify-content: space-between;
+  font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--muted);
+}
+
+.scores-chips { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
+.score-chip {
+  background: var(--bg); border: 1px solid var(--rule); border-radius: 6px;
+  padding: 8px 10px; min-width: 68px; text-align: center;
+  font-family: "JetBrains Mono", monospace; font-size: 11px;
+}
+.score-chip .s { color: var(--ink); font-size: 15px; display: block; }
+.score-chip .p { color: var(--accent); }
+
+.notes-line {
+  font-family: "JetBrains Mono", monospace; font-size: 11px;
+  color: var(--muted); margin-top: 16px;
+}
+
+@media (max-width: 680px) {
+  .stats-panel { grid-template-columns: 1fr; }
+  .proj-row { grid-template-columns: 1fr; gap: 18px; }
+}
+</style>
+</head>
+<body>
+{{ sport_strip|safe }}
+<main class="container">
+  <section class="mc-hero">
+    <h1>Monte Carlo Simulator</h1>
+    <p class="sub">Pick a sport, choose today's game, run thousands of simulated games.
+    MLB uses Poisson run-scoring. Soccer uses the Dixon-Coles joint-pmf goal model
+    with low-score correction. NFL uses a normal-distribution scoring model fit to team Elo.</p>
+  </section>
+
+  {{ sport_chip_bar|safe }}
+
+  {% if not sport_slug %}
+  <div class="hist-wrap"><h3 style="margin:0">Select a sport above to see today's games.</h3></div>
+  {% elif not games %}
+  <div class="hist-wrap">
+    <h3 style="margin:0">No {{ sport_name }} games today.</h3>
+    <div class="sub">Pinnacle has no upcoming matchups for {{ sport_name }} on {{ date_pretty }}.</div>
+  </div>
+  {% else %}
+  <form class="mc-form" method="get" action="/montecarlo">
+    <input type="hidden" name="sport" value="{{ sport_slug }}">
+    <label for="game-select">Select {{ sport_name }} game ({{ games|length }} today)</label>
+    <select id="game-select" name="game" onchange="this.form.submit()">
+      <option value="">— choose a game —</option>
+      {% for g in games %}
+      <option value="{{ g.id }}" {% if game_id == g.id %}selected{% endif %}>
+        {{ g.away }} at {{ g.home }}{% if g.start_time %} · {{ g.start_time[11:16] }} UTC{% endif %}
+      </option>
+      {% endfor %}
+    </select>
+  </form>
+  {% endif %}
+
+  {% if team_stats and selected_game %}
+  <div class="stats-panel">
+    <div class="stats-col away">
+      <h3>{{ team_stats.away_name }} <span style="color:var(--muted);font-size:12px;font-family:'JetBrains Mono',monospace">AWAY</span></h3>
+      {% for r in team_stats.rows %}
+      <div class="stats-row"><span class="label">{{ r.label }}</span><span class="value">{{ r.away }}</span></div>
+      {% endfor %}
+    </div>
+    <div class="stats-col home">
+      <h3>{{ team_stats.home_name }} <span style="color:var(--muted);font-size:12px;font-family:'JetBrains Mono',monospace">HOME</span></h3>
+      {% for r in team_stats.rows %}
+      <div class="stats-row"><span class="label">{{ r.label }}</span><span class="value">{{ r.home }}</span></div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <form method="post" action="/montecarlo">
+    <input type="hidden" name="sport" value="{{ sport_slug }}">
+    <input type="hidden" name="game" value="{{ game_id }}">
+    <div class="controls-row">
+      <div>
+        <label for="n-sims">Trials</label>
+        <select class="trials-input" id="n-sims" name="n_sims">
+          {% for opt in [1000, 5000, 10000, 25000, 50000] %}
+          <option value="{{ opt }}" {% if opt == n_sims %}selected{% endif %}>{{ '{:,}'.format(opt) }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+    <button class="btn-run" type="submit">Run Simulation ({{ '{:,}'.format(n_sims) }} sims)</button>
+  </form>
+  {% endif %}
+
+  {% if sim %}
+  <section class="results-section">
+    <h2>Simulation Results</h2>
+    <div class="probs-grid">
+      <div class="prob-tile">
+        <div class="label">{{ sim.home_team }}{% if not sim.has_draw %} ML{% else %} win{% endif %}</div>
+        <div class="value {% if sim.p_home >= 55 %}good{% endif %}">{{ '%.1f' % sim.p_home }}%</div>
+      </div>
+      {% if sim.has_draw %}
+      <div class="prob-tile">
+        <div class="label">Draw</div>
+        <div class="value">{{ '%.1f' % sim.p_draw }}%</div>
+      </div>
+      {% endif %}
+      <div class="prob-tile">
+        <div class="label">{{ sim.away_team }}{% if not sim.has_draw %} ML{% else %} win{% endif %}</div>
+        <div class="value {% if sim.p_away >= 55 %}good{% endif %}">{{ '%.1f' % sim.p_away }}%</div>
+      </div>
+      {% if sim.btts_yes_pct is defined %}
+      <div class="prob-tile">
+        <div class="label">BTTS Yes</div>
+        <div class="value">{{ '%.1f' % sim.btts_yes_pct }}%</div>
+      </div>
+      {% endif %}
+      <div class="prob-tile">
+        <div class="label">Mean total</div>
+        <div class="value">{{ sim.mean_total }}</div>
+      </div>
+    </div>
+
+    <div class="proj-row">
+      <div class="cell"><span class="val">{{ sim.proj_away }}</span><span class="lbl">{{ sim.away_team }} proj</span></div>
+      <div class="cell"><span class="val">{{ sim.proj_home }}</span><span class="lbl">{{ sim.home_team }} proj</span></div>
+      <div class="cell"><span class="val">{{ sim.mean_total }}</span><span class="lbl">Projected total</span></div>
+    </div>
+
+    {% if hist %}
+    <div class="hist-wrap">
+      <h3>Score Differential Distribution</h3>
+      <div class="sub">{{ sim.away_team }} wins ← → {{ sim.home_team }} wins · {{ '{:,}'.format(sim.n_sims) }} trials</div>
+      <div class="hist-bars">
+        {% for b in hist %}
+        <div class="hist-bar {% if b.center < 0 %}neg{% endif %}"
+             style="height: {{ (b.pct / hist_max * 100) }}%"
+             title="margin {{ b.center }}: {{ '%.1f' % b.pct }}%"></div>
+        {% endfor %}
+      </div>
+      <div class="hist-x">
+        <span>{{ hist[0].center }}</span>
+        <span>0</span>
+        <span>+{{ hist[-1].center }}</span>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if sim.most_likely_scores %}
+    <div class="hist-wrap">
+      <h3>Most-likely scorelines</h3>
+      <div class="scores-chips">
+        {% for sc in sim.most_likely_scores[:8] %}
+        <div class="score-chip"><span class="s">{{ sc.score }}</span><span class="p">{{ '%.1f' % sc.pct }}%</span></div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="notes-line">{{ sim.notes }}</div>
+  </section>
+  {% endif %}
+</main>
+{{ theme_script|safe }}
+</body>
+</html>
+"""
+
+
+@app.route("/montecarlo", methods=["GET", "POST"])
+def montecarlo_unified():
+    """Unified cross-sport Monte Carlo page."""
+    sport_slug = (request.values.get("sport") or "").lower() or None
+    game_id = request.values.get("game") or None
+    try:
+        n_sims = int(request.values.get("n_sims") or 10000)
+    except ValueError:
+        n_sims = 10000
+    n_sims = max(500, min(50000, n_sims))
+    run_sim = request.method == "POST"
+
+    date_str = datetime.now(EASTERN).date().isoformat()
+    d_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
+
+    sport = sports.by_slug(sport_slug) if sport_slug else None
+    sport_name = sport["name"] if sport else ""
+
+    games = []
+    selected_game = None
+    team_stats = None
+    sim = None
+    hist = None
+    hist_max = 1
+
+    if sport_slug:
+        games = _mc_fetch_games(sport_slug, date_str)
+        if game_id:
+            selected_game = next((g for g in games if g["id"] == game_id), None)
+            if selected_game:
+                team_stats = _mc_team_stats(sport_slug, selected_game["ctx"])
+                if run_sim:
+                    sim = _mc_run_simulation(sport_slug, selected_game["ctx"], n_sims)
+                    if sim and sim.get("margins"):
+                        bw = 1 if sport_slug != "nfl" else 3
+                        hist = _histogram(sim["margins"], bucket_width=bw, max_buckets=25)
+                        if hist:
+                            hist_max = max(b["pct"] for b in hist) or 1
+
+    return render_template_string(
+        MC_UNIFIED_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        theme_script=THEME_SCRIPT,
+        sport_strip=render_sport_strip("montecarlo"),
+        sport_chip_bar=render_sport_chip_bar(sport_slug, "/montecarlo"),
+        sport_slug=sport_slug,
+        sport_name=sport_name,
+        games=games,
+        game_id=game_id,
+        selected_game=selected_game,
+        team_stats=team_stats,
+        sim=sim,
+        hist=hist,
+        hist_max=hist_max,
+        n_sims=n_sims,
+        date_pretty=d_obj.strftime("%A, %B %d").replace(" 0", " "),
+    )
+
+
+# ---------------------------------------------------------------------------
+# AI Analysis — unified
+# ---------------------------------------------------------------------------
+
+AI_UNIFIED_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>First Pitch &mdash; AI Analysis</title>
+{{ fonts_link|safe }}
+<style>
+{{ shared_style|safe }}
+.ai-hero { padding: 24px 0 20px; margin-bottom: 10px; border-bottom: 1px solid var(--rule); }
+.ai-hero h1 {
+  font-family: "Fraunces", Georgia, serif;
+  font-style: italic; font-weight: 400;
+  font-size: clamp(32px, 5vw, 52px); line-height: 1.05;
+  letter-spacing: -0.02em; margin: 0 0 8px;
+}
+.ai-hero .sub { color: var(--muted); max-width: 760px; font-size: 13.5px; line-height: 1.55; }
+
+.ai-form label {
+  display: block;
+  font-family: "JetBrains Mono", monospace; font-size: 10px;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted); margin: 20px 0 8px;
+}
+.ai-form select {
+  width: 100%; max-width: 520px;
+  background: var(--card); border: 1px solid var(--rule-strong);
+  color: var(--ink); padding: 10px 12px; border-radius: 8px;
+  font-size: 14px;
+}
+.btn-ai {
+  background: var(--accent, #60a5fa); color: #072034;
+  border: none; padding: 12px 24px; border-radius: 8px;
+  font-weight: 600; font-size: 14px; cursor: pointer; margin-top: 18px;
+}
+
+.ai-result {
+  background: var(--card); border: 1px solid var(--rule); border-radius: 12px;
+  padding: 22px 24px; margin-top: 24px; line-height: 1.55;
+}
+.ai-result h2, .ai-result h3 {
+  font-family: "Fraunces", Georgia, serif; font-weight: 500;
+  margin-top: 18px; margin-bottom: 8px;
+}
+.ai-result h2 { font-size: 20px; }
+.ai-result h3 { font-size: 16px; }
+.ai-result ul { padding-left: 22px; margin: 6px 0 10px; }
+.ai-result li { margin: 4px 0; }
+.ai-foot {
+  font-family: "JetBrains Mono", monospace; font-size: 11px;
+  color: var(--muted); margin-top: 16px;
+}
+.ai-err {
+  background: color-mix(in oklab, #ef4444 20%, var(--card));
+  border-color: #ef4444; color: var(--ink);
+}
+</style>
+</head>
+<body>
+{{ sport_strip|safe }}
+<main class="container">
+  <section class="ai-hero">
+    <h1>AI Analysis</h1>
+    <p class="sub">Pick a sport and today's game, Claude Sonnet 5.5 writes
+    an in-depth read on the matchup — stat angle, matchup factors, risk flags
+    and a lean, using live model + market data.</p>
+  </section>
+
+  {{ sport_chip_bar|safe }}
+
+  {% if not key_available %}
+  <div class="ai-result ai-err">
+    <h3 style="margin-top:0">ANTHROPIC_API_KEY not set</h3>
+    <p>Set the environment variable on this host (or in your Render dashboard)
+    and reload — this page needs it to call Claude.</p>
+  </div>
+  {% endif %}
+
+  {% if sport_slug and not games %}
+  <div class="ai-result"><h3 style="margin:0">No {{ sport_name }} games today.</h3></div>
+  {% endif %}
+
+  {% if sport_slug and games %}
+  <form class="ai-form" method="post" action="/ai-analysis">
+    <input type="hidden" name="sport" value="{{ sport_slug }}">
+    <label for="g">Select {{ sport_name }} game ({{ games|length }} today)</label>
+    <select id="g" name="game">
+      <option value="">— choose a game —</option>
+      {% for g in games %}
+      <option value="{{ g.id }}" {% if game_id == g.id %}selected{% endif %}>
+        {{ g.away }} at {{ g.home }}{% if g.start_time %} · {{ g.start_time[11:16] }} UTC{% endif %}
+      </option>
+      {% endfor %}
+    </select>
+    <br>
+    <button class="btn-ai" type="submit" {% if not key_available %}disabled{% endif %}>Run Analysis</button>
+  </form>
+  {% endif %}
+
+  {% if analysis %}
+  <section class="ai-result">
+    {% if analysis.error %}
+      <h3 style="margin-top:0;color:#ef4444">Analysis error</h3>
+      <p>{{ analysis.error }}</p>
+    {% else %}
+      {{ analysis.html|safe }}
+      <div class="ai-foot">model: {{ analysis.model }} · generated: {{ analysis.generated_at }}</div>
+    {% endif %}
+  </section>
+  {% endif %}
+</main>
+{{ theme_script|safe }}
+</body>
+</html>
+"""
+
+
+def _ai_render_markdown(text):
+    """Very lightweight markdown → HTML (headings, lists, paragraphs, bold)."""
+    import html as _html, re as _re
+    out = []
+    lines = text.split("\n")
+    in_list = False
+    for ln in lines:
+        s = ln.rstrip()
+        if not s:
+            if in_list:
+                out.append("</ul>"); in_list = False
+            continue
+        esc = _html.escape(s)
+        # bold **text**
+        esc = _re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", esc)
+        esc = _re.sub(r"\*(.+?)\*", r"<em>\1</em>", esc)
+        if s.startswith("### "):
+            if in_list: out.append("</ul>"); in_list = False
+            out.append(f"<h3>{esc[4:]}</h3>")
+        elif s.startswith("## "):
+            if in_list: out.append("</ul>"); in_list = False
+            out.append(f"<h2>{esc[3:]}</h2>")
+        elif s.startswith("# "):
+            if in_list: out.append("</ul>"); in_list = False
+            out.append(f"<h2>{esc[2:]}</h2>")
+        elif s.lstrip().startswith(("- ", "* ")):
+            if not in_list:
+                out.append("<ul>"); in_list = True
+            out.append(f"<li>{esc.lstrip()[2:]}</li>")
+        else:
+            if in_list: out.append("</ul>"); in_list = False
+            out.append(f"<p>{esc}</p>")
+    if in_list: out.append("</ul>")
+    return "\n".join(out)
+
+
+def _ai_analyze_matchup(sport_slug, game_ctx):
+    """Call Claude for a sport-aware game analysis. Returns {html, model, generated_at}."""
+    import analyst as analyst_mod
+    if not analyst_mod.is_available():
+        return {"error": "ANTHROPIC_API_KEY is not set in this environment."}
+    try:
+        import os
+        from anthropic import Anthropic
+        client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    except Exception as e:
+        return {"error": f"anthropic SDK not available: {e}"}
+
+    # Build sport-specific context block
+    ctx_lines = []
+    if sport_slug == "mlb":
+        g = game_ctx
+        a = g["away"]; h = g["home"]
+        ap = g.get("away_pitcher") or {}; hp = g.get("home_pitcher") or {}
+        ctx_lines.append(f"MLB matchup: {a['team']} at {h['team']} · first pitch {g.get('first_pitch','?')}")
+        ctx_lines.append(f"- {a['team']}: {a.get('wins','?')}-{a.get('losses','?')}, OPS {a.get('ops','?')}, team ERA {a.get('team_era','?')}")
+        ctx_lines.append(f"- {h['team']}: {h.get('wins','?')}-{h.get('losses','?')}, OPS {h.get('ops','?')}, team ERA {h.get('team_era','?')}")
+        ctx_lines.append(f"- Away SP: {ap.get('name','?')} ({ap.get('era','?')} ERA, {ap.get('whip','?')} WHIP)")
+        ctx_lines.append(f"- Home SP: {hp.get('name','?')} ({hp.get('era','?')} ERA, {hp.get('whip','?')} WHIP)")
+        if g.get("p_home") is not None:
+            ctx_lines.append(f"- Model prob: home {int(round(g['p_home']*100))}%")
+    elif sport_slug in {"epl","laliga","ligamx","ucl","europa","international"}:
+        try:
+            import soccer_model
+            model_slug = sport_slug if sport_slug in {"epl","laliga","ligamx"} else "epl"
+            state = soccer_model.get_or_run_backtest(model_slug)
+            elo = state.get("final_elo", {}) if state else {}
+            h_name = game_ctx.get("home_name",""); a_name = game_ctx.get("away_name","")
+            sim = soccer_model.simulate_match(h_name, a_name, model_slug, n=5000)
+            ctx_lines.append(f"Soccer matchup: {a_name} at {h_name} · kickoff {game_ctx.get('start_time','?')}")
+            ctx_lines.append(f"- Elo: home {round(elo.get(h_name,1500),1)}, away {round(elo.get(a_name,1500),1)}")
+            ctx_lines.append(f"- Dixon-Coles MC: home {sim['home_win_pct']:.1f}% / draw {sim['draw_pct']:.1f}% / away {sim['away_win_pct']:.1f}%")
+            ctx_lines.append(f"- Projected goals: {sim['avg_home_goals']:.2f} - {sim['avg_away_goals']:.2f} (BTTS {sim['btts_yes_pct']:.1f}%)")
+        except Exception as e:
+            ctx_lines.append(f"Soccer context (limited data): {game_ctx.get('home_name','?')} vs {game_ctx.get('away_name','?')}")
+    elif sport_slug == "nfl":
+        ctx_lines.append(f"NFL matchup: {game_ctx.get('away_name','?')} at {game_ctx.get('home_name','?')}")
+    else:
+        ctx_lines.append(f"{sport_slug.upper()} matchup: {game_ctx.get('away_name','?')} vs {game_ctx.get('home_name','?')}")
+
+    context = "\n".join(ctx_lines)
+    prompt = f"""You are an expert sports betting analyst. Analyze this matchup
+in depth across stat angles, matchup factors, risk flags, and give a clear
+recommendation at the end.
+
+{context}
+
+Write 4 sections with markdown headings (## Section):
+## Stat Read
+## Matchup Factors
+## Risk Flags
+## Lean & Pick
+
+Be specific, honest, and avoid filler. Markdown bullets ok. 350-450 words."""
+
+    try:
+        msg = client.messages.create(
+            model=analyst_mod.CLAUDE_MODEL,
+            max_tokens=1200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = ""
+        for block in (msg.content or []):
+            if getattr(block, "type", None) == "text":
+                text = getattr(block, "text", "") or ""
+                break
+        if not text:
+            return {"error": "Claude returned no text."}
+        return {
+            "html": _ai_render_markdown(text),
+            "model": analyst_mod.CLAUDE_MODEL,
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+        }
+    except Exception as e:
+        return {"error": f"Claude call failed: {e}"}
+
+
+@app.route("/ai-analysis", methods=["GET", "POST"])
+def ai_analysis_unified():
+    """Unified cross-sport AI analysis page."""
+    import analyst as analyst_mod
+    sport_slug = (request.values.get("sport") or "").lower() or None
+    game_id = request.values.get("game") or None
+
+    date_str = datetime.now(EASTERN).date().isoformat()
+    sport = sports.by_slug(sport_slug) if sport_slug else None
+    sport_name = sport["name"] if sport else ""
+
+    games = []
+    analysis = None
+    if sport_slug:
+        games = _mc_fetch_games(sport_slug, date_str)
+        if game_id and request.method == "POST":
+            selected = next((g for g in games if g["id"] == game_id), None)
+            if selected:
+                analysis = _ai_analyze_matchup(sport_slug, selected["ctx"])
+
+    return render_template_string(
+        AI_UNIFIED_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        theme_script=THEME_SCRIPT,
+        sport_strip=render_sport_strip("analysis"),
+        sport_chip_bar=render_sport_chip_bar(sport_slug, "/ai-analysis"),
+        sport_slug=sport_slug,
+        sport_name=sport_name,
+        games=games,
+        game_id=game_id,
+        analysis=analysis,
+        key_available=analyst_mod.is_available(),
+    )
 
 
 if __name__ == "__main__":

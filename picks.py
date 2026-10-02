@@ -187,7 +187,30 @@ def _passes_filter(p):
     return True
 
 
-def collect_picks(date_str):
+def _pick_is_on_date(pick, date_str):
+    """True if the pick's game starts on the given local date (Eastern).
+
+    Pinnacle and MLB start_times are UTC ISO strings. We convert to Eastern
+    local date for comparison — matches how the user picks dates in the UI.
+    """
+    st = pick.get("start_time")
+    if not st:
+        return True  # keep picks with no start_time to avoid dropping them silently
+    try:
+        from datetime import datetime, timezone, timedelta
+        # Parse "...Z" or "...+00:00"
+        iso = st.replace("Z", "+00:00") if st.endswith("Z") else st
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        # Convert to Eastern (UTC-4 or UTC-5, approximate; close enough for date-bucketing)
+        est = dt.astimezone(timezone(timedelta(hours=-4)))
+        return est.date().isoformat() == date_str
+    except Exception:
+        return True
+
+
+def collect_picks(date_str, today_only=True):
     """Return filtered picks ranked by model probability (not EV).
 
     The reference picks (Blacksmith Bets, The Syndicate) target confidence
@@ -195,6 +218,10 @@ def collect_picks(date_str):
     parlay if the probability is right, rather than hunt +400 longshots with
     nominally positive EV. We mirror that: filter on probability thresholds
     first, then rank by model probability descending.
+
+    today_only: if True (default), drop picks whose game isn't on date_str in
+    Eastern local time — the picks board is a daily board, not a "whatever
+    Pinnacle has posted" board.
     """
     all_picks = []
     all_picks.extend(_mlb_bets(date_str))
@@ -202,6 +229,10 @@ def collect_picks(date_str):
         if sport.get("dedicated"):
             continue
         all_picks.extend(_sport_bets(sport))
+
+    # Filter to today's games only (Eastern local date)
+    if today_only:
+        all_picks = [p for p in all_picks if _pick_is_on_date(p, date_str)]
 
     # Filter to confidence picks (prob + decimal + draw rule)
     filtered = [p for p in all_picks if _passes_filter(p)]
