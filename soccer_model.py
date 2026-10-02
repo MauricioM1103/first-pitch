@@ -301,27 +301,53 @@ def run_multi_season_backtest(league_slug, end_season, num_seasons=NUM_SEASONS,
               flush=True)
 
     elo = {}
+    # Walk-forward team goal rates for Dixon-Coles projections (BTTS/totals use these)
+    goal_stats = {}  # team -> {"gs": int, "ga": int, "matches": int}
     predictions = []
-    per_season = {s: {"n": 0, "correct": 0, "ll": 0.0, "brier": 0.0}
+    per_season = {s: {"n": 0, "correct": 0, "ll": 0.0, "brier": 0.0,
+                      "n_dc": 0, "ll_dc": 0.0, "correct_dc": 0}
                   for s in seasons[warmup_seasons:]}
     seasons_seen = set()
+    prior = _LEAGUE_GOAL_PRIORS.get(league_slug, 1.35)
+
+    def _team_rate(team, kind):
+        s = goal_stats.get(team)
+        if not s or s["matches"] < 3:
+            return prior
+        return s[kind] / s["matches"]
 
     for m in matches:
         s_year = m["season"]
-        # Season-boundary regression
         if s_year not in seasons_seen and seasons_seen:
             for t in list(elo.keys()):
                 elo[t] = INITIAL_ELO + (2.0 / 3.0) * (elo[t] - INITIAL_ELO)
+            goal_stats = {}  # DC rates reset each season for recency
         seasons_seen.add(s_year)
 
         h, a = m["home"], m["away"]
         elo.setdefault(h, INITIAL_ELO)
         elo.setdefault(a, INITIAL_ELO)
 
+        # Primary prediction: Elo-based 3-way (slight accuracy edge over DC
+        # in backtests). Dixon-Coles still runs in parallel for comparison
+        # and powers BTTS/totals predictions where its low-score correction
+        # genuinely helps.
         p_h, p_d, p_a = predict_3way(elo[h], elo[a])
 
+        # Dixon-Coles comparison prediction
+        hr_scored = _team_rate(h, "gs")
+        hr_conceded = _team_rate(h, "ga")
+        ar_scored = _team_rate(a, "gs")
+        ar_conceded = _team_rate(a, "ga")
+        lam_h = max(0.1, (hr_scored + ar_conceded) / 2.0 * 1.15)
+        lam_a = max(0.1, (ar_scored + hr_conceded) / 2.0 * 0.90)
+        dc_mat = dixon_coles_matrix(lam_h, lam_a, DC_RHO_DEFAULT)
+        p_h_dc = sum(dc_mat[hh][aa] for hh in range(DC_MAX_GOALS + 1)
+                                      for aa in range(hh))
+        p_d_dc = sum(dc_mat[k][k] for k in range(DC_MAX_GOALS + 1))
+        p_a_dc = max(0.0, 1.0 - p_h_dc - p_d_dc)
+
         if s_year >= scored_from:
-            # 3-way log loss + Brier
             res = m["res"]
             y_h = 1.0 if res == "H" else 0.0
             y_d = 1.0 if res == "D" else 0.0
@@ -330,11 +356,8 @@ def run_multi_season_backtest(league_slug, end_season, num_seasons=NUM_SEASONS,
             p_hh = max(1e-6, min(1 - 1e-6, p_h))
             p_dd = max(1e-6, min(1 - 1e-6, p_d))
             p_aa = max(1e-6, min(1 - 1e-6, p_a))
-
             ll = -(y_h * math.log(p_hh) + y_d * math.log(p_dd) + y_a * math.log(p_aa))
             brier = ((p_h - y_h) ** 2 + (p_d - y_d) ** 2 + (p_a - y_a) ** 2) / 3
-
-            # Accuracy: argmax prediction matches actual
             pred_pick = max(("H", p_h), ("D", p_d), ("A", p_a), key=lambda x: x[1])[0]
             correct = (pred_pick == res)
 
@@ -343,24 +366,46 @@ def run_multi_season_backtest(league_slug, end_season, num_seasons=NUM_SEASONS,
             per_season[s_year]["ll"] += ll
             per_season[s_year]["brier"] += brier
 
+            # DC comparison metrics
+            p_hh_dc = max(1e-6, min(1 - 1e-6, p_h_dc))
+            p_dd_dc = max(1e-6, min(1 - 1e-6, p_d_dc))
+            p_aa_dc = max(1e-6, min(1 - 1e-6, p_a_dc))
+            ll_dc = -(y_h * math.log(p_hh_dc) + y_d * math.log(p_dd_dc) + y_a * math.log(p_aa_dc))
+            pick_dc = max(("H", p_h_dc), ("D", p_d_dc), ("A", p_a_dc), key=lambda x: x[1])[0]
+            per_season[s_year]["n_dc"] += 1
+            per_season[s_year]["correct_dc"] += 1 if (pick_dc == res) else 0
+            per_season[s_year]["ll_dc"] += ll_dc
+
             predictions.append({
                 "date": m["date"],
                 "season": s_year,
                 "home": h, "away": a,
                 "pregame_home_elo": round(elo[h], 1),
                 "pregame_away_elo": round(elo[a], 1),
+                "lam_home": round(lam_h, 2),
+                "lam_away": round(lam_a, 2),
                 "p_home": p_h, "p_draw": p_d, "p_away": p_a,
+                "p_home_dc": p_h_dc, "p_draw_dc": p_d_dc, "p_away_dc": p_a_dc,
                 "result": res,
                 "hg": m["hg"], "ag": m["ag"],
             })
 
         elo[h], elo[a] = elo_update(elo[h], elo[a], m["res"], m["hg"], m["ag"])
+        gs_h = goal_stats.setdefault(h, {"gs": 0, "ga": 0, "matches": 0})
+        gs_a = goal_stats.setdefault(a, {"gs": 0, "ga": 0, "matches": 0})
+        gs_h["gs"] += m["hg"]; gs_h["ga"] += m["ag"]; gs_h["matches"] += 1
+        gs_a["gs"] += m["ag"]; gs_a["ga"] += m["hg"]; gs_a["matches"] += 1
 
     for s, stat in per_season.items():
         if stat["n"] > 0:
             stat["accuracy"] = stat["correct"] / stat["n"]
             stat["log_loss"] = stat["ll"] / stat["n"]
             stat["brier"] = stat["brier"] / stat["n"]
+            # DC parallel metrics for comparison on backtest page
+            n_dc = stat.get("n_dc", 0)
+            if n_dc:
+                stat["accuracy_dc"] = stat["correct_dc"] / n_dc
+                stat["log_loss_dc"] = stat["ll_dc"] / n_dc
         else:
             stat["accuracy"] = stat["log_loss"] = stat["brier"] = None
 
@@ -491,26 +536,201 @@ _LEAGUE_GOAL_PRIORS = {
 }
 
 
-def predict_btts(home_team, away_team, league_slug):
-    """Probability that both teams score at least once.
+# ============================================================================
+# Dixon-Coles — joint-distribution model with low-score correction.
+# ============================================================================
+# Classical independent-Poisson under-predicts 0-0, 1-0, 0-1, 1-1. Dixon-Coles
+# (1997) applies a correction factor τ to those four cells. Everything else
+# uses the independent Poisson pmf. ρ is the correlation parameter — negative
+# in practice (−0.1 to −0.2 for most leagues).
 
-    Blends team-level attack rate with opponent defense rate to project
-    expected goals per side, then applies the independent-Poisson identity:
-        P(team scores ≥ 1) = 1 − exp(−λ)
-        P(BTTS Yes) = P(home scores) × P(away scores)
-    Home teams get a +15% attack boost, away a −10% penalty (standard HFA).
+DC_RHO_DEFAULT = -0.15
+DC_MAX_GOALS = 10
+
+
+def _dc_tau(h, a, lam_h, lam_a, rho):
+    """Low-score correction factor."""
+    if h == 0 and a == 0:
+        return 1.0 - lam_h * lam_a * rho
+    if h == 0 and a == 1:
+        return 1.0 + lam_h * rho
+    if h == 1 and a == 0:
+        return 1.0 + lam_a * rho
+    if h == 1 and a == 1:
+        return 1.0 - rho
+    return 1.0
+
+
+def dixon_coles_matrix(lam_home, lam_away, rho=DC_RHO_DEFAULT, max_goals=DC_MAX_GOALS):
+    """Return a (max_goals+1) × (max_goals+1) joint pmf matrix.
+
+    Row index = home goals, column index = away goals. Rows/cols sum close
+    to the Poisson marginals, with the four low-score cells adjusted and
+    the whole matrix renormalized so entries sum to 1.
     """
+    try:
+        pmf_h = [math.exp(-lam_home) * (lam_home ** k) / math.factorial(k)
+                 for k in range(max_goals + 1)]
+        pmf_a = [math.exp(-lam_away) * (lam_away ** k) / math.factorial(k)
+                 for k in range(max_goals + 1)]
+    except (OverflowError, ValueError):
+        # Fallback uniform if lambdas blow up
+        pmf_h = [1.0 / (max_goals + 1)] * (max_goals + 1)
+        pmf_a = pmf_h[:]
+    mat = [[0.0] * (max_goals + 1) for _ in range(max_goals + 1)]
+    for h in range(max_goals + 1):
+        for a in range(max_goals + 1):
+            mat[h][a] = pmf_h[h] * pmf_a[a] * _dc_tau(h, a, lam_home, lam_away, rho)
+    total = sum(sum(row) for row in mat)
+    if total <= 0:
+        return mat
+    return [[c / total for c in row] for row in mat]
+
+
+def _project_lambdas(home_team, away_team, league_slug):
+    """Compute (λ_home, λ_away) from team historical goal rates with HFA."""
     rates = get_team_goal_rates(league_slug)
     prior = _LEAGUE_GOAL_PRIORS.get(league_slug, 1.35)
     default = {"gs_per_match": prior, "ga_per_match": prior, "matches": 0}
     hr = rates.get(home_team, default)
     ar = rates.get(away_team, default)
-    # Blend own attack with opponent defense
     lam_home = (hr["gs_per_match"] + ar["ga_per_match"]) / 2.0 * 1.15
     lam_away = (ar["gs_per_match"] + hr["ga_per_match"]) / 2.0 * 0.90
-    p_home_scores = 1.0 - math.exp(-lam_home)
-    p_away_scores = 1.0 - math.exp(-lam_away)
-    p_yes = p_home_scores * p_away_scores
+    return max(0.1, lam_home), max(0.1, lam_away)
+
+
+def predict_3way_dc(home_team, away_team, league_slug, rho=DC_RHO_DEFAULT):
+    """3-way outcome probabilities under Dixon-Coles.
+
+    Returns (p_home, p_draw, p_away).
+    """
+    lam_h, lam_a = _project_lambdas(home_team, away_team, league_slug)
+    mat = dixon_coles_matrix(lam_h, lam_a, rho)
+    p_home = sum(mat[h][a] for h in range(DC_MAX_GOALS + 1)
+                             for a in range(h))
+    p_draw = sum(mat[h][h] for h in range(DC_MAX_GOALS + 1))
+    p_away = 1.0 - p_home - p_draw
+    return p_home, p_draw, p_away
+
+
+def predict_total_dc(home_team, away_team, league_slug, line,
+                     rho=DC_RHO_DEFAULT):
+    """Over/under total goals probability under Dixon-Coles."""
+    lam_h, lam_a = _project_lambdas(home_team, away_team, league_slug)
+    mat = dixon_coles_matrix(lam_h, lam_a, rho)
+    p_over = 0.0
+    for h in range(DC_MAX_GOALS + 1):
+        for a in range(DC_MAX_GOALS + 1):
+            if h + a > line:
+                p_over += mat[h][a]
+    return {"over": p_over, "under": 1.0 - p_over,
+            "expected_total": lam_h + lam_a}
+
+
+def simulate_match(home_team, away_team, league_slug, n=10000,
+                   rho=DC_RHO_DEFAULT, seed=None):
+    """Monte Carlo simulate a match using the Dixon-Coles joint pmf.
+
+    Returns a dict with:
+        * trials, home_win_pct, draw_pct, away_win_pct
+        * btts_pct (both teams score)
+        * cs_pct (clean sheet probabilities per side)
+        * total_buckets (histogram of total-goal lines)
+        * avg_home_goals, avg_away_goals
+        * expected_total (lam_home + lam_away)
+        * most_likely_scores (top 10 scorelines by trial frequency)
+    """
+    import random
+    rng = random.Random(seed) if seed is not None else random
+
+    lam_h, lam_a = _project_lambdas(home_team, away_team, league_slug)
+    mat = dixon_coles_matrix(lam_h, lam_a, rho)
+
+    # Flatten joint pmf into a cumulative array for inverse-CDF sampling
+    cells = []
+    cum = 0.0
+    for hh in range(DC_MAX_GOALS + 1):
+        for aa in range(DC_MAX_GOALS + 1):
+            p = mat[hh][aa]
+            if p > 0:
+                cum += p
+                cells.append((cum, hh, aa))
+
+    home_wins = draws = away_wins = 0
+    btts_yes = 0
+    cs_home = cs_away = 0  # home clean sheet / away clean sheet
+    total_sum_h = total_sum_a = 0
+    score_counts = {}
+    buckets = {"over_1_5": 0, "over_2_5": 0, "over_3_5": 0,
+               "under_2_5": 0, "under_3_5": 0}
+
+    for _ in range(n):
+        r = rng.random() * cum
+        # Binary search would be nice; cells is up to 121 so linear is fine
+        hh = aa = 0
+        for c, h_g, a_g in cells:
+            if r <= c:
+                hh, aa = h_g, a_g
+                break
+
+        if hh > aa:
+            home_wins += 1
+        elif hh < aa:
+            away_wins += 1
+        else:
+            draws += 1
+        if hh >= 1 and aa >= 1:
+            btts_yes += 1
+        if aa == 0:
+            cs_home += 1
+        if hh == 0:
+            cs_away += 1
+        total_sum_h += hh
+        total_sum_a += aa
+        total = hh + aa
+        if total > 1: buckets["over_1_5"] += 1
+        if total > 2: buckets["over_2_5"] += 1
+        if total > 3: buckets["over_3_5"] += 1
+        if total < 3: buckets["under_2_5"] += 1
+        if total < 4: buckets["under_3_5"] += 1
+
+        score_key = f"{hh}-{aa}"
+        score_counts[score_key] = score_counts.get(score_key, 0) + 1
+
+    top_scores = sorted(score_counts.items(), key=lambda kv: -kv[1])[:10]
+    top_scores = [{"score": k, "pct": v / n * 100} for k, v in top_scores]
+
+    return {
+        "trials": n,
+        "home_team": home_team,
+        "away_team": away_team,
+        "lam_home": lam_h,
+        "lam_away": lam_a,
+        "home_win_pct": home_wins / n * 100,
+        "draw_pct": draws / n * 100,
+        "away_win_pct": away_wins / n * 100,
+        "btts_yes_pct": btts_yes / n * 100,
+        "btts_no_pct": (n - btts_yes) / n * 100,
+        "cs_home_pct": cs_home / n * 100,
+        "cs_away_pct": cs_away / n * 100,
+        "avg_home_goals": total_sum_h / n,
+        "avg_away_goals": total_sum_a / n,
+        "expected_total": lam_h + lam_a,
+        "totals": {k: v / n * 100 for k, v in buckets.items()},
+        "most_likely_scores": top_scores,
+    }
+
+
+def predict_btts(home_team, away_team, league_slug, rho=DC_RHO_DEFAULT):
+    """BTTS probability (Dixon-Coles version).
+
+    P(BTTS Yes) = sum over (h ≥ 1 and a ≥ 1) of joint pmf. More accurate than
+    the independent-Poisson identity because of the low-score correction.
+    """
+    lam_h, lam_a = _project_lambdas(home_team, away_team, league_slug)
+    mat = dixon_coles_matrix(lam_h, lam_a, rho)
+    p_yes = sum(mat[h][a] for h in range(1, DC_MAX_GOALS + 1)
+                             for a in range(1, DC_MAX_GOALS + 1))
     return {"yes": p_yes, "no": 1.0 - p_yes}
 
 

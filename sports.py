@@ -92,8 +92,19 @@ SPORTS = [
     {
         "slug": "international",
         "name": "Int'l",
-        "pinnacle_league_id": 2117,   # International Friendlies
-        "odds_api_key": None,         # Odds API doesn't have a clean friendlies key
+        # Aggregated: Friendlies + UEFA Nations League + CONCACAF Nations League
+        # (Pinnacle guest API exposes each as its own league id; generic_odds
+        # merges them under one "International" view).
+        "pinnacle_league_id": [
+            2117,     # International Friendlies
+            200719,   # UEFA Nations League League A
+            200721,   # UEFA Nations League League B
+            200726,   # UEFA Nations League League C
+            200727,   # UEFA Nations League League D
+            200729,   # UEFA Nations League (playoffs / finals)
+            205419,   # CONCACAF Nations League
+        ],
+        "odds_api_key": "soccer_uefa_nations_league",  # Nations League has an Odds API key
         "ml_outcomes": 3,
         "has_halves": True,
         "team_sport": True,

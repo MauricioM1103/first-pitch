@@ -824,18 +824,29 @@ _SPORT_TABS = {
         ("backtest",  "Backtest",   "/sport/nfl/backtest"),
     ],
 }
-# Soccer leagues share the same tab set — Schedule/Edges/Backtest
+# Soccer leagues share the same tab set — Schedule/Edges/Monte Carlo/Backtest
 _SOCCER_SLUGS_WITH_MODEL = {"epl", "laliga", "ligamx"}
+_SOCCER_SLUGS_ALL = {"epl", "laliga", "ligamx", "ucl", "europa", "international"}
 for _s in _SOCCER_SLUGS_WITH_MODEL:
     _SPORT_TABS[_s] = [
-        ("schedule",  "Schedule",   f"/sport/{_s}"),
-        ("edges",     "Edges",      f"/sport/{_s}/edges"),
-        ("backtest",  "Backtest",   f"/sport/{_s}/backtest"),
+        ("schedule",   "Schedule",    f"/sport/{_s}"),
+        ("edges",      "Edges",       f"/sport/{_s}/edges"),
+        ("montecarlo", "Monte Carlo", f"/sport/{_s}/montecarlo"),
+        ("backtest",   "Backtest",    f"/sport/{_s}/backtest"),
+    ]
+# Soccer leagues without historical fit (UCL, Europa, Int'l) still get MC —
+# Dixon-Coles falls back to league-average goal priors when teams aren't in
+# the historical CSV.
+for _s in (_SOCCER_SLUGS_ALL - _SOCCER_SLUGS_WITH_MODEL):
+    _SPORT_TABS[_s] = [
+        ("schedule",   "Schedule",    f"/sport/{_s}"),
+        ("edges",      "Edges",       f"/sport/{_s}/edges"),
+        ("montecarlo", "Monte Carlo", f"/sport/{_s}/montecarlo"),
     ]
 
 
 def _default_sport_tabs(slug):
-    """Fallback tab set for sports with no bespoke list (UFC, soccer-pre-model)."""
+    """Fallback tab set for sports with no bespoke list (UFC)."""
     return [
         ("schedule",  "Schedule",   f"/sport/{slug}"),
         ("edges",     "Edges",      f"/sport/{slug}/edges"),
@@ -4290,13 +4301,17 @@ SOCCER_BACKTEST_TEMPLATE = r"""<!doctype html>
   <div class="section">
     <h2>Per-season breakdown</h2>
     <p class="lead">
-      3-way soccer prediction is harder than 2-way sports — random guessing is 33%, home-only baseline sits
+      3-way soccer prediction is harder than 2-way sports &mdash; random guessing is 33%, home-only baseline sits
       around 45%. A sharp Elo model lands 50-55% depending on the league's parity.
+      <strong>DC</strong> columns show Dixon-Coles (joint-pmf goal model with low-score correction) run
+      in parallel &mdash; typically a touch better on calibration (log loss), close on accuracy.
+      Elo stays the primary 3-way predictor; DC powers BTTS, totals, and the Monte Carlo tab.
     </p>
     <div class="table-scroll">
       <table class="data-table">
         <thead><tr>
-          <th>Season</th><th>Matches</th><th>Accuracy</th><th>Log loss</th><th>Brier</th>
+          <th>Season</th><th>N</th><th>Elo Acc</th><th>DC Acc</th>
+          <th>Elo LL</th><th>DC LL</th><th>Brier</th>
         </tr></thead>
         <tbody>
           {% for r in per_season_rows %}
@@ -4304,7 +4319,9 @@ SOCCER_BACKTEST_TEMPLATE = r"""<!doctype html>
             <td>{{ r.season }}/{{ r.season + 1 }}</td>
             <td>{{ r.n }}</td>
             <td>{{ (r.accuracy * 100)|round(2) }}%</td>
+            <td>{% if r.accuracy_dc is not none %}{{ (r.accuracy_dc * 100)|round(2) }}%{% else %}&mdash;{% endif %}</td>
             <td>{{ '%.4f'|format(r.log_loss) }}</td>
+            <td>{% if r.log_loss_dc is not none %}{{ '%.4f'|format(r.log_loss_dc) }}{% else %}&mdash;{% endif %}</td>
             <td>{{ '%.4f'|format(r.brier) }}</td>
           </tr>
           {% endfor %}
@@ -4426,6 +4443,8 @@ def soccer_backtest(slug):
                 "accuracy": st["accuracy"],
                 "log_loss": st["log_loss"],
                 "brier": st["brier"],
+                "accuracy_dc": st.get("accuracy_dc"),
+                "log_loss_dc": st.get("log_loss_dc"),
             })
 
     sample_preds = state["predictions"][-24:]
@@ -4440,6 +4459,226 @@ def soccer_backtest(slug):
         top_elo=top_elo, bottom_elo=bottom_elo,
         per_season_rows=per_season_rows,
         sample_preds=sample_preds,
+    )
+
+
+# ============================================================================
+# Soccer Monte Carlo (Dixon-Coles joint-pmf sampler)
+# ============================================================================
+
+SOCCER_MC_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>First Pitch &mdash; {{ sport_name }} &mdash; Monte Carlo</title>
+{{ fonts_link|safe }}
+<style>
+{{ shared_style|safe }}
+.hero-block { padding-bottom: 20px; margin-bottom: 24px; border-bottom: 1px solid var(--rule); }
+.hero-block h1 {
+  font-family: "Fraunces", Georgia, serif;
+  font-style: italic; font-weight: 400;
+  font-size: clamp(32px, 5vw, 48px); line-height: 1.05; letter-spacing: -0.02em;
+  margin: 0 0 8px;
+}
+.hero-block .sub { color: var(--muted); max-width: 760px; font-size: 13.5px; line-height: 1.55; }
+.sim-card {
+  background: var(--card); border: 1px solid var(--rule); border-radius: 12px;
+  padding: 18px; margin-bottom: 16px;
+}
+.sim-head {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  flex-wrap: wrap; margin-bottom: 14px;
+}
+.sim-matchup { font-family: "Fraunces", Georgia, serif; font-size: 18px; }
+.sim-time    { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--muted); }
+.sim-grid {
+  display: grid; gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+}
+.sim-cell {
+  background: var(--bg); border: 1px solid var(--rule); border-radius: 8px;
+  padding: 10px 12px;
+}
+.sim-cell .label {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--muted); margin-bottom: 4px;
+}
+.sim-cell .value {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 20px; font-weight: 500; color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.sim-cell .value.good  { color: var(--good);  text-shadow: var(--ev-strong-glow); }
+.sim-cell .value.bad   { color: var(--bad); }
+.sim-cell .value.accent{ color: var(--accent); }
+.scores-row {
+  display: grid; gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  margin-top: 14px;
+}
+.score-chip {
+  background: var(--bg); border: 1px solid var(--rule); border-radius: 6px;
+  padding: 8px; text-align: center;
+  font-family: "JetBrains Mono", monospace; font-size: 12px;
+}
+.score-chip .s { font-size: 16px; color: var(--ink); display: block; margin-bottom: 2px; }
+.score-chip .p { color: var(--accent); }
+.controls { display: flex; gap: 8px; margin-bottom: 20px; align-items: center; }
+.controls select, .controls .btn {
+  background: var(--card); border: 1px solid var(--rule);
+  padding: 6px 10px; border-radius: 6px; color: var(--ink);
+  font-family: "JetBrains Mono", monospace; font-size: 12px;
+}
+</style>
+</head>
+<body>
+{{ sport_strip|safe }}
+<main class="container">
+  {{ nav|safe }}
+  <div class="hero-block">
+    <h1>{{ sport_name }} &mdash; Monte Carlo</h1>
+    <p class="sub">
+      {{ n_sims|int }}-trial Dixon-Coles simulation per match. Goal rates come
+      from team season averages (where available); Pinnacle supplies the game list.
+      Each match samples from the joint goal-count pmf with low-score correction
+      (ρ = {{ rho }}).
+      {% if fallback_warning %}
+      <br><strong>Note:</strong> this sport has no historical CSV &mdash; results use
+      league-prior goal rates as a fallback.
+      {% endif %}
+    </p>
+  </div>
+
+  <form class="controls" method="get" action="{{ page_url }}">
+    <label style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted);">
+      Trials:
+    </label>
+    <select name="n" onchange="this.form.submit()">
+      {% for opt in [1000, 5000, 10000, 25000] %}
+      <option value="{{ opt }}" {{ 'selected' if opt == n_sims else '' }}>{{ opt }}</option>
+      {% endfor %}
+    </select>
+  </form>
+
+  {% if not sims %}
+  <div class="sim-card"><h2 style="margin:0">No upcoming {{ sport_name }} games.</h2></div>
+  {% endif %}
+
+  {% for s in sims %}
+  <div class="sim-card">
+    <div class="sim-head">
+      <div class="sim-matchup">{{ s.away }} <span style="color:var(--muted)">at</span> {{ s.home }}</div>
+      <div class="sim-time">{{ s.start_time or '' }}</div>
+    </div>
+    <div class="sim-grid">
+      <div class="sim-cell">
+        <div class="label">{{ s.home_short }} win</div>
+        <div class="value {{ 'good' if s.sim.home_win_pct >= 60 else '' }}">{{ '%.1f' % s.sim.home_win_pct }}%</div>
+      </div>
+      <div class="sim-cell">
+        <div class="label">Draw</div>
+        <div class="value">{{ '%.1f' % s.sim.draw_pct }}%</div>
+      </div>
+      <div class="sim-cell">
+        <div class="label">{{ s.away_short }} win</div>
+        <div class="value {{ 'good' if s.sim.away_win_pct >= 60 else '' }}">{{ '%.1f' % s.sim.away_win_pct }}%</div>
+      </div>
+      <div class="sim-cell">
+        <div class="label">BTTS Yes</div>
+        <div class="value accent">{{ '%.1f' % s.sim.btts_yes_pct }}%</div>
+      </div>
+      <div class="sim-cell">
+        <div class="label">Over 2.5</div>
+        <div class="value">{{ '%.1f' % s.sim.totals.over_2_5 }}%</div>
+      </div>
+      <div class="sim-cell">
+        <div class="label">Over 3.5</div>
+        <div class="value">{{ '%.1f' % s.sim.totals.over_3_5 }}%</div>
+      </div>
+      <div class="sim-cell">
+        <div class="label">Expected Total</div>
+        <div class="value">{{ '%.2f' % s.sim.expected_total }}</div>
+      </div>
+      <div class="sim-cell">
+        <div class="label">Projected score</div>
+        <div class="value">{{ '%.2f' % s.sim.avg_home_goals }} - {{ '%.2f' % s.sim.avg_away_goals }}</div>
+      </div>
+    </div>
+    <div class="scores-row">
+      {% for sc in s.sim.most_likely_scores[:6] %}
+      <div class="score-chip">
+        <span class="s">{{ sc.score }}</span>
+        <span class="p">{{ '%.1f' % sc.pct }}%</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+</main>
+{{ theme_script|safe }}
+</body>
+</html>
+"""
+
+
+@app.route("/sport/<slug>/montecarlo")
+def soccer_montecarlo(slug):
+    """Soccer Monte Carlo page — Dixon-Coles joint-pmf sampler per match."""
+    sport = sports.by_slug(slug)
+    if not sport or sport.get("dedicated") or slug not in _SOCCER_SLUGS_ALL:
+        from flask import abort
+        return abort(404)
+
+    try:
+        n_sims = int(request.args.get("n", 10000))
+    except ValueError:
+        n_sims = 10000
+    n_sims = max(500, min(50000, n_sims))
+
+    import soccer_model
+    try:
+        games = generic_odds.build_sport_games(sport)
+    except Exception:
+        games = []
+
+    # League slug for the DC model's goal rates — fall back to EPL prior for
+    # international/UCL/Europa where we have no historical CSV.
+    model_slug = slug if slug in _SOCCER_BACKTEST_SLUGS else "epl"
+    sims = []
+    for g in games:
+        try:
+            sim = soccer_model.simulate_match(
+                g["home_name"], g["away_name"], model_slug, n=n_sims,
+            )
+        except Exception:
+            continue
+        if not sim:
+            continue
+        sims.append({
+            "home": g["home_name"],
+            "away": g["away_name"],
+            "home_short": g["home_name"].split()[-1][:12],
+            "away_short": g["away_name"].split()[-1][:12],
+            "start_time": g.get("start_time"),
+            "sim": sim,
+        })
+
+    return render_template_string(
+        SOCCER_MC_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        theme_script=THEME_SCRIPT,
+        sport_strip=render_sport_strip(slug),
+        nav=render_sport_nav(slug, "montecarlo"),
+        sport_name=sport["name"],
+        page_url=f"/sport/{slug}/montecarlo",
+        n_sims=n_sims,
+        rho=soccer_model.DC_RHO_DEFAULT,
+        fallback_warning=(slug not in _SOCCER_BACKTEST_SLUGS),
+        sims=sims,
     )
 
 

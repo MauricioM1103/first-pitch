@@ -131,12 +131,32 @@ def _best_main(candidates):
 # ============================================================================
 
 def parse_pinnacle_games(league_id, ml_outcomes=2, has_halves=False):
-    matchups = fetch_pinnacle_matchups(league_id) or []
-    markets = fetch_pinnacle_markets(league_id) or []
+    """Parse Pinnacle games for a league. league_id can be an int (single
+    league) or a list (aggregate several leagues — e.g. Friendlies + Nations
+    League under the "International" sport)."""
+    league_ids = league_id if isinstance(league_id, (list, tuple)) else [league_id]
+    matchups = []
+    markets = []
+    for lid in league_ids:
+        try:
+            matchups.extend(fetch_pinnacle_matchups(lid) or [])
+            markets.extend(fetch_pinnacle_markets(lid) or [])
+        except Exception:
+            continue
 
     by_mu = {}
     for m in markets:
         by_mu.setdefault(m.get("matchupId"), []).append(m)
+
+    # Prop-market variants Pinnacle returns alongside the real matchup
+    # (e.g. "Team X (Corners)"). Skip them — we only want the main 90-min game.
+    _PROP_MARKERS = ("(corners)", "(cards)", "(bookings)", "(fouls)",
+                     "(offsides)", "(shots)", "(throw-ins)", "(saves)",
+                     "(hits woodwork)")
+
+    def _is_prop_participant(name):
+        n = (name or "").lower()
+        return any(m in n for m in _PROP_MARKERS)
 
     games = []
     for mu in matchups:
@@ -151,13 +171,15 @@ def parse_pinnacle_games(league_id, ml_outcomes=2, has_halves=False):
             away, home = parts[0], parts[1]
         home_name = home.get("name", "")
         away_name = away.get("name", "")
+        if _is_prop_participant(home_name) or _is_prop_participant(away_name):
+            continue
         home_id = home.get("id")
         away_id = away.get("id")
         mu_id = mu.get("id")
 
         entry = {
             "matchup_id": mu_id,
-            "league_id": league_id,
+            "league_id": mu.get("league", {}).get("id") if isinstance(mu.get("league"), dict) else league_ids[0],
             "start_time": mu.get("startTime"),
             "is_live": mu.get("isLive"),
             "home_name": home_name,
