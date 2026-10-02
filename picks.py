@@ -33,8 +33,7 @@ def _mlb_bets(date_str):
     for g in games:
         o = g.get("odds") or {}
         for b in o.get("bets") or []:
-            if b.get("ev_pct", 0) <= 0:
-                continue
+            # Probability-first: let picks through on probability, filter later
             # Prefer best US book for full-game markets; else Pinnacle
             best_dec = (o.get("best_decimal") or {}).get(b["side"]) if b["market"] in ("ML", "Run Line", "Total") else None
             best_book = (o.get("best_book") or {}).get(b["side"]) if b["market"] in ("ML", "Run Line", "Total") else None
@@ -131,8 +130,7 @@ def _sport_bets(sport):
     out = []
     for g in games:
         for b in g.get("bets") or []:
-            if b.get("ev_pct", 0) <= 0:
-                continue
+            # Probability-first: let picks through on probability, not EV sign
             out.append({
                 "id": f"{slug}_{g.get('matchup_id')}_{b['market']}_{b['side']}",
                 "sport": sport["name"],
@@ -164,6 +162,7 @@ MIN_FAIR_PROB      = 0.46   # fair/sharp AND model probability threshold
 MIN_DECIMAL        = 1.70   # don't show short-favorite picks (-150+)
 SOCCER_DRAW_MAX_DEC = 3.70  # soccer draws only when market has them in reach
 STRONG_PROB_TIER   = 0.60   # "strong" badge for high-conviction picks
+MAX_PICKS          = 30     # cap list length (concise board, not firehose)
 
 
 def _is_soccer(slug):
@@ -204,18 +203,33 @@ def collect_picks(date_str):
             continue
         all_picks.extend(_sport_bets(sport))
 
-    # Filter to confidence picks
+    # Filter to confidence picks (prob + decimal + draw rule)
     filtered = [p for p in all_picks if _passes_filter(p)]
 
+    # Deduplicate: only the single highest-probability side per (game, market).
+    # Keeps us from recommending both home and away on the same market — if
+    # the model gives home 60%, don't also pitch away 40% (which fails the
+    # 46% filter anyway, but is defensive). For 3-way markets the draw side
+    # has already been filtered by the decimal cap.
+    best_per_market = {}
+    for p in filtered:
+        key = (p["sport_slug"], p.get("game", ""), p.get("market", ""))
+        current = best_per_market.get(key)
+        if not current or (p.get("fair_prob") or 0) > (current.get("fair_prob") or 0):
+            best_per_market[key] = p
+    deduped = list(best_per_market.values())
+
     # Rank by model probability (desc), with EV as a tiebreaker
-    filtered.sort(key=lambda x: (-(x.get("fair_prob") or 0.0),
-                                  -(x.get("ev_pct") or 0.0)))
+    deduped.sort(key=lambda x: (-(x.get("fair_prob") or 0.0),
+                                 -(x.get("ev_pct") or 0.0)))
+    # Cap list length
+    deduped = deduped[:MAX_PICKS]
 
     # Tag strong tier (MC-style conviction >= 60%)
-    for p in filtered:
+    for p in deduped:
         p["strong"] = (p.get("fair_prob") or 0.0) >= STRONG_PROB_TIER
         p["bulletin"] = generate_bulletin(p)
-    return filtered
+    return deduped
 
 
 def generate_bulletin(pick):
@@ -229,16 +243,24 @@ def generate_bulletin(pick):
     market_implied = (1.0 / dec) * 100 if dec else 0
 
     conviction = "high-conviction" if fair_pct >= STRONG_PROB_TIER * 100 else "selective"
+    ev = pick.get("ev_pct") or 0
     bits = []
     bits.append(
         f"Model simulates {pick['pick']} to hit {fair_pct:.0f}% of the time "
         f"({conviction} pick) vs market's implied {market_implied:.0f}% at "
         f"{pick.get('american','?')}"
     )
-    bits.append(
-        f"EV +{pick['ev_pct']:.1f}% at {pick['book']}, quarter-Kelly "
-        f"stake {pick['kelly_pct']:.1f}% of bankroll"
-    )
+    # Only call out EV when it's positive; otherwise just mention the book
+    if ev > 0.1:
+        bits.append(
+            f"EV +{ev:.1f}% at {pick['book']}, quarter-Kelly "
+            f"stake {pick['kelly_pct']:.1f}% of bankroll"
+        )
+    else:
+        bits.append(
+            f"Priced at {pick['book']} with no model-vs-market edge; "
+            f"included on probability conviction"
+        )
     base = ". ".join(bits) + "."
     slug = pick["sport_slug"]
     if slug == "mlb":

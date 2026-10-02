@@ -2040,10 +2040,13 @@ PICKS_TEMPLATE = r"""<!doctype html>
           <span class="book">@ {{ p.book }}</span>
         </div>
         <div class="pick-stats">
-          <span><span class="ev">EV +{{ '%.1f'|format(p.ev_pct) }}%</span></span>
-          <span><span class="label">Fair</span><b>{{ (p.fair_prob * 100)|round|int }}%</b></span>
+          <span><span class="label">Model</span><b>{{ (p.fair_prob * 100)|round|int }}%</b></span>
           <span><span class="label">Market</span><b>{{ (100 / p.decimal)|round|int }}%</b></span>
-          <span><span class="label">Stake (1/4 K)</span><b>{{ '%.1f'|format(p.kelly_pct) }}%</b></span>
+          <span>
+            {% if p.ev_pct > 0.1 %}<span class="ev">EV +{{ '%.1f'|format(p.ev_pct) }}%</span>
+            {% else %}<span style="color:var(--muted-2)">EV {{ '%+.1f'|format(p.ev_pct) }}%</span>{% endif %}
+          </span>
+          {% if p.kelly_pct > 0 %}<span><span class="label">Stake (1/4 K)</span><b>{{ '%.1f'|format(p.kelly_pct) }}%</b></span>{% endif %}
         </div>
         <div class="bulletin">{{ p.bulletin }}</div>
         <div class="pick-actions">
