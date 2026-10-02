@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""First Pitch — daily MLB matchups UI + model predictions + backtest report.
+"""Betting Tools — cross-sport Monte Carlo + AI analysis dashboard.
 
 Data sources (free, no API keys):
   * MLB statsapi   — schedule (hydrated), standings, team stats, pitcher stats
@@ -985,7 +985,7 @@ INDEX_TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>First Pitch — {{ date_pretty }}</title>
+<title>Betting Tools — {{ date_pretty }}</title>
 {{ fonts_link|safe }}
 <style>
 {{ shared_style|safe }}
@@ -1255,7 +1255,7 @@ INDEX_TEMPLATE = r"""<!doctype html>
   <div class="wrap header-row">
     <div class="brand" style="display: flex; align-items: baseline;">
       <span class="brand-mark" aria-hidden="true"></span>
-      <span class="brand-name">First Pitch</span>
+      <span class="brand-name">Betting Tools</span>
       <nav class="nav-tabs">
         <a class="nav-tab active" href="/mlb/schedule">Schedule</a>
         <a class="nav-tab" href="/edges">Edges</a>
@@ -1480,7 +1480,7 @@ BACKTEST_TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>First Pitch &mdash; Model &amp; Backtest</title>
+<title>Betting Tools &mdash; Model &amp; Backtest</title>
 {{ fonts_link|safe }}
 <style>
 {{ shared_style|safe }}
@@ -1633,7 +1633,7 @@ svg.calib { max-width: 100%; height: auto; }
   <div class="wrap header-row">
     <div class="brand" style="display: flex; align-items: baseline;">
       <span class="brand-mark" aria-hidden="true"></span>
-      <span class="brand-name">First Pitch</span>
+      <span class="brand-name">Betting Tools</span>
       <nav class="nav-tabs">
         <a class="nav-tab" href="/mlb/schedule">Schedule</a>
         <a class="nav-tab" href="/edges">Edges</a>
@@ -1916,7 +1916,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>First Pitch &mdash; Today's Picks</title>
+<title>Betting Tools &mdash; Today's Picks</title>
 {{ fonts_link|safe }}
 <style>
 {{ shared_style|safe }}
@@ -2072,7 +2072,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
   <div class="wrap header-row">
     <div class="brand" style="display: flex; align-items: baseline;">
       <span class="brand-mark" aria-hidden="true"></span>
-      <span class="brand-name">First Pitch</span>
+      <span class="brand-name">Betting Tools</span>
     </div>
     <form class="controls" method="get" action="/">
       <a class="btn icon" href="/?date={{ prev_date }}">&lsaquo;</a>
@@ -2467,7 +2467,7 @@ EDGES_TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>First Pitch &mdash; Edges &mdash; {{ date_pretty }}</title>
+<title>Betting Tools &mdash; Edges &mdash; {{ date_pretty }}</title>
 {{ fonts_link|safe }}
 <style>
 {{ shared_style|safe }}
@@ -2590,7 +2590,7 @@ EDGES_TEMPLATE = r"""<!doctype html>
   <div class="wrap header-row">
     <div class="brand" style="display: flex; align-items: baseline;">
       <span class="brand-mark" aria-hidden="true"></span>
-      <span class="brand-name">First Pitch</span>
+      <span class="brand-name">Betting Tools</span>
       <nav class="nav-tabs">
         <a class="nav-tab" href="/mlb/schedule">Schedule</a>
         <a class="nav-tab active" href="/edges">Edges</a>
@@ -2812,7 +2812,7 @@ MARKET_TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>First Pitch &mdash; Market &mdash; {{ date_pretty }}</title>
+<title>Betting Tools &mdash; Market &mdash; {{ date_pretty }}</title>
 {{ fonts_link|safe }}
 <style>
 {{ shared_style|safe }}
@@ -2890,7 +2890,7 @@ MARKET_TEMPLATE = r"""<!doctype html>
   <div class="wrap header-row">
     <div class="brand" style="display: flex; align-items: baseline;">
       <span class="brand-mark" aria-hidden="true"></span>
-      <span class="brand-name">First Pitch</span>
+      <span class="brand-name">Betting Tools</span>
       <nav class="nav-tabs">
         <a class="nav-tab" href="/mlb/schedule">Schedule</a>
         <a class="nav-tab" href="/edges">Edges</a>
@@ -3088,7 +3088,7 @@ SPORT_TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>First Pitch &mdash; {{ sport.name }}</title>
+<title>Betting Tools &mdash; {{ sport.name }}</title>
 {{ fonts_link|safe }}
 <style>
 {{ shared_style|safe }}
@@ -3217,7 +3217,7 @@ SPORT_TEMPLATE = r"""<!doctype html>
   <div class="wrap header-row">
     <div class="brand" style="display: flex; align-items: baseline;">
       <span class="brand-mark" aria-hidden="true"></span>
-      <span class="brand-name">First Pitch</span>
+      <span class="brand-name">Betting Tools</span>
       {{ nav|safe }}
     </div>
   </div>
@@ -3364,7 +3364,7 @@ SPORT_SCHEDULE_TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>First Pitch &mdash; {{ sport.name }}</title>
+<title>Betting Tools &mdash; {{ sport.name }}</title>
 {{ fonts_link|safe }}
 <style>
 {{ shared_style|safe }}
@@ -3441,7 +3441,7 @@ SPORT_SCHEDULE_TEMPLATE = r"""<!doctype html>
   <div class="wrap header-row">
     <div class="brand" style="display: flex; align-items: baseline;">
       <span class="brand-mark" aria-hidden="true"></span>
-      <span class="brand-name">First Pitch</span>
+      <span class="brand-name">Betting Tools</span>
       {{ nav|safe }}
     </div>
   </div>
@@ -3832,7 +3832,7 @@ NFL_BACKTEST_TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>First Pitch &mdash; NFL Model &amp; Backtest</title>
+<title>Betting Tools &mdash; NFL Model &amp; Backtest</title>
 {{ fonts_link|safe }}
 <style>
 {{ shared_style|safe }}
@@ -3919,7 +3919,7 @@ svg.calib { max-width: 100%; height: auto; }
   <div class="wrap header-row">
     <div class="brand" style="display: flex; align-items: baseline;">
       <span class="brand-mark" aria-hidden="true"></span>
-      <span class="brand-name">First Pitch</span>
+      <span class="brand-name">Betting Tools</span>
       {{ nav|safe }}
     </div>
     <div class="controls">
@@ -4245,7 +4245,7 @@ SOCCER_BACKTEST_TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>First Pitch &mdash; {{ state.league_name }} &mdash; Backtest</title>
+<title>Betting Tools &mdash; {{ state.league_name }} &mdash; Backtest</title>
 {{ fonts_link|safe }}
 <style>
 {{ shared_style|safe }}
@@ -4319,7 +4319,7 @@ SOCCER_BACKTEST_TEMPLATE = r"""<!doctype html>
   <div class="wrap header-row">
     <div class="brand" style="display: flex; align-items: baseline;">
       <span class="brand-mark" aria-hidden="true"></span>
-      <span class="brand-name">First Pitch</span>
+      <span class="brand-name">Betting Tools</span>
       {{ nav|safe }}
     </div>
     <div class="controls">
@@ -4554,7 +4554,7 @@ SOCCER_MC_TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>First Pitch &mdash; {{ sport_name }} &mdash; Monte Carlo</title>
+<title>Betting Tools &mdash; {{ sport_name }} &mdash; Monte Carlo</title>
 {{ fonts_link|safe }}
 <style>
 {{ shared_style|safe }}
@@ -4774,7 +4774,7 @@ MONTECARLO_TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>First Pitch &mdash; Monte Carlo &mdash; {{ date_pretty }}</title>
+<title>Betting Tools &mdash; Monte Carlo &mdash; {{ date_pretty }}</title>
 {{ fonts_link|safe }}
 <style>
 {{ shared_style|safe }}
@@ -4861,7 +4861,7 @@ MONTECARLO_TEMPLATE = r"""<!doctype html>
   <div class="wrap header-row">
     <div class="brand" style="display: flex; align-items: baseline;">
       <span class="brand-mark" aria-hidden="true"></span>
-      <span class="brand-name">First Pitch</span>
+      <span class="brand-name">Betting Tools</span>
       <nav class="nav-tabs">
         <a class="nav-tab" href="/mlb/schedule">Schedule</a>
         <a class="nav-tab" href="/edges">Edges</a>
@@ -5228,7 +5228,7 @@ ANALYST_TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>First Pitch &mdash; AI Analyst &mdash; {{ date_pretty }}</title>
+<title>Betting Tools &mdash; AI Analyst &mdash; {{ date_pretty }}</title>
 {{ fonts_link|safe }}
 <style>
 {{ shared_style|safe }}
@@ -5312,7 +5312,7 @@ ANALYST_TEMPLATE = r"""<!doctype html>
   <div class="wrap header-row">
     <div class="brand" style="display: flex; align-items: baseline;">
       <span class="brand-mark" aria-hidden="true"></span>
-      <span class="brand-name">First Pitch</span>
+      <span class="brand-name">Betting Tools</span>
       <nav class="nav-tabs">
         <a class="nav-tab" href="/mlb/schedule">Schedule</a>
         <a class="nav-tab" href="/edges">Edges</a>
@@ -5669,7 +5669,6 @@ def _mc_team_stats(sport_slug, game_ctx):
             h, a = h_name, a_name
         h_elo = round(final_elo.get(h, 1500), 1)
         a_elo = round(final_elo.get(a, 1500), 1)
-        # Project points from the same Elo diff the simulator uses
         diff = (h_elo + 65) - a_elo
         edge = diff / 25.0
         proj_h = round(22.5 + edge / 2, 1)
@@ -5688,6 +5687,85 @@ def _mc_team_stats(sport_slug, game_ctx):
                 {"group": "Scoring",  "label": "Projected margin",  "home": round(proj_h - proj_a, 1),
                                                                      "away": round(proj_a - proj_h, 1)},
                 {"group": "Market",   "label": "Pinnacle fair",
+                 "home": f"{round((fair.get('home') or 0) * 100, 1)}%" if fair.get('home') else "—",
+                 "away": f"{round((fair.get('away') or 0) * 100, 1)}%" if fair.get('away') else "—"},
+            ],
+        }
+    if sport_slug == "ncaaf":
+        try:
+            import cfb_model
+            elo = cfb_model.get_or_fit_team_elo()
+        except Exception:
+            elo = {}
+        h_name = game_ctx.get("home_name", "")
+        a_name = game_ctx.get("away_name", "")
+        h_elo = round(elo.get(h_name, cfb_model.INITIAL_ELO), 1) if elo else 1500.0
+        a_elo = round(elo.get(a_name, cfb_model.INITIAL_ELO), 1) if elo else 1500.0
+        try:
+            import cfb_model
+            proj_h, proj_a = cfb_model.project_points(h_name, a_name)
+        except Exception:
+            proj_h = proj_a = 28.0
+        fair = game_ctx.get("fair") or {}
+        return {
+            "home_name": h_name,
+            "away_name": a_name,
+            "rows": [
+                {"group": "Rating",   "label": "Team Elo",         "home": h_elo, "away": a_elo},
+                {"group": "Rating",   "label": "Elo diff (incl. HFA)",
+                 "home": round(h_elo + 65 - a_elo, 1), "away": round(a_elo - h_elo - 65, 1)},
+                {"group": "Scoring",  "label": "Projected points", "home": round(proj_h, 1), "away": round(proj_a, 1)},
+                {"group": "Scoring",  "label": "Projected margin", "home": round(proj_h - proj_a, 1),
+                                                                    "away": round(proj_a - proj_h, 1)},
+                {"group": "Market",   "label": "Pinnacle fair",
+                 "home": f"{round((fair.get('home') or 0) * 100, 1)}%" if fair.get('home') else "—",
+                 "away": f"{round((fair.get('away') or 0) * 100, 1)}%" if fair.get('away') else "—"},
+            ],
+        }
+    if sport_slug == "nhl":
+        try:
+            import nhl_model
+            stats = nhl_model.get_or_fetch_team_stats()
+        except Exception:
+            stats = {}
+        h_name = game_ctx.get("home_name", "")
+        a_name = game_ctx.get("away_name", "")
+        hs = stats.get(h_name) or {}
+        as_ = stats.get(a_name) or {}
+        try:
+            import nhl_model
+            lam_h, lam_a = nhl_model.project_lambdas(h_name, a_name, stats)
+        except Exception:
+            lam_h = lam_a = 2.95
+        fair = game_ctx.get("fair") or {}
+        def _f(v, d=2):
+            try: return round(float(v), d)
+            except (TypeError, ValueError): return "—"
+        return {
+            "home_name": h_name,
+            "away_name": a_name,
+            "rows": [
+                {"group": "Record",     "label": "Record (W-L-OTL)",
+                 "home": f"{hs.get('wins',0)}-{hs.get('losses',0)}-{hs.get('ot_losses',0)}",
+                 "away": f"{as_.get('wins',0)}-{as_.get('losses',0)}-{as_.get('ot_losses',0)}"},
+                {"group": "Record",     "label": "Points %",
+                 "home": _f(hs.get('points_pct'), 3), "away": _f(as_.get('points_pct'), 3)},
+                {"group": "Scoring",    "label": "Goals / game",
+                 "home": _f(hs.get('gf_per')), "away": _f(as_.get('gf_per'))},
+                {"group": "Scoring",    "label": "Goals against / game",
+                 "home": _f(hs.get('ga_per')), "away": _f(as_.get('ga_per'))},
+                {"group": "Scoring",    "label": "Goal differential",
+                 "home": _f((hs.get('gf',0) - hs.get('ga',0)), 0),
+                 "away": _f((as_.get('gf',0) - as_.get('ga',0)), 0)},
+                {"group": "Special Tms","label": "Power play %",
+                 "home": _f((hs.get('pp_pct') or 0) * 100, 1), "away": _f((as_.get('pp_pct') or 0) * 100, 1)},
+                {"group": "Special Tms","label": "Penalty kill %",
+                 "home": _f((hs.get('pk_pct') or 0) * 100, 1), "away": _f((as_.get('pk_pct') or 0) * 100, 1)},
+                {"group": "Special Tms","label": "Faceoff win %",
+                 "home": _f((hs.get('faceoff_pct') or 0) * 100, 1), "away": _f((as_.get('faceoff_pct') or 0) * 100, 1)},
+                {"group": "Projection", "label": "Projected goals (λ)",
+                 "home": _f(lam_h), "away": _f(lam_a)},
+                {"group": "Market",     "label": "Pinnacle fair",
                  "home": f"{round((fair.get('home') or 0) * 100, 1)}%" if fair.get('home') else "—",
                  "away": f"{round((fair.get('away') or 0) * 100, 1)}%" if fair.get('away') else "—"},
             ],
@@ -5926,7 +6004,6 @@ def _mc_run_simulation(sport_slug, game_ctx, n_sims):
             a = nfl_model.abbr_from_name(a_name) or a_name
             h_elo = final_elo.get(h, nfl_model.INITIAL_ELO)
             a_elo = final_elo.get(a, nfl_model.INITIAL_ELO)
-            # Elo diff → point edge. HFA ≈ 65 Elo ≈ 2.5 pts; scale ~4 pts per 100 Elo.
             diff = (h_elo + 65) - a_elo
             edge = diff / 25.0
             proj_h = 22.5 + edge / 2
@@ -5963,6 +6040,63 @@ def _mc_run_simulation(sport_slug, game_ctx, n_sims):
             }
         except Exception:
             return None
+    if sport_slug == "ncaaf":
+        try:
+            import cfb_model
+            sim = cfb_model.simulate_match(
+                game_ctx.get("home_name", ""), game_ctx.get("away_name", ""), n=n_sims
+            )
+        except Exception:
+            sim = None
+        if not sim:
+            return None
+        note = ("Normal-distribution scoring from CFBD-fit Elo "
+                "(σ ≈ 15 pts)" if sim.get("fitted") else
+                "Normal-distribution scoring; CFBD_API_KEY not set — "
+                "teams default to 1500 Elo (flat fallback)")
+        return {
+            "n_sims": n_sims,
+            "home_team": sim["home_team"],
+            "away_team": sim["away_team"],
+            "p_home": sim["home_win_pct"],
+            "p_away": sim["away_win_pct"],
+            "p_draw": sim["draw_pct"],
+            "proj_home": round(sim["avg_home_points"], 1),
+            "proj_away": round(sim["avg_away_points"], 1),
+            "mean_total": round(sim["expected_total"], 1),
+            "margins": sim["margins"],
+            "has_draw": False,
+            "notes": note,
+            "sport_name": "NCAAF",
+        }
+    if sport_slug == "nhl":
+        try:
+            import nhl_model
+            sim = nhl_model.simulate_match(
+                game_ctx.get("home_name", ""), game_ctx.get("away_name", ""), n=n_sims
+            )
+        except Exception:
+            sim = None
+        if not sim:
+            return None
+        return {
+            "n_sims": n_sims,
+            "home_team": sim["home_team"],
+            "away_team": sim["away_team"],
+            "p_home": sim["home_win_pct"],
+            "p_away": sim["away_win_pct"],
+            "p_draw": 0.0,
+            "proj_home": round(sim["avg_home_goals"], 2),
+            "proj_away": round(sim["avg_away_goals"], 2),
+            "mean_total": round(sim["mean_total"], 2),
+            "margins": sim["margins"],
+            "most_likely_scores": sim["most_likely_scores"],
+            "has_draw": False,
+            "notes": (f"Poisson goals from NHL.com season stats "
+                      f"(home λ={sim['lam_home']:.2f}, away λ={sim['lam_away']:.2f}, "
+                      f"OT/SO rate {sim['ot_pct']:.0f}%)"),
+            "sport_name": "NHL",
+        }
     return None
 
 
@@ -5989,7 +6123,7 @@ MC_UNIFIED_TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>First Pitch &mdash; Monte Carlo</title>
+<title>Betting Tools &mdash; Monte Carlo</title>
 {{ fonts_link|safe }}
 <style>
 {{ shared_style|safe }}
@@ -6004,6 +6138,9 @@ MC_UNIFIED_TEMPLATE = r"""<!doctype html>
   margin: 0 0 8px;
 }
 .mc-hero .sub { color: var(--muted); max-width: 760px; font-size: 13.5px; line-height: 1.55; }
+
+/* Narrow MC + AI pages so they breathe like the picks page */
+main.mc-page, main.ai-page { max-width: 1040px; }
 
 .howitworks {
   background: var(--card); border: 1px solid var(--rule); border-radius: 10px;
@@ -6187,12 +6324,15 @@ MC_UNIFIED_TEMPLATE = r"""<!doctype html>
 </head>
 <body>
 {{ sport_strip|safe }}
-<main class="container">
+<main class="wrap mc-page">
   <section class="mc-hero">
     <h1>Monte Carlo Simulator</h1>
     <p class="sub">Pick a sport, choose today's game, run thousands of simulated games.
-    MLB uses Poisson run-scoring. Soccer uses the Dixon-Coles joint-pmf goal model
-    with low-score correction. NFL uses a normal-distribution scoring model fit to team Elo.</p>
+    MLB uses Poisson run-scoring from team RPG blended with starting-pitcher ERA.
+    Soccer uses the Dixon-Coles joint-pmf goal model with low-score correction.
+    NFL + NCAAF use normal-distribution scoring from team Elo (QB Elo blended in for NFL;
+    CFBD-fit Elo for NCAAF when CFBD_API_KEY is present).
+    NHL uses Poisson goals from NHL.com season team stats with OT/shootout coin-flip.</p>
   </section>
 
   <div class="howitworks">
@@ -6472,7 +6612,7 @@ AI_UNIFIED_TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>First Pitch &mdash; AI Analysis</title>
+<title>Betting Tools &mdash; AI Analysis</title>
 {{ fonts_link|safe }}
 <style>
 {{ shared_style|safe }}
@@ -6527,7 +6667,7 @@ AI_UNIFIED_TEMPLATE = r"""<!doctype html>
 </head>
 <body>
 {{ sport_strip|safe }}
-<main class="container">
+<main class="wrap ai-page">
   <section class="ai-hero">
     <h1>AI Analysis</h1>
     <p class="sub">Pick a sport and today's game, Claude Sonnet 5.5 writes
@@ -6679,7 +6819,51 @@ def _ai_analyze_matchup(sport_slug, game_ctx):
         except Exception as e:
             ctx_lines.append(f"Soccer context (limited data): {game_ctx.get('home_name','?')} vs {game_ctx.get('away_name','?')}")
     elif sport_slug == "nfl":
-        ctx_lines.append(f"NFL matchup: {game_ctx.get('away_name','?')} at {game_ctx.get('home_name','?')}")
+        try:
+            import nfl_model
+            state = nfl_model.get_or_run_multi_season_backtest()
+            elo = state.get("final_elo", {}) if state else {}
+            qb_elo = state.get("final_qb_elo", {}) if state else {}
+            h_name = game_ctx.get("home_name",""); a_name = game_ctx.get("away_name","")
+            h = nfl_model.abbr_from_name(h_name) or h_name
+            a = nfl_model.abbr_from_name(a_name) or a_name
+            ctx_lines.append(f"NFL matchup: {a_name} at {h_name} · kickoff {game_ctx.get('start_time','?')}")
+            ctx_lines.append(f"- Team Elo: home {round(elo.get(h,1500),1)}, away {round(elo.get(a,1500),1)}")
+            if qb_elo:
+                ctx_lines.append(f"- QB Elo: home {round(qb_elo.get(h,1500),1)}, away {round(qb_elo.get(a,1500),1)}")
+        except Exception:
+            ctx_lines.append(f"NFL matchup: {game_ctx.get('away_name','?')} at {game_ctx.get('home_name','?')}")
+    elif sport_slug == "ncaaf":
+        try:
+            import cfb_model
+            elo = cfb_model.get_or_fit_team_elo()
+            h_name = game_ctx.get("home_name",""); a_name = game_ctx.get("away_name","")
+            proj_h, proj_a = cfb_model.project_points(h_name, a_name)
+            ctx_lines.append(f"NCAAF matchup: {a_name} at {h_name} · kickoff {game_ctx.get('start_time','?')}")
+            ctx_lines.append(f"- Team Elo: home {round(elo.get(h_name,1500),1)}, away {round(elo.get(a_name,1500),1)}")
+            ctx_lines.append(f"- Projected points: {proj_h:.1f} - {proj_a:.1f}")
+            if not cfb_model.is_fitted():
+                ctx_lines.append("- NOTE: CFBD_API_KEY not set; Elo defaults to 1500 for all teams.")
+        except Exception:
+            ctx_lines.append(f"NCAAF matchup: {game_ctx.get('away_name','?')} at {game_ctx.get('home_name','?')}")
+    elif sport_slug == "nhl":
+        try:
+            import nhl_model
+            stats = nhl_model.get_or_fetch_team_stats()
+            h_name = game_ctx.get("home_name",""); a_name = game_ctx.get("away_name","")
+            hs = stats.get(h_name) or {}; as_ = stats.get(a_name) or {}
+            sim = nhl_model.simulate_match(h_name, a_name, n=3000)
+            ctx_lines.append(f"NHL matchup: {a_name} at {h_name} · puck drop {game_ctx.get('start_time','?')}")
+            ctx_lines.append(f"- Record: home {hs.get('wins',0)}-{hs.get('losses',0)}-{hs.get('ot_losses',0)}, "
+                             f"away {as_.get('wins',0)}-{as_.get('losses',0)}-{as_.get('ot_losses',0)}")
+            ctx_lines.append(f"- Goals/G: home GF {hs.get('gf_per',0):.2f} GA {hs.get('ga_per',0):.2f}, "
+                             f"away GF {as_.get('gf_per',0):.2f} GA {as_.get('ga_per',0):.2f}")
+            ctx_lines.append(f"- PP%/PK%: home {(hs.get('pp_pct') or 0)*100:.1f}/{(hs.get('pk_pct') or 0)*100:.1f}, "
+                             f"away {(as_.get('pp_pct') or 0)*100:.1f}/{(as_.get('pk_pct') or 0)*100:.1f}")
+            ctx_lines.append(f"- Sim: home {sim['home_win_pct']:.1f}% / away {sim['away_win_pct']:.1f}% "
+                             f"(λ home {sim['lam_home']:.2f}, away {sim['lam_away']:.2f})")
+        except Exception:
+            ctx_lines.append(f"NHL matchup: {game_ctx.get('away_name','?')} at {game_ctx.get('home_name','?')}")
     else:
         ctx_lines.append(f"{sport_slug.upper()} matchup: {game_ctx.get('away_name','?')} vs {game_ctx.get('home_name','?')}")
 
@@ -6763,7 +6947,7 @@ if __name__ == "__main__":
         lan_ip = socket.gethostbyname(hostname)
     except OSError:
         lan_ip = None
-    print("First Pitch - daily MLB scoreboard + prediction model")
+    print("Betting Tools - cross-sport Monte Carlo + AI analysis")
     print("  On this PC : http://127.0.0.1:5000")
     if lan_ip and not lan_ip.startswith("127."):
         print(f"  On phone   : http://{lan_ip}:5000   (same Wi-Fi network)")

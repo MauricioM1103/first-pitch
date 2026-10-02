@@ -154,9 +154,16 @@ def parse_pinnacle_games(league_id, ml_outcomes=2, has_halves=False):
                      "(offsides)", "(shots)", "(throw-ins)", "(saves)",
                      "(hits woodwork)")
 
+    import re as _re
+    _MULTI_GAME_RE = _re.compile(r"\(\d+\s*games?\)", _re.IGNORECASE)
+
     def _is_prop_participant(name):
         n = (name or "").lower()
-        return any(m in n for m in _PROP_MARKERS)
+        if any(m in n for m in _PROP_MARKERS):
+            return True
+        if _MULTI_GAME_RE.search(n):
+            return True
+        return False
 
     games = []
     for mu in matchups:

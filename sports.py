@@ -33,6 +33,27 @@ SPORTS = [
         "spread_label": "Spread",
         "team_sport": True,
     },
+    {
+        "slug": "ncaaf",
+        "name": "NCAAF",
+        "pinnacle_league_id": 880,    # NCAA Football — regular season
+        "odds_api_key": "americanfootball_ncaaf",
+        "ml_outcomes": 2,
+        "has_halves": True,
+        "spread_label": "Spread",
+        "team_sport": True,
+    },
+    # ---- Ice Hockey ----
+    {
+        "slug": "nhl",
+        "name": "NHL",
+        "pinnacle_league_id": 1456,
+        "odds_api_key": "icehockey_nhl",
+        "ml_outcomes": 2,             # NHL ML is 2-way (regulation/OT/SO)
+        "has_halves": False,          # periods are 20-min thirds, not halves
+        "spread_label": "Puck Line",
+        "team_sport": True,
+    },
     # ---- MMA ----
     {
         "slug": "ufc",
