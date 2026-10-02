@@ -170,3 +170,68 @@ def analyze_game(game, provider="claude", force_refresh=False):
     result["model"] = CLAUDE_MODEL
     _cache[key] = (result, now)
     return result
+
+
+# ============================================================================
+# Sport-agnostic analyst for picks (NFL, soccer, UFC, UCL, etc.)
+# ============================================================================
+
+def _build_pick_prompt(pick):
+    """Build an analysis prompt from a picks.collect_picks() entry.
+
+    This works across every sport since the pick dict is uniform. Sport-
+    specific color goes in the pick's model_source field.
+    """
+    market_implied = (1.0 / pick["decimal"]) * 100 if pick.get("decimal") else None
+    fair_pct = (pick.get("fair_prob") or 0) * 100
+
+    return f"""Sport: {pick.get('sport', '?')}
+Matchup: {pick.get('game', '?')}
+{'First pitch / kickoff: ' + pick['start_time'] if pick.get('start_time') else ''}
+
+THE PICK:
+  Market  : {pick.get('market', '?')}
+  Side    : {pick.get('pick', '?')}
+  Price   : {('+' if (pick.get('american') or 0) > 0 else '')}{pick.get('american', '—')} ({pick.get('decimal', '?')} decimal) @ {pick.get('book', '?')}
+
+MODEL vs MARKET:
+  Fair prob (model)      : {fair_pct:.1f}%
+  Implied prob (market)  : {market_implied:.1f}% ({market_implied - fair_pct:+.1f} pt gap vs fair)
+  EV                     : +{pick.get('ev_pct', 0):.2f}%
+  Quarter-Kelly stake    : {pick.get('kelly_pct', 0):.2f}% of bankroll
+
+MODEL SOURCE: {pick.get('model_source', '?')}
+
+Respond with a tight, structured analysis in this exact JSON format:
+
+{{
+  "stat_read": ["<= 20 words", "<= 20 words", "<= 20 words"],
+  "matchup_factors": ["<= 25 words", "<= 25 words", "<= 25 words"],
+  "risk_flags": ["<= 20 words", "<= 20 words"],
+  "pick": {{
+    "market": "<market>",
+    "side": "<side>",
+    "rationale": "<= 30 words",
+    "confidence": 1 | 2 | 3
+  }}
+}}
+
+The pick field should either CONFIRM the shown pick with your rationale, or set confidence to 1 with a rationale explaining why you'd fade it. Return ONLY valid JSON — no preamble, no code fences, no commentary."""
+
+
+def analyze_pick(pick, provider="claude", force_refresh=False):
+    """Return structured analysis for a pick dict from picks.collect_picks()."""
+    key = (provider, "pick", pick.get("id"))
+    now = time.time()
+    if not force_refresh:
+        hit = _cache.get(key)
+        if hit and now - hit[1] < _CACHE_TTL_S:
+            return hit[0]
+    if provider != "claude":
+        return {"error": f"provider '{provider}' not supported yet"}
+    prompt = _build_pick_prompt(pick)
+    result = _call_claude(prompt)
+    result["generated_at"] = time.strftime("%I:%M %p ET", time.localtime())
+    result["model"] = CLAUDE_MODEL
+    _cache[key] = (result, now)
+    return result

@@ -791,9 +791,12 @@ FONTS_LINK = _FONTS  # keep historical name; THEME_SCRIPT appended below
 
 def render_sport_strip(active_slug):
     parts = ['<div class="sport-strip"><div class="wrap sport-strip-inner">']
+    # "All picks" pill as the first/leftmost item, always visible
+    picks_cls = "sport-pill active" if active_slug == "picks" else "sport-pill"
+    parts.append(f'<a class="{picks_cls}" href="/" title="Daily recommended picks across every sport">Picks</a>')
     for sp in sports.SPORTS:
         cls = "sport-pill active" if sp["slug"] == active_slug else "sport-pill"
-        href = "/" if sp["slug"] == "mlb" else f"/sport/{sp['slug']}"
+        href = "/mlb/schedule" if sp["slug"] == "mlb" else f"/sport/{sp['slug']}"
         parts.append(f'<a class="{cls}" href="{href}">{sp["name"]}</a>')
     # Theme toggle at the far right
     parts.append(
@@ -808,9 +811,8 @@ def render_sport_strip(active_slug):
 # Which tabs each sport exposes. Order matters for display.
 _SPORT_TABS = {
     "mlb": [
-        ("schedule",   "Schedule",    "/"),
+        ("schedule",   "Schedule",    "/mlb/schedule"),
         ("edges",      "Edges",       "/edges"),
-        ("arbitrage",  "Arbitrage",   "/arbitrage"),
         ("montecarlo", "Monte Carlo", "/montecarlo"),
         ("analyst",    "AI Analyst",  "/analyst"),
         ("backtest",   "Backtest",    "/backtest"),
@@ -819,17 +821,15 @@ _SPORT_TABS = {
     "nfl": [
         ("schedule",  "Schedule",   "/sport/nfl"),
         ("edges",     "Edges",      "/sport/nfl/edges"),
-        ("arbitrage", "Arbitrage",  "/sport/nfl/arbitrage"),
         ("backtest",  "Backtest",   "/sport/nfl/backtest"),
     ],
 }
-# Soccer leagues share the same tab set — Schedule/Edges/Arbitrage/Backtest
+# Soccer leagues share the same tab set — Schedule/Edges/Backtest
 _SOCCER_SLUGS_WITH_MODEL = {"epl", "laliga", "ligamx"}
 for _s in _SOCCER_SLUGS_WITH_MODEL:
     _SPORT_TABS[_s] = [
         ("schedule",  "Schedule",   f"/sport/{_s}"),
         ("edges",     "Edges",      f"/sport/{_s}/edges"),
-        ("arbitrage", "Arbitrage",  f"/sport/{_s}/arbitrage"),
         ("backtest",  "Backtest",   f"/sport/{_s}/backtest"),
     ]
 
@@ -839,7 +839,6 @@ def _default_sport_tabs(slug):
     return [
         ("schedule",  "Schedule",   f"/sport/{slug}"),
         ("edges",     "Edges",      f"/sport/{slug}/edges"),
-        ("arbitrage", "Arbitrage",  f"/sport/{slug}/arbitrage"),
     ]
 
 
@@ -1164,9 +1163,8 @@ INDEX_TEMPLATE = r"""<!doctype html>
       <span class="brand-mark" aria-hidden="true"></span>
       <span class="brand-name">First Pitch</span>
       <nav class="nav-tabs">
-        <a class="nav-tab active" href="/">Schedule</a>
+        <a class="nav-tab active" href="/mlb/schedule">Schedule</a>
         <a class="nav-tab" href="/edges">Edges</a>
-        <a class="nav-tab" href="/arbitrage">Arbitrage</a>
         <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
         <a class="nav-tab" href="/analyst">AI Analyst</a>
         <a class="nav-tab" href="/market">Market</a>
@@ -1543,9 +1541,8 @@ svg.calib { max-width: 100%; height: auto; }
       <span class="brand-mark" aria-hidden="true"></span>
       <span class="brand-name">First Pitch</span>
       <nav class="nav-tabs">
-        <a class="nav-tab" href="/">Schedule</a>
+        <a class="nav-tab" href="/mlb/schedule">Schedule</a>
         <a class="nav-tab" href="/edges">Edges</a>
-        <a class="nav-tab" href="/arbitrage">Arbitrage</a>
         <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
         <a class="nav-tab" href="/analyst">AI Analyst</a>
         <a class="nav-tab" href="/market">Market</a>
@@ -1820,7 +1817,379 @@ def render_calibration_svg(calibration):
 # routes
 # ============================================================================
 
+PICKS_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>First Pitch &mdash; Today's Picks</title>
+{{ fonts_link|safe }}
+<style>
+{{ shared_style|safe }}
+
+.hero {
+  padding-bottom: 20px; margin-bottom: 20px;
+  border-bottom: 1px solid var(--rule);
+}
+.hero h1 {
+  font-family: "Fraunces", Georgia, serif;
+  font-style: italic; font-weight: 400;
+  font-size: clamp(32px, 5vw, 52px);
+  line-height: 1.05; letter-spacing: -0.02em;
+  margin: 0 0 8px; font-variation-settings: "opsz" 144;
+}
+.hero .sub { color: var(--muted); max-width: 760px; font-size: 13.5px; line-height: 1.6; }
+
+.summary { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 20px; }
+.summary .pill {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: 999px; padding: 8px 14px;
+  font-family: "JetBrains Mono", monospace; font-size: 11px;
+  color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.summary .pill b { color: var(--ink); font-weight: 500; }
+.summary .pill.good b { color: var(--good); text-shadow: var(--ev-strong-glow); }
+
+.filter-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 20px; }
+.filter-chips .chip {
+  padding: 6px 12px; border-radius: 999px;
+  border: 1px solid var(--rule-strong);
+  background: var(--surface); color: var(--muted);
+  font-size: 12px; font-weight: 500; text-decoration: none;
+}
+.filter-chips .chip:hover { color: var(--ink); background: var(--card); }
+.filter-chips .chip.active { color: var(--ink); background: var(--card); border-color: var(--ink); }
+
+.pick-list { display: flex; flex-direction: column; gap: 12px; }
+
+.pick-card {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: 12px; padding: 16px 20px;
+  display: grid; grid-template-columns: 48px 1fr; gap: 16px;
+  transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+}
+.pick-card:hover { border-color: var(--rule-strong); transform: translateY(-1px); box-shadow: var(--card-hover-shadow); }
+.pick-card.strong { box-shadow: inset 3px 0 0 var(--good); }
+
+.rank {
+  font-family: "Fraunces", Georgia, serif; font-style: italic;
+  font-size: 28px; color: var(--muted); line-height: 1;
+  text-align: right; padding-top: 4px;
+}
+.pick-main { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+
+.pick-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 11.5px; color: var(--muted); }
+.pick-meta .sport {
+  font-family: "JetBrains Mono", monospace; font-size: 10px;
+  letter-spacing: 0.1em; text-transform: uppercase; font-weight: 500;
+  padding: 2px 8px; border-radius: 4px;
+  background: var(--chip-bg); color: var(--muted);
+  border: 1px solid var(--rule);
+}
+.pick-meta .market {
+  font-family: "JetBrains Mono", monospace; font-size: 10px;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent);
+}
+.pick-meta .game { color: var(--ink); font-weight: 500; font-size: 13px; }
+.pick-meta .time { color: var(--muted-2); font-family: "JetBrains Mono", monospace; font-size: 11px; }
+
+.pick-headline {
+  font-size: 18px; font-weight: 600; color: var(--ink);
+  letter-spacing: -0.01em; line-height: 1.25;
+}
+.pick-headline .price {
+  font-family: "JetBrains Mono", monospace; font-size: 14px;
+  color: var(--muted); font-weight: 400;
+  margin-left: 10px; font-variant-numeric: tabular-nums;
+}
+.pick-headline .book {
+  font-family: "JetBrains Mono", monospace; font-size: 11px;
+  color: var(--muted-2); margin-left: 6px;
+}
+
+.pick-stats {
+  display: flex; flex-wrap: wrap; gap: 14px;
+  font-family: "JetBrains Mono", monospace; font-size: 11px;
+  font-variant-numeric: tabular-nums; color: var(--muted);
+}
+.pick-stats .ev { color: var(--good); font-weight: 600; text-shadow: var(--ev-strong-glow); }
+.pick-stats .label { color: var(--muted-2); margin-right: 4px; letter-spacing: 0.06em; text-transform: uppercase; font-size: 9.5px; }
+.pick-stats b { color: var(--ink); font-weight: 500; }
+
+.bulletin {
+  color: var(--muted); font-size: 13px; line-height: 1.55;
+  padding: 10px 12px; border-left: 2px solid var(--accent);
+  background: color-mix(in oklab, var(--accent) 6%, transparent);
+  border-radius: 0 6px 6px 0;
+}
+.bulletin b, .bulletin strong { color: var(--ink); }
+
+.pick-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.pick-actions .btn-ai {
+  padding: 6px 12px; border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: color-mix(in oklab, var(--accent) 8%, transparent);
+  color: var(--accent); font-weight: 500; font-size: 12px;
+  cursor: pointer;
+  transition: background 120ms ease, box-shadow 120ms ease;
+}
+.pick-actions .btn-ai:hover {
+  background: color-mix(in oklab, var(--accent) 18%, transparent);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+.pick-actions .btn-ai:disabled { opacity: 0.6; cursor: wait; }
+.pick-actions .model-src {
+  font-family: "JetBrains Mono", monospace; font-size: 10px;
+  color: var(--muted-2); letter-spacing: 0.04em;
+}
+
+.ai-analysis {
+  padding: 12px 14px; border-top: 1px dashed var(--rule);
+  font-size: 13px; line-height: 1.55; display: none;
+}
+.ai-analysis.visible { display: block; }
+.ai-analysis h5 {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--muted); margin: 10px 0 6px; font-weight: 500;
+}
+.ai-analysis ul { margin: 0 0 8px; padding-left: 20px; }
+.ai-analysis li { margin-bottom: 4px; color: var(--ink); }
+.ai-analysis .ai-pick {
+  background: color-mix(in oklab, var(--good) 15%, transparent);
+  box-shadow: inset 3px 0 0 var(--good);
+  padding: 10px 14px; border-radius: 6px; margin-top: 10px;
+}
+.ai-analysis .ai-err { color: var(--accent); font-style: italic; font-size: 12.5px; }
+.ai-analysis .loading { color: var(--muted); font-style: italic; }
+
+.empty {
+  padding: 60px 24px; text-align: center; color: var(--muted);
+}
+.empty h2 {
+  font-family: "Fraunces", Georgia, serif;
+  font-style: italic; font-weight: 400;
+  font-size: 28px; margin: 0 0 8px; color: var(--ink);
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap header-row">
+    <div class="brand" style="display: flex; align-items: baseline;">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">First Pitch</span>
+    </div>
+    <form class="controls" method="get" action="/">
+      <a class="btn icon" href="/?date={{ prev_date }}">&lsaquo;</a>
+      <input type="date" name="date" value="{{ date_str }}" onchange="this.form.submit()">
+      <a class="btn icon" href="/?date={{ next_date }}">&rsaquo;</a>
+      {% if not is_today %}<a class="btn" href="/">Today</a>{% endif %}
+    </form>
+  </div>
+</header>
+
+{{ sport_strip|safe }}
+
+<main class="wrap reveal">
+  <div class="hero">
+    <h1>Today's Picks &middot; {{ date_pretty }}</h1>
+    <p class="sub">
+      Every positive-EV play across every sport, ranked by model edge. Each pick comes from a
+      sport-specific model (MLB Elo+SP+Poisson, NFL Elo+QB, soccer 3-way Elo) compared to the
+      best bettable price. Click <strong>Expand with AI</strong> on any pick for a Claude-written
+      structured take.
+    </p>
+  </div>
+
+  <div class="summary">
+    <span class="pill"><b>{{ picks|length }}</b> picks</span>
+    <span class="pill {% if strong_count %}good{% endif %}"><b>{{ strong_count }}</b> strong (&ge;2% EV)</span>
+    {% for s in sport_counts %}
+      <span class="pill"><b>{{ s.count }}</b> {{ s.name }}</span>
+    {% endfor %}
+    <span class="pill" style="margin-left:auto">scan {{ scan_time_ms }} ms</span>
+  </div>
+
+  <div class="filter-chips">
+    <a class="chip {% if sport_filter == 'all' %}active{% endif %}" href="/?date={{ date_str }}">All sports</a>
+    {% for s in sport_counts %}
+      <a class="chip {% if sport_filter == s.slug %}active{% endif %}" href="/?date={{ date_str }}&sport={{ s.slug }}">{{ s.name }} ({{ s.count }})</a>
+    {% endfor %}
+  </div>
+
+  {% if picks %}
+  <div class="pick-list">
+    {% for p in picks %}
+    <article class="pick-card {% if p.ev_pct >= 2 %}strong{% endif %}" data-pick-id="{{ p.id }}">
+      <div class="rank">{{ loop.index }}</div>
+      <div class="pick-main">
+        <div class="pick-meta">
+          <span class="sport">{{ p.sport }}</span>
+          <span class="market">{{ p.market }}</span>
+          <span class="game">{{ p.game }}</span>
+          {% if p.start_time %}<span class="time">{{ p.start_time }}</span>{% endif %}
+        </div>
+        <div class="pick-headline">
+          {{ p.pick }}
+          <span class="price">{{ ('+' if p.american > 0 else '') ~ p.american }} ({{ '%.2f'|format(p.decimal) }})</span>
+          <span class="book">@ {{ p.book }}</span>
+        </div>
+        <div class="pick-stats">
+          <span><span class="ev">EV +{{ '%.1f'|format(p.ev_pct) }}%</span></span>
+          <span><span class="label">Fair</span><b>{{ (p.fair_prob * 100)|round|int }}%</b></span>
+          <span><span class="label">Market</span><b>{{ (100 / p.decimal)|round|int }}%</b></span>
+          <span><span class="label">Stake (1/4 K)</span><b>{{ '%.1f'|format(p.kelly_pct) }}%</b></span>
+        </div>
+        <div class="bulletin">{{ p.bulletin }}</div>
+        <div class="pick-actions">
+          <button class="btn-ai" onclick="analyzePick('{{ p.id }}', this)">Expand with AI</button>
+          <span class="model-src">{{ p.model_source }}</span>
+        </div>
+        <div class="ai-analysis" id="ai-{{ p.id }}"></div>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty">
+    <h2>No +EV picks on today's slate.</h2>
+    <p>Markets are tight or lines haven't posted yet. Try another date, or check back closer to game time.</p>
+  </div>
+  {% endif %}
+
+  <footer>
+    <div>Ranked by EV &middot; models fit via walk-forward backtest &middot; bulletins template-generated</div>
+    <div>updated {{ now }}</div>
+  </footer>
+</main>
+
+<script>
+async function analyzePick(pickId, btn) {
+  const target = document.getElementById('ai-' + pickId);
+  if (btn) { btn.disabled = true; btn.textContent = 'Thinking…'; }
+  target.classList.add('visible');
+  target.innerHTML = '<div class="loading">Claude is reviewing this pick…</div>';
+  try {
+    const res = await fetch('/picks/api/analyze?id=' + encodeURIComponent(pickId) + '&date={{ date_str|urlencode }}');
+    const data = await res.json();
+    target.innerHTML = renderAI(data);
+  } catch (e) {
+    target.innerHTML = '<div class="ai-err">Fetch error: ' + e + '</div>';
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Re-analyze'; }
+  }
+}
+function esc(s){ return (s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function renderAI(d) {
+  if (d.error) {
+    return '<div class="ai-err">' + esc(d.error) + '</div>'
+      + (d.raw ? '<pre style="white-space:pre-wrap;color:var(--muted-2);font-size:11px">' + esc(d.raw) + '</pre>' : '');
+  }
+  const pick = d.pick || {};
+  const stars = '★'.repeat(pick.confidence || 1) + '☆'.repeat(3 - (pick.confidence || 1));
+  const sideLabel = (pick.side || '').replace(/^./, c => c.toUpperCase());
+  return `
+    <h5>Stat Read</h5>
+    <ul>${(d.stat_read||[]).map(b => '<li>' + esc(b) + '</li>').join('')}</ul>
+    <h5>Matchup Factors</h5>
+    <ul>${(d.matchup_factors||[]).map(b => '<li>' + esc(b) + '</li>').join('')}</ul>
+    <h5>Risk Flags</h5>
+    <ul>${(d.risk_flags||[]).map(b => '<li>' + esc(b) + '</li>').join('')}</ul>
+    <div class="ai-pick">
+      <div style="font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:0.1em;text-transform:uppercase;color:var(--muted)">AI Pick · <span style="color:var(--good);text-shadow:var(--ev-strong-glow)">${stars}</span></div>
+      <div style="font-weight:600;font-size:14px;color:var(--ink);margin-top:4px">${esc(pick.market || '?')} — ${esc(sideLabel)}</div>
+      <div style="color:var(--muted);font-size:12.5px;margin-top:6px">${esc(pick.rationale || '')}</div>
+    </div>
+    <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--muted-2);margin-top:6px;letter-spacing:0.08em;text-transform:uppercase">${esc(d.model || 'claude')} · ${esc(d.generated_at || 'now')}</div>
+  `;
+}
+</script>
+</body>
+</html>
+"""
+
+
 @app.route("/")
+def picks_landing():
+    import picks as picks_mod
+    date_str = request.args.get("date") or datetime.now(EASTERN).date().isoformat()
+    sport_filter = (request.args.get("sport") or "all").lower()
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        d = datetime.now(EASTERN).date()
+        date_str = d.isoformat()
+
+    t0 = time.time()
+    try:
+        all_picks = picks_mod.collect_picks(date_str)
+    except Exception:
+        all_picks = []
+    scan_time_ms = int((time.time() - t0) * 1000)
+
+    # Per-sport counts for filter chips
+    from collections import Counter
+    sport_counter = Counter(p["sport_slug"] for p in all_picks)
+    sport_name_by_slug = {p["sport_slug"]: p["sport"] for p in all_picks}
+    sport_counts = sorted(
+        [{"slug": s, "name": sport_name_by_slug[s], "count": sport_counter[s]}
+         for s in sport_counter],
+        key=lambda x: -x["count"],
+    )
+
+    if sport_filter != "all":
+        picks = [p for p in all_picks if p["sport_slug"] == sport_filter]
+    else:
+        picks = all_picks
+
+    strong_count = sum(1 for p in picks if p["ev_pct"] >= 2.0)
+    today = datetime.now(EASTERN).date().isoformat()
+
+    return render_template_string(
+        PICKS_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        sport_strip=render_sport_strip("picks"),
+        picks=picks,
+        sport_counts=sport_counts,
+        sport_filter=sport_filter,
+        strong_count=strong_count,
+        scan_time_ms=scan_time_ms,
+        date_str=date_str,
+        date_pretty=d.strftime("%A, %B %d").replace(" 0", " "),
+        prev_date=(d - timedelta(days=1)).isoformat(),
+        next_date=(d + timedelta(days=1)).isoformat(),
+        today=today,
+        is_today=(date_str == today),
+        now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
+    )
+
+
+@app.route("/picks/api/analyze")
+def picks_api_analyze():
+    """AI analysis for a single pick, by pick id."""
+    import picks as picks_mod
+    import analyst as analyst_mod
+    pick_id = request.args.get("id") or ""
+    date_str = request.args.get("date") or datetime.now(EASTERN).date().isoformat()
+    try:
+        all_picks = picks_mod.collect_picks(date_str)
+    except Exception:
+        all_picks = []
+    pick = next((p for p in all_picks if p["id"] == pick_id), None)
+    if not pick:
+        return Response(json.dumps({"error": "pick not found for this date"}),
+                        mimetype="application/json")
+    try:
+        result = analyst_mod.analyze_pick(pick)
+    except Exception as e:
+        result = {"error": f"analyst error: {e}"}
+    return Response(json.dumps(result), mimetype="application/json")
+
+
+@app.route("/mlb/schedule")
+@app.route("/mlb")
 def index():
     date_str = request.args.get("date") or datetime.now(EASTERN).date().isoformat()
     try:
@@ -2122,9 +2491,8 @@ EDGES_TEMPLATE = r"""<!doctype html>
       <span class="brand-mark" aria-hidden="true"></span>
       <span class="brand-name">First Pitch</span>
       <nav class="nav-tabs">
-        <a class="nav-tab" href="/">Schedule</a>
+        <a class="nav-tab" href="/mlb/schedule">Schedule</a>
         <a class="nav-tab active" href="/edges">Edges</a>
-        <a class="nav-tab" href="/arbitrage">Arbitrage</a>
         <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
         <a class="nav-tab" href="/analyst">AI Analyst</a>
         <a class="nav-tab" href="/market">Market</a>
@@ -2423,9 +2791,8 @@ MARKET_TEMPLATE = r"""<!doctype html>
       <span class="brand-mark" aria-hidden="true"></span>
       <span class="brand-name">First Pitch</span>
       <nav class="nav-tabs">
-        <a class="nav-tab" href="/">Schedule</a>
+        <a class="nav-tab" href="/mlb/schedule">Schedule</a>
         <a class="nav-tab" href="/edges">Edges</a>
-        <a class="nav-tab" href="/arbitrage">Arbitrage</a>
         <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
         <a class="nav-tab" href="/analyst">AI Analyst</a>
         <a class="nav-tab active" href="/market">Market</a>
@@ -3268,32 +3635,6 @@ def sport_schedule(slug):
         sport=sport,
         cards=cards,
         odds_api_available=generic_odds.odds_api_available(),
-        now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
-    )
-
-
-@app.route("/sport/<slug>/arbitrage")
-def sport_arbitrage(slug):
-    """Arbitrage filtered to one sport."""
-    sport = sports.by_slug(slug)
-    if not sport or sport.get("dedicated"):
-        from flask import redirect
-        return redirect("/arbitrage", code=302)
-    import arb_finder
-    t0 = time.time()
-    try:
-        all_arbs = arb_finder.find_sport_arbs(sport)
-    except Exception:
-        all_arbs = []
-    scan_time_ms = int((time.time() - t0) * 1000)
-    return render_template_string(
-        ARB_TEMPLATE,
-        fonts_link=FONTS_LINK,
-        shared_style=SHARED_STYLE,
-        sport_strip=render_sport_strip(slug),
-        nav=render_sport_nav(slug, "arbitrage"),
-        arbs=all_arbs,
-        scan_time_ms=scan_time_ms,
         now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
     )
 
@@ -4193,7 +4534,7 @@ MONTECARLO_TEMPLATE = r"""<!doctype html>
       <span class="brand-mark" aria-hidden="true"></span>
       <span class="brand-name">First Pitch</span>
       <nav class="nav-tabs">
-        <a class="nav-tab" href="/">Schedule</a>
+        <a class="nav-tab" href="/mlb/schedule">Schedule</a>
         <a class="nav-tab" href="/edges">Edges</a>
         <a class="nav-tab active" href="/montecarlo">Monte Carlo</a>
         <a class="nav-tab" href="/market">Market</a>
@@ -4549,188 +4890,6 @@ def _signed(am):
 
 
 # ============================================================================
-# Arbitrage finder (/arbitrage)
-# ============================================================================
-
-ARB_TEMPLATE = r"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>First Pitch &mdash; Arbitrage</title>
-{{ fonts_link|safe }}
-<style>
-{{ shared_style|safe }}
-
-.hero { padding-bottom: 20px; margin-bottom: 24px; border-bottom: 1px solid var(--rule); }
-.hero h1 { font-family: "Fraunces", Georgia, serif; font-style: italic; font-weight: 400; font-size: clamp(32px, 5vw, 48px); line-height: 1.05; letter-spacing: -0.02em; margin: 0 0 8px; font-variation-settings: "opsz" 144; }
-.hero .sub { color: var(--muted); max-width: 760px; font-size: 13.5px; line-height: 1.6; }
-
-.summary { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom: 24px; }
-.metric { background: var(--card); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px; }
-.metric .label { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
-.metric .value { font-family: "JetBrains Mono", monospace; font-size: 24px; font-weight: 500; color: var(--ink); font-variant-numeric: tabular-nums; }
-.metric .value.good { color: var(--good); text-shadow: var(--ev-strong-glow); }
-
-.arb-wrap {
-  background: var(--card); border: 1px solid var(--rule);
-  border-radius: 12px; overflow: hidden;
-}
-.arb-wrap table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.arb-wrap th {
-  text-align: left; padding: 12px 14px;
-  background: var(--surface); color: var(--muted);
-  font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
-  font-weight: 500; border-bottom: 1px solid var(--rule);
-}
-.arb-wrap td { padding: 12px 14px; border-bottom: 1px solid var(--rule); vertical-align: middle; }
-.arb-wrap tr:last-child td { border-bottom: none; }
-.arb-wrap tr.strong { background: color-mix(in oklab, var(--good) 14%, transparent); box-shadow: inset 3px 0 0 var(--good); }
-.arb-wrap .num {
-  font-family: "JetBrains Mono", monospace; font-variant-numeric: tabular-nums; text-align: right;
-}
-.arb-wrap .profit { color: var(--good); font-weight: 600; text-shadow: var(--ev-strong-glow); }
-.arb-wrap .side { color: var(--ink); font-weight: 500; }
-.arb-wrap .book { padding: 1px 6px; border-radius: 3px; font-family: "JetBrains Mono", monospace; font-size: 10.5px; background: var(--surface); border: 1px solid var(--rule); color: var(--muted); }
-.arb-wrap .book.pinnacle { color: var(--muted-2); }
-.arb-wrap .book.draftkings { color: #1b7a4f; }
-.arb-wrap .book.fanduel    { color: #0066cc; }
-.arb-wrap .book.betmgm     { color: #a66f00; }
-.arb-wrap .book.caesars    { color: #a63329; }
-
-.sport-pill-sm { font-family: "JetBrains Mono", monospace; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; padding: 2px 8px; border-radius: 4px; background: var(--chip-bg); color: var(--muted); border: 1px solid var(--rule); }
-
-.empty { padding: 60px 24px; text-align: center; color: var(--muted); }
-.empty h2 { font-family: "Fraunces", Georgia, serif; font-style: italic; font-weight: 400; font-size: 24px; color: var(--ink); margin: 0 0 8px; }
-
-.note { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 18px; color: var(--muted); font-size: 12.5px; line-height: 1.6; margin-top: 20px; max-width: 900px; }
-.note strong { color: var(--ink); }
-</style>
-</head>
-<body>
-<header>
-  <div class="wrap header-row">
-    <div class="brand" style="display: flex; align-items: baseline;">
-      <span class="brand-mark" aria-hidden="true"></span>
-      <span class="brand-name">First Pitch</span>
-      {{ nav|safe }}
-    </div>
-    <div class="controls">
-      <a class="btn" href="/arbitrage?refresh=1">Refresh</a>
-    </div>
-  </div>
-</header>
-
-{{ sport_strip|safe }}
-
-<main class="wrap reveal">
-  <div class="hero">
-    <h1>Arbitrage opportunities</h1>
-    <p class="sub">
-      Two-way markets where betting the best available price on each side at <strong>different books</strong> locks in a profit regardless of outcome.
-      Scanning Pinnacle + DraftKings + FanDuel + BetMGM + Caesars for moneyline and total markets across every sport in the registry.
-      Soccer 3-way lines are skipped (would need prices from up to three books lining up on all outcomes).
-    </p>
-  </div>
-
-  <div class="summary">
-    <div class="metric">
-      <div class="label">Opportunities</div>
-      <div class="value {% if arbs %}good{% endif %}">{{ arbs|length }}</div>
-    </div>
-    <div class="metric">
-      <div class="label">Best profit %</div>
-      <div class="value good">{{ ('%.2f'|format(arbs[0].profit_pct)) ~ '%' if arbs else '—' }}</div>
-    </div>
-    <div class="metric">
-      <div class="label">Scan time</div>
-      <div class="value" style="font-size:18px">{{ scan_time_ms }} ms</div>
-    </div>
-    <div class="metric">
-      <div class="label">Updated</div>
-      <div class="value" style="font-size:14px;line-height:1.4">{{ now }}</div>
-    </div>
-  </div>
-
-  <div class="arb-wrap">
-    {% if arbs %}
-    <table>
-      <thead>
-        <tr>
-          <th>Sport</th>
-          <th>Game</th>
-          <th>Market</th>
-          <th>Side A</th>
-          <th class="num">Book A @ price</th>
-          <th class="num">Stake A</th>
-          <th>Side B</th>
-          <th class="num">Book B @ price</th>
-          <th class="num">Stake B</th>
-          <th class="num">Profit</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for a in arbs %}
-        <tr class="{% if a.profit_pct >= 1.0 %}strong{% endif %}">
-          <td><span class="sport-pill-sm">{{ a.sport }}</span></td>
-          <td>{{ a.game }}</td>
-          <td>{{ a.market }}</td>
-          <td class="side">{{ a.pick_a }}</td>
-          <td class="num"><span class="book {{ a.a_book }}">{{ a.a_book }}</span> {{ '%.2f'|format(a.a_dec) }}</td>
-          <td class="num">{{ '%.1f'|format(a.a_stake_pct * 100) }}%</td>
-          <td class="side">{{ a.pick_b }}</td>
-          <td class="num"><span class="book {{ a.b_book }}">{{ a.b_book }}</span> {{ '%.2f'|format(a.b_dec) }}</td>
-          <td class="num">{{ '%.1f'|format(a.b_stake_pct * 100) }}%</td>
-          <td class="num profit">+{{ '%.2f'|format(a.profit_pct) }}%</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <div class="empty">
-      <h2>No arbitrage opportunities right now.</h2>
-      <p>Books tend to self-correct within minutes. Refresh in a few minutes; off-market pricing is most common on small-market slates or during line moves.</p>
-    </div>
-    {% endif %}
-  </div>
-
-  <div class="note">
-    <strong>How to use this:</strong> for each row, split your bankroll between Book A and Book B at the <em>Stake A</em>/<em>Stake B</em> percentages. Your return equals the <em>Profit</em> column no matter which side wins.<br><br>
-    <strong>What this requires:</strong> active accounts at both books and the ability to place bets quickly &mdash; arbs disappear fast. Shop lines carefully; prices can move while you're placing.<br><br>
-    <strong>Caveats:</strong> books penalize arbitrage bettors (limits, account restrictions). Bet sizes matter: a 1% profit on $100 is $1 of lock-in &mdash; the operational risk may exceed the profit on small arbs. Also: this scans only full-game moneyline and total markets. Spread arbs exist but require matching line points across books.
-  </div>
-
-  <footer>
-    <div>Pinnacle + DK/FD/BetMGM/Caesars (via The Odds API)</div>
-    <div>updated {{ now }}</div>
-  </footer>
-</main>
-</body>
-</html>
-"""
-
-
-@app.route("/arbitrage")
-def arbitrage():
-    import arb_finder
-    t0 = time.time()
-    try:
-        arbs = arb_finder.find_all_arbs()
-    except Exception as e:
-        arbs = []
-    scan_time_ms = int((time.time() - t0) * 1000)
-    return render_template_string(
-        ARB_TEMPLATE,
-        fonts_link=FONTS_LINK,
-        shared_style=SHARED_STYLE,
-        sport_strip=render_sport_strip("mlb"),
-        nav=render_sport_nav("mlb", "arbitrage"),
-        arbs=arbs,
-        scan_time_ms=scan_time_ms,
-        now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
-    )
-
-
 # ============================================================================
 # AI Analyst (/analyst) — Claude-powered structured analysis per game
 # ============================================================================
@@ -4826,9 +4985,8 @@ ANALYST_TEMPLATE = r"""<!doctype html>
       <span class="brand-mark" aria-hidden="true"></span>
       <span class="brand-name">First Pitch</span>
       <nav class="nav-tabs">
-        <a class="nav-tab" href="/">Schedule</a>
+        <a class="nav-tab" href="/mlb/schedule">Schedule</a>
         <a class="nav-tab" href="/edges">Edges</a>
-        <a class="nav-tab" href="/arbitrage">Arbitrage</a>
         <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
         <a class="nav-tab active" href="/analyst">AI Analyst</a>
       </nav>
