@@ -3011,11 +3011,19 @@ SPORT_SCHEDULE_TEMPLATE = r"""<!doctype html>
 
       {% if g.p_home_pct is not none %}
       <div>
-        <div class="market-label" style="margin-bottom:6px">Model win probability</div>
+        <div class="market-label" style="margin-bottom:6px">Model probability{% if g.p_draw_pct is not none %} (3-way){% endif %}</div>
+        {% if g.p_draw_pct is not none %}
+        <div class="prob-bar" data-favors="{{ 'home' if g.p_home_pct >= g.p_away_pct and g.p_home_pct >= g.p_draw_pct else ('away' if g.p_away_pct >= g.p_draw_pct else 'draw') }}">
+          <div class="side away" style="width: {{ g.p_away_pct }}%"><span>{{ g.away_short }}</span> <span class="pct">{{ g.p_away_pct }}%</span></div>
+          <div class="side draw" style="width: {{ g.p_draw_pct }}%; justify-content:center; background: color-mix(in oklab, var(--warn) 25%, var(--chip-bg)); color: var(--ink);"><span class="pct">D {{ g.p_draw_pct }}%</span></div>
+          <div class="side home" style="width: {{ g.p_home_pct }}%"><span class="pct">{{ g.p_home_pct }}%</span> <span>{{ g.home_short }}</span></div>
+        </div>
+        {% else %}
         <div class="prob-bar" data-favors="{{ 'home' if g.p_home_pct >= 50 else 'away' }}">
           <div class="side away" style="width: {{ 100 - g.p_home_pct }}%"><span>{{ g.away_short }}</span> <span class="pct">{{ 100 - g.p_home_pct }}%</span></div>
           <div class="side home" style="width: {{ g.p_home_pct }}%"><span class="pct">{{ g.p_home_pct }}%</span> <span>{{ g.home_short }}</span></div>
         </div>
+        {% endif %}
       </div>
       {% endif %}
 
@@ -3105,7 +3113,7 @@ def sport_schedule(slug):
         from flask import redirect
         return redirect("/", code=302)
 
-    # NFL model probability (same as sport_edges)
+    # Sport-specific model probability function
     model_prob_fn = None
     if slug == "nfl":
         try:
@@ -3122,6 +3130,21 @@ def sport_schedule(slug):
                 p = nfl_model.predict_win_prob(h_elo, a_elo)
                 return {"home": p, "away": 1 - p, "draw": None}
             model_prob_fn = _nfl_prob
+        except Exception:
+            model_prob_fn = None
+    elif slug in _SOCCER_BACKTEST_SLUGS:
+        try:
+            import soccer_model
+            soccer_state = soccer_model.get_or_run_backtest(slug)
+            final_elo = soccer_state.get("final_elo", {}) if soccer_state else {}
+            def _soccer_prob(g):
+                h_name = g.get("home_name", "")
+                a_name = g.get("away_name", "")
+                h_elo = final_elo.get(h_name, soccer_model.INITIAL_ELO)
+                a_elo = final_elo.get(a_name, soccer_model.INITIAL_ELO)
+                p_h, p_d, p_a = soccer_model.predict_3way(h_elo, a_elo)
+                return {"home": p_h, "away": p_a, "draw": p_d}
+            model_prob_fn = _soccer_prob
         except Exception:
             model_prob_fn = None
 
@@ -3211,11 +3234,16 @@ def sport_schedule(slug):
                     best_book_away = b["book"]
                     best_dec_away = f"{b['book_decimal']:.2f}" if b.get("book_decimal") else None
 
-        # Model probability
-        p_home_pct = None
+        # Model probability (2-way for NFL, 3-way for soccer)
+        p_home_pct = p_draw_pct = p_away_pct = None
         mp = g.get("model_prob")
         if mp and mp.get("home") is not None:
             p_home_pct = round(mp["home"] * 100)
+            if mp.get("draw") is not None:
+                p_draw_pct = round(mp["draw"] * 100)
+                p_away_pct = max(0, 100 - p_home_pct - p_draw_pct)
+            else:
+                p_away_pct = 100 - p_home_pct
 
         cards.append({
             "away": g["away_name"], "home": g["home_name"],
@@ -3227,6 +3255,8 @@ def sport_schedule(slug):
             "best_book_home": best_book_home, "best_book_away": best_book_away,
             "best_dec_home": best_dec_home, "best_dec_away": best_dec_away,
             "p_home_pct": p_home_pct,
+            "p_draw_pct": p_draw_pct,
+            "p_away_pct": p_away_pct,
         })
 
     return render_template_string(
