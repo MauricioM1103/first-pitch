@@ -204,9 +204,14 @@ def _pick_is_on_date(pick, date_str):
         dt = datetime.fromisoformat(iso)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-        # Convert to Eastern (UTC-4 or UTC-5, approximate; close enough for date-bucketing)
-        est = dt.astimezone(timezone(timedelta(hours=-4)))
-        return est.date().isoformat() == date_str
+        # Convert to Central (UTC-5 CDT / UTC-6 CST, approximate; close enough
+        # for date-bucketing — all games on a given CT calendar day).
+        try:
+            from zoneinfo import ZoneInfo
+            ct = dt.astimezone(ZoneInfo("America/Chicago"))
+        except Exception:
+            ct = dt.astimezone(timezone(timedelta(hours=-5)))
+        return ct.date().isoformat() == date_str
     except Exception:
         return True
 

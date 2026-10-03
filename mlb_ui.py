@@ -31,7 +31,7 @@ import mlb_odds
 import generic_odds
 import sports
 
-EASTERN = ZoneInfo("America/New_York")
+CENTRAL = ZoneInfo("America/Chicago")
 
 STATSAPI = "https://statsapi.mlb.com/api/v1"
 SCHEDULE_URL = (
@@ -169,7 +169,7 @@ def streak_glyph(streak_type):
 def format_time_et(iso_utc):
     if not iso_utc:
         return None
-    return datetime.fromisoformat(iso_utc.replace("Z", "+00:00")).astimezone(EASTERN)
+    return datetime.fromisoformat(iso_utc.replace("Z", "+00:00")).astimezone(CENTRAL)
 
 
 def parse_pitcher_stat(stat, key):
@@ -306,7 +306,7 @@ def get_games(date_str):
         away_pitcher = away.get("probablePitcher") or {}
 
         dt = format_time_et(game.get("gameDate", ""))
-        first_pitch = dt.strftime("%I:%M %p ET").lstrip("0") if dt else "TBD"
+        first_pitch = dt.strftime("%I:%M %p CT").lstrip("0") if dt else "TBD"
 
         weather = game.get("weather") or {}
         wx_temp = weather.get("temp")
@@ -435,7 +435,7 @@ def get_games(date_str):
 
         games.append({
             "first_pitch": first_pitch,
-            "sort_key": dt or datetime.max.replace(tzinfo=EASTERN),
+            "sort_key": dt or datetime.max.replace(tzinfo=CENTRAL),
             "status": status,
             "series_num": game.get("seriesGameNumber"),
             "games_in_series": game.get("gamesInSeries"),
@@ -856,6 +856,7 @@ _PRIMARY_SECTIONS = [
     ("picks",      "Picks",        "/"),
     ("montecarlo", "Monte Carlo",  "/montecarlo"),
     ("analysis",   "AI Analysis",  "/ai-analysis"),
+    ("logged",     "Logged Plays", "/logged"),
 ]
 
 
@@ -878,19 +879,36 @@ def render_sport_strip(active_slug):
     return "".join(parts)
 
 
-def render_sport_chip_bar(selected_slug, base_url):
+def render_sport_chip_bar(selected_slug, base_url, date_str=None):
     """Horizontal sport chip selector for Monte Carlo / AI Analysis pages.
 
     Renders every sport as a chip link to the same base_url with ?sport=slug.
+    Preserves the date query param so the day you picked carries across sports.
     """
+    date_q = f"&date={date_str}" if date_str else ""
     parts = ['<div class="sport-chip-bar">']
     for sp in sports.SPORTS:
         cls = "sport-chip active" if sp["slug"] == selected_slug else "sport-chip"
         parts.append(
-            f'<a class="{cls}" href="{base_url}?sport={sp["slug"]}">{sp["name"]}</a>'
+            f'<a class="{cls}" href="{base_url}?sport={sp["slug"]}{date_q}">{sp["name"]}</a>'
         )
     parts.append('</div>')
     return "".join(parts)
+
+
+def render_date_toggle(base_url, sport_slug, date_str, prev_date, next_date, is_today, today_str):
+    """Prev / Today / Next date controls for MC + AI Analysis pages."""
+    sport_q = f"&sport={sport_slug}" if sport_slug else ""
+    today_btn = (f'<a class="date-btn" href="{base_url}?date={today_str}{sport_q}">Today</a>'
+                 if not is_today else '')
+    return (
+        '<div class="date-toggle">'
+        f'<a class="date-btn icon" href="{base_url}?date={prev_date}{sport_q}" aria-label="Previous day">&lsaquo;</a>'
+        f'<span class="date-label">{date_str}</span>'
+        f'<a class="date-btn icon" href="{base_url}?date={next_date}{sport_q}" aria-label="Next day">&rsaquo;</a>'
+        f'{today_btn}'
+        '</div>'
+    )
 
 
 # Which tabs each sport exposes. Order matters for display.
@@ -2216,12 +2234,12 @@ function renderAI(d) {
 @app.route("/")
 def picks_landing():
     import picks as picks_mod
-    date_str = request.args.get("date") or datetime.now(EASTERN).date().isoformat()
+    date_str = request.args.get("date") or datetime.now(CENTRAL).date().isoformat()
     sport_filter = (request.args.get("sport") or "all").lower()
     try:
         d = datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
-        d = datetime.now(EASTERN).date()
+        d = datetime.now(CENTRAL).date()
         date_str = d.isoformat()
 
     t0 = time.time()
@@ -2230,6 +2248,15 @@ def picks_landing():
     except Exception:
         all_picks = []
     scan_time_ms = int((time.time() - t0) * 1000)
+
+    # Snapshot today's picks for the /logged dashboard. Idempotent per date,
+    # so refreshing the page doesn't rewrite history.
+    try:
+        import plays_log
+        if all_picks and date_str == datetime.now(CENTRAL).date().isoformat():
+            plays_log.save_daily_picks(date_str, all_picks)
+    except Exception:
+        pass
 
     # Per-sport counts for filter chips
     from collections import Counter
@@ -2247,7 +2274,7 @@ def picks_landing():
         picks = all_picks
 
     strong_count = sum(1 for p in picks if p.get("strong"))
-    today = datetime.now(EASTERN).date().isoformat()
+    today = datetime.now(CENTRAL).date().isoformat()
 
     return render_template_string(
         PICKS_TEMPLATE,
@@ -2265,7 +2292,7 @@ def picks_landing():
         next_date=(d + timedelta(days=1)).isoformat(),
         today=today,
         is_today=(date_str == today),
-        now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
+        now=datetime.now(CENTRAL).strftime("%I:%M %p CT").lstrip("0"),
     )
 
 
@@ -2275,7 +2302,7 @@ def picks_api_analyze():
     import picks as picks_mod
     import analyst as analyst_mod
     pick_id = request.args.get("id") or ""
-    date_str = request.args.get("date") or datetime.now(EASTERN).date().isoformat()
+    date_str = request.args.get("date") or datetime.now(CENTRAL).date().isoformat()
     try:
         all_picks = picks_mod.collect_picks(date_str)
     except Exception:
@@ -2294,11 +2321,11 @@ def picks_api_analyze():
 @app.route("/mlb/schedule")
 @app.route("/mlb")
 def index():
-    date_str = request.args.get("date") or datetime.now(EASTERN).date().isoformat()
+    date_str = request.args.get("date") or datetime.now(CENTRAL).date().isoformat()
     try:
         d = datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
-        d = datetime.now(EASTERN).date()
+        d = datetime.now(CENTRAL).date()
         date_str = d.isoformat()
 
     error = None
@@ -2310,7 +2337,7 @@ def index():
     except Exception as e:
         error = f"Unexpected error: {e}"
 
-    today = datetime.now(EASTERN).date().isoformat()
+    today = datetime.now(CENTRAL).date().isoformat()
     date_pretty = d.strftime("%A, %B %d").replace(" 0", " ")
 
     return render_template_string(
@@ -2327,7 +2354,7 @@ def index():
         is_today=(date_str == today),
         error=error,
         game_count=len(games),
-        now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
+        now=datetime.now(CENTRAL).strftime("%I:%M %p CT").lstrip("0"),
     )
 
 
@@ -2406,11 +2433,11 @@ def backtest():
 
 @app.route("/export.csv")
 def export_csv():
-    date_str = request.args.get("date") or datetime.now(EASTERN).date().isoformat()
+    date_str = request.args.get("date") or datetime.now(CENTRAL).date().isoformat()
     try:
         datetime.strptime(date_str, "%Y-%m-%d")
     except ValueError:
-        date_str = datetime.now(EASTERN).date().isoformat()
+        date_str = datetime.now(CENTRAL).date().isoformat()
 
     games = get_games(date_str)
 
@@ -2722,12 +2749,12 @@ EDGES_TEMPLATE = r"""<!doctype html>
 
 @app.route("/edges")
 def edges():
-    date_str = request.args.get("date") or datetime.now(EASTERN).date().isoformat()
+    date_str = request.args.get("date") or datetime.now(CENTRAL).date().isoformat()
     market_filter = (request.args.get("market") or "all").upper()
     try:
         d = datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
-        d = datetime.now(EASTERN).date()
+        d = datetime.now(CENTRAL).date()
         date_str = d.isoformat()
 
     try:
@@ -2735,7 +2762,7 @@ def edges():
     except Exception:
         games = []
 
-    today = datetime.now(EASTERN).date().isoformat()
+    today = datetime.now(CENTRAL).date().isoformat()
     edges_list = []
     games_with_odds = 0
     for g in games:
@@ -2801,7 +2828,7 @@ def edges():
         strong_count=strong_count,
         odds_api_available=mlb_odds.odds_api_available(),
         market_filter=market_filter,
-        now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
+        now=datetime.now(CENTRAL).strftime("%I:%M %p CT").lstrip("0"),
     )
 
 
@@ -2996,11 +3023,11 @@ MARKET_TEMPLATE = r"""<!doctype html>
 
 @app.route("/market")
 def market():
-    date_str = request.args.get("date") or datetime.now(EASTERN).date().isoformat()
+    date_str = request.args.get("date") or datetime.now(CENTRAL).date().isoformat()
     try:
         d = datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
-        d = datetime.now(EASTERN).date()
+        d = datetime.now(CENTRAL).date()
         date_str = d.isoformat()
 
     try:
@@ -3008,7 +3035,7 @@ def market():
     except Exception:
         games = []
 
-    today = datetime.now(EASTERN).date().isoformat()
+    today = datetime.now(CENTRAL).date().isoformat()
 
     # Limits rows for Pinnacle
     limits_rows = []
@@ -3077,7 +3104,7 @@ def market():
         is_today=(date_str == today),
         limits_rows=limits_rows,
         futures_top=futures_top,
-        now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
+        now=datetime.now(CENTRAL).strftime("%I:%M %p CT").lstrip("0"),
     )
 
 
@@ -3355,8 +3382,8 @@ def _format_et(iso_utc):
     if not iso_utc:
         return ""
     try:
-        dt = datetime.fromisoformat(iso_utc.replace("Z", "+00:00")).astimezone(EASTERN)
-        return dt.strftime("%a %b %d, %I:%M %p ET").replace(" 0", " ")
+        dt = datetime.fromisoformat(iso_utc.replace("Z", "+00:00")).astimezone(CENTRAL)
+        return dt.strftime("%a %b %d, %I:%M %p CT").replace(" 0", " ")
     except (ValueError, TypeError):
         return iso_utc
 
@@ -3739,7 +3766,7 @@ def sport_schedule(slug):
         sport=sport,
         cards=cards,
         odds_api_available=generic_odds.odds_api_available(),
-        now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
+        now=datetime.now(CENTRAL).strftime("%I:%M %p CT").lstrip("0"),
     )
 
 
@@ -3822,7 +3849,7 @@ def sport_edges(slug):
         available_markets=markets_meta,
         show=show,
         has_model=(model_prob_fn is not None),
-        now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
+        now=datetime.now(CENTRAL).strftime("%I:%M %p CT").lstrip("0"),
     )
 
 
@@ -5031,11 +5058,11 @@ def _american_from_prob(p):
 
 @app.route("/mlb/montecarlo")
 def mlb_montecarlo():
-    date_str = request.args.get("date") or datetime.now(EASTERN).date().isoformat()
+    date_str = request.args.get("date") or datetime.now(CENTRAL).date().isoformat()
     try:
         d = datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
-        d = datetime.now(EASTERN).date()
+        d = datetime.now(CENTRAL).date()
         date_str = d.isoformat()
     try:
         n_sims = int(request.args.get("n") or 10000)
@@ -5048,7 +5075,7 @@ def mlb_montecarlo():
     except Exception:
         games = []
 
-    today = datetime.now(EASTERN).date().isoformat()
+    today = datetime.now(CENTRAL).date().isoformat()
 
     t_start = time.time()
     out_games = []
@@ -5434,11 +5461,11 @@ function renderAnalysis(d) {
 @app.route("/mlb/analyst")
 def mlb_analyst_page():
     import analyst as analyst_mod
-    date_str = request.args.get("date") or datetime.now(EASTERN).date().isoformat()
+    date_str = request.args.get("date") or datetime.now(CENTRAL).date().isoformat()
     try:
         d = datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
-        d = datetime.now(EASTERN).date()
+        d = datetime.now(CENTRAL).date()
         date_str = d.isoformat()
     try:
         games = get_games(date_str)
@@ -5461,7 +5488,7 @@ def mlb_analyst_page():
         "home_rec": _rec(g["home"]),
     } for g in games if g.get("game_pk")]
 
-    today = datetime.now(EASTERN).date().isoformat()
+    today = datetime.now(CENTRAL).date().isoformat()
     return render_template_string(
         ANALYST_TEMPLATE,
         fonts_link=FONTS_LINK,
@@ -5475,7 +5502,7 @@ def mlb_analyst_page():
         next_date=(d + timedelta(days=1)).isoformat(),
         today=today,
         is_today=(date_str == today),
-        now=datetime.now(EASTERN).strftime("%I:%M %p ET").lstrip("0"),
+        now=datetime.now(CENTRAL).strftime("%I:%M %p CT").lstrip("0"),
     )
 
 
@@ -5483,7 +5510,7 @@ def mlb_analyst_page():
 def analyst_api_game():
     import analyst as analyst_mod
     pk_str = request.args.get("pk")
-    date_str = request.args.get("date") or datetime.now(EASTERN).date().isoformat()
+    date_str = request.args.get("date") or datetime.now(CENTRAL).date().isoformat()
     try:
         pk = int(pk_str) if pk_str else None
     except ValueError:
@@ -5514,17 +5541,20 @@ def _mc_sports_options():
     return [{"slug": s["slug"], "name": s["name"]} for s in sports.SPORTS]
 
 
-def _in_eastern_date(iso_str, date_str):
-    """True if the UTC iso timestamp falls on date_str in Eastern time."""
+def _in_central_date(iso_str, date_str):
+    """True if the UTC iso timestamp falls on date_str in Central time."""
     if not iso_str:
         return False
     try:
-        from datetime import datetime as _dt, timezone, timedelta as _td
+        from datetime import datetime as _dt
         dt = _dt.fromisoformat(iso_str.replace("Z", "+00:00"))
-        est_date = dt.astimezone(timezone(_td(hours=-4))).date().isoformat()
-        return est_date == date_str
+        return dt.astimezone(CENTRAL).date().isoformat() == date_str
     except Exception:
         return False
+
+
+# Back-compat alias so any lingering call sites still work during the switch.
+_in_eastern_date = _in_central_date
 
 
 _MC_GAMES_CACHE = {}
@@ -6158,6 +6188,46 @@ MC_UNIFIED_TEMPLATE = r"""<!doctype html>
 /* Narrow MC + AI pages so they breathe like the picks page */
 main.mc-page, main.ai-page { max-width: 1040px; }
 
+/* Date toggle (prev / date-input / next / Today / pretty-date) */
+.date-toggle-wrap { margin: 14px 0 18px; }
+.date-form {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: 10px; padding: 10px 14px;
+}
+.date-btn {
+  background: var(--surface); border: 1px solid var(--rule-strong);
+  color: var(--ink); padding: 6px 12px; border-radius: 6px;
+  text-decoration: none; font-size: 12.5px;
+  font-family: "JetBrains Mono", monospace;
+}
+.date-btn:hover { background: var(--card); border-color: var(--accent, var(--ink)); }
+.date-btn.icon { padding: 6px 10px; font-size: 15px; line-height: 1; }
+.date-input {
+  background: var(--surface); border: 1px solid var(--rule-strong);
+  color: var(--ink); padding: 6px 10px; border-radius: 6px;
+  font-family: "JetBrains Mono", monospace; font-size: 12.5px;
+}
+.date-pretty {
+  color: var(--muted); font-size: 12.5px; margin-left: 6px;
+  font-family: "JetBrains Mono", monospace;
+}
+
+/* Mobile tightening across MC + AI */
+@media (max-width: 680px) {
+  main.mc-page, main.ai-page { padding-left: 14px; padding-right: 14px; }
+  .stats-panel { grid-template-columns: 1fr !important; }
+  .probs-grid { grid-template-columns: repeat(2, 1fr) !important; }
+  .proj-row { grid-template-columns: 1fr !important; gap: 14px !important; }
+  .scores-chips { gap: 6px; }
+  .edge-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .edge-table { min-width: 560px; }
+  .date-pretty { display: none; }
+  .mc-hero h1, .ai-hero h1 { font-size: 32px !important; }
+  .howitworks li { font-size: 12px; line-height: 1.5; }
+  .mc-form select, .mc-form input[type="number"] { max-width: 100%; }
+}
+
 .howitworks {
   background: var(--card); border: 1px solid var(--rule); border-radius: 10px;
   padding: 16px 20px; margin: 20px 0;
@@ -6369,17 +6439,29 @@ main.mc-page, main.ai-page { max-width: 1040px; }
 
   {{ sport_chip_bar|safe }}
 
+  <div class="date-toggle-wrap">
+    <form method="get" action="/montecarlo" class="date-form">
+      <input type="hidden" name="sport" value="{{ sport_slug or '' }}">
+      <a class="date-btn icon" href="/montecarlo?date={{ prev_date }}{% if sport_slug %}&amp;sport={{ sport_slug }}{% endif %}" aria-label="Previous day">&lsaquo;</a>
+      <input type="date" name="date" value="{{ date_str }}" onchange="this.form.submit()" class="date-input">
+      <a class="date-btn icon" href="/montecarlo?date={{ next_date }}{% if sport_slug %}&amp;sport={{ sport_slug }}{% endif %}" aria-label="Next day">&rsaquo;</a>
+      {% if not is_today %}<a class="date-btn" href="/montecarlo?date={{ today_str }}{% if sport_slug %}&amp;sport={{ sport_slug }}{% endif %}">Today</a>{% endif %}
+      <span class="date-pretty">{{ date_pretty }}</span>
+    </form>
+  </div>
+
   {% if not sport_slug %}
-  <div class="hist-wrap"><h3 style="margin:0">Select a sport above to see today's games.</h3></div>
+  <div class="hist-wrap"><h3 style="margin:0">Select a sport above to see games for {{ date_pretty }}.</h3></div>
   {% elif not games %}
   <div class="hist-wrap">
-    <h3 style="margin:0">No {{ sport_name }} games today.</h3>
-    <div class="sub">Pinnacle has no upcoming matchups for {{ sport_name }} on {{ date_pretty }}.</div>
+    <h3 style="margin:0">No {{ sport_name }} games on {{ date_pretty }}.</h3>
+    <div class="sub">Pinnacle has no upcoming matchups for {{ sport_name }} on that date — try prev / next or Today.</div>
   </div>
   {% else %}
   <form class="mc-form" method="get" action="/montecarlo">
     <input type="hidden" name="sport" value="{{ sport_slug }}">
-    <label for="game-select">Select {{ sport_name }} game ({{ games|length }} today)</label>
+    <input type="hidden" name="date" value="{{ date_str }}">
+    <label for="game-select">Select {{ sport_name }} game ({{ games|length }} on {{ date_pretty }})</label>
     <select id="game-select" name="game" onchange="this.form.submit()">
       <option value="">— choose a game —</option>
       {% for g in games %}
@@ -6416,6 +6498,7 @@ main.mc-page, main.ai-page { max-width: 1040px; }
   <form method="post" action="/montecarlo">
     <input type="hidden" name="sport" value="{{ sport_slug }}">
     <input type="hidden" name="game" value="{{ game_id }}">
+    <input type="hidden" name="date" value="{{ date_str }}">
     <div class="controls-row">
       <div>
         <label for="n-sims">Trials</label>
@@ -6500,6 +6583,7 @@ main.mc-page, main.ai-page { max-width: 1040px; }
     <div class="hist-wrap">
       <h3>Edge Detection &amp; Kelly Criterion</h3>
       <div class="sub">Sim probability vs the best available book price. Edge is sim − book (percentage points). Kelly is quarter-Kelly.</div>
+      <div class="edge-table-wrap">
       <table class="edge-table">
         <thead>
           <tr>
@@ -6523,6 +6607,7 @@ main.mc-page, main.ai-page { max-width: 1040px; }
         {% endfor %}
         </tbody>
       </table>
+      </div>
     </div>
     {% endif %}
 
@@ -6551,8 +6636,15 @@ def montecarlo_unified():
     n_sims = max(500, min(15000, n_sims))
     run_sim = request.method == "POST"
 
-    date_str = datetime.now(EASTERN).date().isoformat()
-    d_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
+    today_str = datetime.now(CENTRAL).date().isoformat()
+    date_str = request.values.get("date") or today_str
+    try:
+        d_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        d_obj = datetime.now(CENTRAL).date()
+        date_str = d_obj.isoformat()
+    prev_date = (d_obj - timedelta(days=1)).isoformat()
+    next_date = (d_obj + timedelta(days=1)).isoformat()
 
     sport = sports.by_slug(sport_slug) if sport_slug else None
     sport_name = sport["name"] if sport else ""
@@ -6600,7 +6692,7 @@ def montecarlo_unified():
         shared_style=SHARED_STYLE,
         theme_script=THEME_SCRIPT,
         sport_strip=render_sport_strip("montecarlo"),
-        sport_chip_bar=render_sport_chip_bar(sport_slug, "/montecarlo"),
+        sport_chip_bar=render_sport_chip_bar(sport_slug, "/montecarlo", date_str),
         sport_slug=sport_slug,
         sport_name=sport_name,
         games=games,
@@ -6613,7 +6705,12 @@ def montecarlo_unified():
         hist_max=hist_max,
         edges=edges,
         n_sims=n_sims,
+        date_str=date_str,
         date_pretty=d_obj.strftime("%A, %B %d").replace(" 0", " "),
+        today_str=today_str,
+        prev_date=prev_date,
+        next_date=next_date,
+        is_today=(date_str == today_str),
     )
 
 
@@ -6723,6 +6820,17 @@ AI_UNIFIED_TEMPLATE = r"""<!doctype html>
 
   {{ sport_chip_bar|safe }}
 
+  <div class="date-toggle-wrap">
+    <form method="get" action="/ai-analysis" class="date-form">
+      <input type="hidden" name="sport" value="{{ sport_slug or '' }}">
+      <a class="date-btn icon" href="/ai-analysis?date={{ prev_date }}{% if sport_slug %}&amp;sport={{ sport_slug }}{% endif %}" aria-label="Previous day">&lsaquo;</a>
+      <input type="date" name="date" value="{{ date_str }}" onchange="this.form.submit()" class="date-input">
+      <a class="date-btn icon" href="/ai-analysis?date={{ next_date }}{% if sport_slug %}&amp;sport={{ sport_slug }}{% endif %}" aria-label="Next day">&rsaquo;</a>
+      {% if not is_today %}<a class="date-btn" href="/ai-analysis?date={{ today_str }}{% if sport_slug %}&amp;sport={{ sport_slug }}{% endif %}">Today</a>{% endif %}
+      <span class="date-pretty">{{ date_pretty }}</span>
+    </form>
+  </div>
+
   {% if not key_available %}
   <div class="ai-result ai-err">
     <h3 style="margin-top:0">ANTHROPIC_API_KEY not set</h3>
@@ -6732,13 +6840,14 @@ AI_UNIFIED_TEMPLATE = r"""<!doctype html>
   {% endif %}
 
   {% if sport_slug and not games %}
-  <div class="ai-result"><h3 style="margin:0">No {{ sport_name }} games today.</h3></div>
+  <div class="ai-result"><h3 style="margin:0">No {{ sport_name }} games on {{ date_pretty }}.</h3></div>
   {% endif %}
 
   {% if sport_slug and games %}
   <form class="ai-form" method="post" action="/ai-analysis">
     <input type="hidden" name="sport" value="{{ sport_slug }}">
-    <label for="g">Select {{ sport_name }} game ({{ games|length }} today)</label>
+    <input type="hidden" name="date" value="{{ date_str }}">
+    <label for="g">Select {{ sport_name }} game ({{ games|length }} on {{ date_pretty }})</label>
     <select id="g" name="game">
       <option value="">— choose a game —</option>
       {% for g in games %}
@@ -6896,31 +7005,65 @@ def _ai_analyze_matchup(sport_slug, game_ctx):
         ctx_lines.append(f"{sport_slug.upper()} matchup: {game_ctx.get('away_name','?')} vs {game_ctx.get('home_name','?')}")
 
     context = "\n".join(ctx_lines)
-    prompt = f"""You are an expert sports betting analyst. Analyze this matchup
-in depth across stat angles, matchup factors, risk flags, and give a clear
-recommendation at the end.
+    prompt = f"""You are an expert sports betting analyst with access to the web.
+Produce the sharpest, most CURRENT read possible on this matchup. Use web search
+to pull in any news from today or the last few days — injury updates, lineup /
+starter changes, suspensions, weather, late line movement, public betting
+splits, and recent form. Ground your analysis in what the search returns.
 
 {context}
 
-Write 4 sections with markdown headings (## Section):
+Write 6 sections with markdown headings (## Section):
+## News & Injury Report
+  — the most recent news items (reporter + source + date if you can).
+  Called out injuries, questionable players, suspensions, weather, notable
+  late scratches, lineup / rotation / goalie / starting-pitcher news.
+## Head-to-Head History
+  — recent H2H results between these two sides, home/away splits, any
+  stylistic pattern (ex: team A has owned team B at home, totals trend etc).
+## Play Styles & Tactical Matchup
+  — how each side plays, where they create their edge, and specifically
+  how those styles interact (ex: run-heavy offense vs rush defense;
+  high-press team vs long-ball; power play vs penalty kill).
 ## Stat Read
-## Matchup Factors
+  — pull the key numeric angle(s) from the context block above (model
+  Elo / Dixon-Coles projection / Pinnacle fair) and interpret them.
 ## Risk Flags
+  — anything that could blow up your lean: short rest, travel, trap-game
+  spots, injury uncertainty, umpire / referee tendencies, late news.
 ## Lean & Pick
+  — one clear recommended play (or "pass" if nothing is actionable).
+  Give the market, the price range you'd take, and a confidence tier
+  (Lean / Solid / Strong). Avoid filler.
 
-Be specific, honest, and avoid filler. Markdown bullets ok. 350-450 words."""
+450-650 words. Be specific, cite sources when you use them. If search returns
+nothing useful, say so and work from training knowledge rather than inventing."""
 
     try:
-        msg = client.messages.create(
+        # Prefer the web-search tool when available so Claude pulls live news.
+        # If the server-side tool call fails (older account, deprecated name),
+        # fall back to a plain messages.create() with the same prompt.
+        kwargs = dict(
             model=analyst_mod.CLAUDE_MODEL,
-            max_tokens=1200,
+            max_tokens=2000,
             messages=[{"role": "user", "content": prompt}],
         )
+        msg = None
+        try:
+            msg = client.messages.create(
+                **kwargs,
+                tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
+            )
+        except Exception:
+            msg = None
+        if msg is None:
+            msg = client.messages.create(**kwargs)
         text = ""
         for block in (msg.content or []):
             if getattr(block, "type", None) == "text":
-                text = getattr(block, "text", "") or ""
-                break
+                t = getattr(block, "text", "") or ""
+                if t:
+                    text += (("\n\n" if text else "") + t)
         if not text:
             return {"error": "Claude returned no text."}
         return {
@@ -6939,7 +7082,16 @@ def ai_analysis_unified():
     sport_slug = (request.values.get("sport") or "").lower() or None
     game_id = request.values.get("game") or None
 
-    date_str = datetime.now(EASTERN).date().isoformat()
+    today_str = datetime.now(CENTRAL).date().isoformat()
+    date_str = request.values.get("date") or today_str
+    try:
+        d_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        d_obj = datetime.now(CENTRAL).date()
+        date_str = d_obj.isoformat()
+    prev_date = (d_obj - timedelta(days=1)).isoformat()
+    next_date = (d_obj + timedelta(days=1)).isoformat()
+
     sport = sports.by_slug(sport_slug) if sport_slug else None
     sport_name = sport["name"] if sport else ""
 
@@ -6958,13 +7110,265 @@ def ai_analysis_unified():
         shared_style=SHARED_STYLE,
         theme_script=THEME_SCRIPT,
         sport_strip=render_sport_strip("analysis"),
-        sport_chip_bar=render_sport_chip_bar(sport_slug, "/ai-analysis"),
+        sport_chip_bar=render_sport_chip_bar(sport_slug, "/ai-analysis", date_str),
         sport_slug=sport_slug,
         sport_name=sport_name,
         games=games,
         game_id=game_id,
         analysis=analysis,
         key_available=analyst_mod.is_available(),
+        date_str=date_str,
+        date_pretty=d_obj.strftime("%A, %B %d").replace(" 0", " "),
+        today_str=today_str,
+        prev_date=prev_date,
+        next_date=next_date,
+        is_today=(date_str == today_str),
+    )
+
+
+# ============================================================================
+# Logged Plays — W/L dashboard for past picks
+# ============================================================================
+
+LOGGED_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Betting Tools &mdash; Logged Plays</title>
+{{ fonts_link|safe }}
+<style>
+{{ shared_style|safe }}
+main.logged-page { max-width: 1040px; }
+
+.hero-block { padding-bottom: 18px; margin-bottom: 20px; border-bottom: 1px solid var(--rule); }
+.hero-block h1 {
+  font-family: "Fraunces", Georgia, serif; font-style: italic; font-weight: 400;
+  font-size: clamp(32px, 5vw, 48px); line-height: 1.05; letter-spacing: -0.02em;
+  margin: 0 0 8px;
+}
+.hero-block .sub { color: var(--muted); max-width: 760px; font-size: 13.5px; line-height: 1.55; }
+
+.records-section { margin-bottom: 32px; }
+.records-section h2 {
+  font-family: "Fraunces", Georgia, serif; font-style: italic; font-weight: 500;
+  font-size: 22px; margin: 0 0 10px;
+}
+.records-section .sub {
+  color: var(--muted); font-size: 12.5px; margin-bottom: 14px;
+  font-family: "JetBrains Mono", monospace;
+}
+.records-grid {
+  display: grid; gap: 10px;
+  grid-template-columns: repeat(3, 1fr);
+  margin-bottom: 10px;
+}
+.rec-tile {
+  background: var(--card); border: 1px solid var(--rule); border-radius: 10px;
+  padding: 14px 16px;
+}
+.rec-tile.strong-tile { border-left: 3px solid var(--good); }
+.rec-tile .lbl {
+  font-family: "JetBrains Mono", monospace; font-size: 10px;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted); margin-bottom: 6px;
+}
+.rec-tile .wl {
+  font-family: "JetBrains Mono", monospace; font-size: 26px;
+  color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 500;
+}
+.rec-tile .pct { font-size: 14px; color: var(--muted); margin-left: 8px; }
+.rec-tile.good .wl, .rec-tile.good .units { color: var(--good); text-shadow: var(--ev-strong-glow); }
+.rec-tile.bad  .wl, .rec-tile.bad  .units { color: #ef4444; }
+.rec-tile .meta {
+  font-family: "JetBrains Mono", monospace; font-size: 11px;
+  color: var(--muted); margin-top: 6px;
+}
+.rec-tile .units {
+  display: block; margin-top: 4px;
+  font-family: "JetBrains Mono", monospace; font-size: 15px;
+  color: var(--ink); font-variant-numeric: tabular-nums;
+}
+
+.date-group {
+  background: var(--card); border: 1px solid var(--rule); border-radius: 10px;
+  padding: 16px 18px; margin-bottom: 12px;
+}
+.date-group h3 {
+  font-family: "Fraunces", Georgia, serif; font-style: italic; font-weight: 500;
+  font-size: 18px; margin: 0 0 10px;
+}
+.pick-row {
+  display: grid; grid-template-columns: 68px 1fr 60px 70px;
+  gap: 10px; align-items: center;
+  padding: 8px 0; border-top: 1px solid var(--rule);
+  font-family: "JetBrains Mono", monospace; font-size: 12.5px;
+}
+.pick-row:first-of-type { border-top: none; }
+.pick-row .tag {
+  font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted);
+}
+.pick-row .strong-badge {
+  display: inline-block; padding: 1px 6px; border-radius: 4px;
+  background: var(--good); color: #052311;
+  font-size: 9px; letter-spacing: 0.1em; font-weight: 700;
+  margin-right: 6px;
+}
+.pick-row .pick-cell { color: var(--ink); }
+.pick-row .pick-cell .matchup { color: var(--muted); font-size: 11px; margin-top: 2px; }
+.pick-row .odd { color: var(--muted); text-align: right; }
+.pick-row .res {
+  text-align: center; font-weight: 600; letter-spacing: 0.1em;
+  font-size: 11px; padding: 4px; border-radius: 4px;
+}
+.pick-row .res.W { color: var(--good); background: color-mix(in oklab, var(--good) 15%, transparent); }
+.pick-row .res.L { color: #ef4444; background: color-mix(in oklab, #ef4444 15%, transparent); }
+.pick-row .res.P { color: var(--muted); background: var(--surface); }
+.pick-row .res.pending { color: var(--muted); font-size: 10px; }
+
+.strong-section .pick-row { background: color-mix(in oklab, var(--good) 4%, transparent); }
+.date-group .section-label {
+  font-family: "JetBrains Mono", monospace; font-size: 10px;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted); margin: 14px 0 4px; display: flex; gap: 8px; align-items: baseline;
+}
+.date-group .section-label .count { color: var(--ink); font-weight: 500; }
+
+@media (max-width: 680px) {
+  .records-grid { grid-template-columns: 1fr; }
+  .pick-row { grid-template-columns: 50px 1fr 58px; }
+  .pick-row .odd { display: none; }
+  main.logged-page { padding-left: 14px; padding-right: 14px; }
+}
+</style>
+</head>
+<body>
+{{ sport_strip|safe }}
+<main class="wrap logged-page">
+  <div class="hero-block">
+    <h1>Logged Plays</h1>
+    <p class="sub">Every pick the board has recommended since this feature went live,
+    graded against final scores. Strong (model &geq; 60%) plays are tracked separately
+    so you can see how the high-conviction tier is actually hitting versus the broader
+    board. Pushes don't count toward W-L; units P/L assumes a flat 1-unit stake per
+    pick at the odds shown on the board at pick time.</p>
+  </div>
+
+  <section class="records-section">
+    <h2>Overall Record</h2>
+    <div class="sub">All graded picks across every sport. Pending = game not yet final (Odds API lags by a few minutes after games end).</div>
+    <div class="records-grid">
+      {% for key, label in [('all_7d','Last 7 days'),('all_30d','Last 30 days'),('all_90d','Last 90 days')] %}
+      {% set r = summary[key] %}
+      <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
+        <div class="lbl">{{ label }}</div>
+        <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
+        <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
+        <div class="meta">{{ r.settled }} settled{% if r.pending %} &middot; {{ r.pending }} pending{% endif %}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="records-section">
+    <h2>Strong Picks Only <span style="color:var(--good);text-shadow:var(--ev-strong-glow);font-size:16px">★</span></h2>
+    <div class="sub">Model conviction &geq; 60%. Separated so you can tell if the strong tier is the real signal (the way the reference pickers package their best plays).</div>
+    <div class="records-grid">
+      {% for key, label in [('strong_7d','Last 7 days'),('strong_30d','Last 30 days'),('strong_90d','Last 90 days')] %}
+      {% set r = summary[key] %}
+      <div class="rec-tile strong-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
+        <div class="lbl">{{ label }}</div>
+        <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
+        <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
+        <div class="meta">{{ r.settled }} settled{% if r.pending %} &middot; {{ r.pending }} pending{% endif %}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  {% if not dates %}
+  <div class="date-group">
+    <h3 style="margin:0">No logged picks yet.</h3>
+    <p style="color:var(--muted);margin:8px 0 0;font-size:13px">
+      Visit the <a href="/">Picks</a> page on any day — the day's board auto-snapshots the
+      first time it's viewed, and this page starts tracking results as soon as the games finish.
+    </p>
+  </div>
+  {% endif %}
+
+  {% for ds in dates %}
+  {% set picks = graded_by_date[ds] %}
+  {% set strongs = picks | selectattr('strong') | list %}
+  {% set others  = picks | rejectattr('strong')  | list %}
+  <div class="date-group">
+    <h3>{{ ds }}</h3>
+    {% if strongs %}
+    <div class="section-label">Strong picks <span class="count">({{ strongs|length }})</span></div>
+    <div class="strong-section">
+      {% for p in strongs %}
+      <div class="pick-row">
+        <span class="tag">{{ p.sport }}</span>
+        <div class="pick-cell">
+          <span class="strong-badge">STRONG</span><strong>{{ p.pick }}</strong>
+          <div class="matchup">{{ p.away_team }} at {{ p.home_team }} &middot; {{ p.market }}
+            {% if p.home_score is not none and p.away_score is not none %}
+              &middot; {{ p.away_score|int }}-{{ p.home_score|int }}
+            {% endif %}
+          </div>
+        </div>
+        <span class="odd">{{ p.american }}</span>
+        <span class="res {{ p.result }}">{{ p.result or 'pending' }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if others %}
+    <div class="section-label">Other picks <span class="count">({{ others|length }})</span></div>
+    {% for p in others %}
+      <div class="pick-row">
+        <span class="tag">{{ p.sport }}</span>
+        <div class="pick-cell">
+          <strong>{{ p.pick }}</strong>
+          <div class="matchup">{{ p.away_team }} at {{ p.home_team }} &middot; {{ p.market }}
+            {% if p.home_score is not none and p.away_score is not none %}
+              &middot; {{ p.away_score|int }}-{{ p.home_score|int }}
+            {% endif %}
+          </div>
+        </div>
+        <span class="odd">{{ p.american }}</span>
+        <span class="res {{ p.result }}">{{ p.result or 'pending' }}</span>
+      </div>
+    {% endfor %}
+    {% endif %}
+  </div>
+  {% endfor %}
+</main>
+{{ theme_script|safe }}
+</body>
+</html>
+"""
+
+
+@app.route("/logged")
+def logged_plays():
+    """Dashboard of past picks with W/L records (7d / 30d / 90d, strong vs all)."""
+    import plays_log
+    try:
+        graded_by_date = plays_log.grade_all(limit_dates=120)
+    except Exception:
+        graded_by_date = {}
+    summary = plays_log.summary(graded_by_date)
+    dates = sorted(graded_by_date.keys(), reverse=True)
+    return render_template_string(
+        LOGGED_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        theme_script=THEME_SCRIPT,
+        sport_strip=render_sport_strip("logged"),
+        summary=summary,
+        dates=dates,
+        graded_by_date=graded_by_date,
     )
 
 

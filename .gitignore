@@ -7,3 +7,7 @@ venv/
 .DS_Store
 *.swp
 mlb_tonight_*.csv
+
+# Logged plays — written at runtime by plays_log.py on the Render instance.
+# Keep local-only logs out of git; prod builds its own history.
+logs/
