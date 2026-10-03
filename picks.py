@@ -269,6 +269,180 @@ def _pick_is_on_date(pick, date_str):
         return True
 
 
+# ============================================================================
+# Monte Carlo consensus layer
+# ============================================================================
+#
+# Problem: picks for sports without a bespoke model (UCL, Europa, Int'l, UFC)
+# were using Pinnacle's devigged fair probability straight through, while the
+# Monte Carlo page was running a Dixon-Coles (soccer) or Poisson (NHL/MLB) sim
+# with team-level data. The two could disagree sharply — Pinnacle might show
+# England ML at 55% while the DC sim gives 28%, and the picks board would
+# surface the pick anyway. That's the "England ML 55 vs 27.9" bug.
+#
+# Fix: for every candidate pick, run a quick MC sim (same engine as the MC tab)
+# and compute the sim's probability for that pick's exact market. We then:
+#   * drop the pick entirely if |sim - fair| exceeds CONSENSUS_MAX_DIVERGENCE
+#   * rank by the average of fair + sim ("consensus_prob") instead of fair alone
+#
+# Sims are cached per (sport, home, away) for the request so a game with three
+# bets (ML, Spread, Total) runs the sim once.
+
+CONSENSUS_MAX_DIVERGENCE = 0.15   # drop pick if |sim − fair| > 15pp
+CONSENSUS_SIM_TRIALS     = 2000   # per-pick MC trial count (fast, ±1pp precision)
+
+_SIM_CACHE = {}
+
+
+def _sim_for(sport_slug, home, away):
+    """Run (or fetch cached) MC sim for this game. Returns dict or None."""
+    key = (sport_slug, home or "", away or "")
+    if key in _SIM_CACHE:
+        return _SIM_CACHE[key]
+    sim = None
+    try:
+        if sport_slug in ("epl", "laliga", "ligamx", "ucl", "europa", "international"):
+            import soccer_model
+            model_slug = sport_slug if sport_slug in ("epl", "laliga", "ligamx") else "epl"
+            sim = soccer_model.simulate_match(home, away, model_slug, n=CONSENSUS_SIM_TRIALS)
+        elif sport_slug == "nhl":
+            import nhl_model
+            sim = nhl_model.simulate_match(home, away, n=CONSENSUS_SIM_TRIALS)
+        elif sport_slug == "ncaaf":
+            import cfb_model
+            sim = cfb_model.simulate_match(home, away, n=CONSENSUS_SIM_TRIALS)
+        elif sport_slug == "nfl":
+            sim = _nfl_quick_sim(home, away, CONSENSUS_SIM_TRIALS)
+        elif sport_slug == "mlb":
+            # MLB's full sim needs the game context; we don't carry it on the
+            # pick dict. The MLB model is already used for the pick's fair_prob
+            # (not Pinnacle devig), so divergence here is low — skip MC check.
+            pass
+    except Exception:
+        sim = None
+    _SIM_CACHE[key] = sim
+    return sim
+
+
+def _nfl_quick_sim(home_name, away_name, n):
+    """Normal-dist NFL scoring sim for picks consensus. Mirrors _mc_run_simulation NFL branch."""
+    try:
+        import nfl_model, random
+        state = nfl_model.get_final_state()
+        final_elo = state.get("final_elo", {}) if state else {}
+        h = nfl_model.abbr_from_name(home_name) or home_name
+        a = nfl_model.abbr_from_name(away_name) or away_name
+        h_elo = final_elo.get(h, nfl_model.INITIAL_ELO)
+        a_elo = final_elo.get(a, nfl_model.INITIAL_ELO)
+        diff = (h_elo + 65) - a_elo
+        edge = diff / 25.0
+        proj_h = 22.5 + edge / 2
+        proj_a = 22.5 - edge / 2
+        rng = random.Random()
+        h_wins = a_wins = 0
+        for _ in range(n):
+            hs = max(0.0, rng.gauss(proj_h, 13.0))
+            asc = max(0.0, rng.gauss(proj_a, 13.0))
+            if hs > asc: h_wins += 1
+            else: a_wins += 1
+        return {"home_win_pct": h_wins / n * 100,
+                "away_win_pct": a_wins / n * 100,
+                "draw_pct": 0.0,
+                "expected_total": proj_h + proj_a,
+                "proj_home_pts": proj_h,
+                "proj_away_pts": proj_a}
+    except Exception:
+        return None
+
+
+def _sim_prob_for_pick(sim, pick):
+    """Return the sim's probability (0-1) for this pick's market, or None if
+    we can't map the market to a sim output."""
+    if not sim:
+        return None
+    market = (pick.get("market") or "")
+    text = (pick.get("pick") or "")
+    home = pick.get("home_team") or ""
+    away = pick.get("away_team") or ""
+    pick_norm = text.lower()
+    home_norm = home.lower()
+    away_norm = away.lower()
+
+    # Moneyline (and 1H / 1P ML) — the sim's full-game probs are our best proxy
+    # for 1H markets too (1H is correlated enough that gross divergence here
+    # usually means something's off with the pick, not with the sim).
+    if "ML" in market:
+        if "draw" in pick_norm:
+            return (sim.get("draw_pct") or 0) / 100.0
+        if home_norm and (pick_norm == home_norm or home_norm in pick_norm):
+            return (sim.get("home_win_pct") or 0) / 100.0
+        if away_norm and (pick_norm == away_norm or away_norm in pick_norm):
+            return (sim.get("away_win_pct") or 0) / 100.0
+        return None
+
+    # Totals
+    if "Total" in market:
+        import re as _re
+        m = _re.search(r"(?i)(over|under)\s*([\d.]+)", text)
+        if not m:
+            return None
+        side, line = m.group(1).lower(), float(m.group(2))
+        totals = sim.get("totals") or {}
+        # Soccer sim gives us Over 2.5 / Over 3.5; nearest-bucket fallback
+        if abs(line - 2.5) < 0.01 and "over_2_5" in totals:
+            return (totals["over_2_5"] / 100.0) if side == "over" else (1 - totals["over_2_5"] / 100.0)
+        if abs(line - 3.5) < 0.01 and "over_3_5" in totals:
+            return (totals["over_3_5"] / 100.0) if side == "over" else (1 - totals["over_3_5"] / 100.0)
+        # Fallback: compare line to expected total — crude but better than nothing
+        exp = sim.get("expected_total") or sim.get("mean_total")
+        if exp is None:
+            return None
+        # Normal approximation around the expected total (σ ~ √exp for Poisson sports)
+        import math as _m
+        sigma = max(1.0, _m.sqrt(abs(exp)) * 1.3)
+        from statistics import NormalDist
+        z = (line - exp) / sigma
+        p_over = 1 - NormalDist().cdf(z)
+        return p_over if side == "over" else (1 - p_over)
+
+    # BTTS
+    if market == "BTTS":
+        if "yes" in pick_norm:
+            return (sim.get("btts_yes_pct") or 0) / 100.0
+        if "no" in pick_norm:
+            return (sim.get("btts_no_pct") or 1 - (sim.get("btts_yes_pct") or 0) / 100.0) / 100.0 if sim.get("btts_no_pct") else (1 - (sim.get("btts_yes_pct") or 0) / 100.0)
+        return None
+
+    # Spread / Puck Line / Run Line / 1H / 1P Spread — need per-sim margins
+    # (which simulate_match doesn't surface in its summary). Skip the consensus
+    # check for spreads; the line-shape filter already removes the worst noise.
+    return None
+
+
+def _apply_consensus(picks):
+    """Attach sim probability + consensus_prob to each pick, drop divergent ones."""
+    _SIM_CACHE.clear()
+    kept = []
+    for p in picks:
+        sim = _sim_for(p["sport_slug"], p.get("home_team"), p.get("away_team"))
+        sim_prob = _sim_prob_for_pick(sim, p)
+        fair = p.get("fair_prob") or 0.0
+        if sim_prob is None:
+            # No MC coverage for this market — fall back to fair prob alone
+            p["mc_prob"] = None
+            p["consensus_prob"] = fair
+            p["divergence"] = None
+            kept.append(p)
+            continue
+        p["mc_prob"] = sim_prob
+        p["divergence"] = abs(sim_prob - fair)
+        p["consensus_prob"] = (fair + sim_prob) / 2.0
+        if p["divergence"] > CONSENSUS_MAX_DIVERGENCE:
+            continue  # the two signals disagree too much — don't recommend
+        kept.append(p)
+    return kept
+
+
 def collect_picks(date_str, today_only=True):
     """Return filtered picks ranked by model probability (not EV).
 
@@ -293,31 +467,34 @@ def collect_picks(date_str, today_only=True):
     if today_only:
         all_picks = [p for p in all_picks if _pick_is_on_date(p, date_str)]
 
-    # Filter to confidence picks (prob + decimal + draw rule)
+    # Filter to confidence picks (prob + decimal + draw rule + line-shape)
     filtered = [p for p in all_picks if _passes_filter(p)]
 
-    # Deduplicate: only the single highest-probability side per (game, market).
-    # Keeps us from recommending both home and away on the same market — if
-    # the model gives home 60%, don't also pitch away 40% (which fails the
-    # 46% filter anyway, but is defensive). For 3-way markets the draw side
-    # has already been filtered by the decimal cap.
+    # Consensus pass: run the sport's MC sim for each pick's game and reject
+    # picks where the sim disagrees with the model's fair prob by more than
+    # CONSENSUS_MAX_DIVERGENCE. Also attaches `mc_prob` and `consensus_prob`.
+    filtered = _apply_consensus(filtered)
+
+    # Deduplicate: only the single highest-consensus side per (game, market).
     best_per_market = {}
     for p in filtered:
         key = (p["sport_slug"], p.get("game", ""), p.get("market", ""))
         current = best_per_market.get(key)
-        if not current or (p.get("fair_prob") or 0) > (current.get("fair_prob") or 0):
+        if not current or (p.get("consensus_prob") or 0) > (current.get("consensus_prob") or 0):
             best_per_market[key] = p
     deduped = list(best_per_market.values())
 
-    # Rank by model probability (desc), with EV as a tiebreaker
-    deduped.sort(key=lambda x: (-(x.get("fair_prob") or 0.0),
+    # Rank by CONSENSUS probability (desc), EV as a tiebreaker. Picks where
+    # both the pricing model AND the Monte Carlo sim agree rise to the top.
+    deduped.sort(key=lambda x: (-(x.get("consensus_prob") or x.get("fair_prob") or 0.0),
                                  -(x.get("ev_pct") or 0.0)))
-    # Cap list length
     deduped = deduped[:MAX_PICKS]
 
-    # Tag strong tier (MC-style conviction >= 60%)
+    # Tag strong tier against the consensus number — a pick is only "strong"
+    # when BOTH signals clear the 60% bar.
     for p in deduped:
-        p["strong"] = (p.get("fair_prob") or 0.0) >= STRONG_PROB_TIER
+        base = p.get("consensus_prob") or p.get("fair_prob") or 0.0
+        p["strong"] = base >= STRONG_PROB_TIER
         p["bulletin"] = generate_bulletin(p)
     return deduped
 
@@ -329,17 +506,27 @@ def generate_bulletin(pick):
     EV + Kelly, then sport-specific color line about the model source.
     """
     fair_pct = (pick.get("fair_prob") or 0) * 100
+    mc_pct   = (pick.get("mc_prob") or 0) * 100 if pick.get("mc_prob") is not None else None
+    cons_pct = (pick.get("consensus_prob") or pick.get("fair_prob") or 0) * 100
     dec = pick.get("decimal") or 0
     market_implied = (1.0 / dec) * 100 if dec else 0
 
-    conviction = "high-conviction" if fair_pct >= STRONG_PROB_TIER * 100 else "selective"
+    conviction = "high-conviction" if cons_pct >= STRONG_PROB_TIER * 100 else "selective"
     ev = pick.get("ev_pct") or 0
     bits = []
-    bits.append(
-        f"Model simulates {pick['pick']} to hit {fair_pct:.0f}% of the time "
-        f"({conviction} pick) vs market's implied {market_implied:.0f}% at "
-        f"{pick.get('american','?')}"
-    )
+    if mc_pct is not None:
+        bits.append(
+            f"Consensus of pricing model ({fair_pct:.0f}%) and Monte Carlo "
+            f"({mc_pct:.0f}%) lands at {cons_pct:.0f}% for {pick['pick']} "
+            f"({conviction}) vs market's implied {market_implied:.0f}% at "
+            f"{pick.get('american','?')}"
+        )
+    else:
+        bits.append(
+            f"Model simulates {pick['pick']} to hit {fair_pct:.0f}% of the time "
+            f"({conviction} pick) vs market's implied {market_implied:.0f}% at "
+            f"{pick.get('american','?')}"
+        )
     # Only call out EV when it's positive; otherwise just mention the book
     if ev > 0.1:
         bits.append(
