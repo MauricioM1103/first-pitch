@@ -22,7 +22,10 @@ _CACHE_TTL_S = 6 * 3600  # 6 hours per game
 _CACHE_MAX = 32          # cap entries so free-tier memory stays sane
 
 CLAUDE_MODEL = "claude-sonnet-5-5"  # Current Sonnet; swap to claude-opus-5-5 for depth
-CLAUDE_MAX_TOKENS = 900
+# Enough headroom for the structured JSON schema (4 arrays × 3-4 bullets +
+# bullet text). 900 was tight — responses were getting truncated mid-string
+# and json.loads blew up before the ai-pick field even landed.
+CLAUDE_MAX_TOKENS = 2200
 
 
 def is_available():
@@ -147,10 +150,95 @@ def _call_claude(prompt):
         if text.endswith("```"):
             text = text.rsplit("```", 1)[0]
         text = text.strip()
+
+    # Normal path
     try:
         return json.loads(text)
-    except json.JSONDecodeError as e:
-        return {"error": f"Model returned non-JSON: {e}", "raw": text[:500]}
+    except json.JSONDecodeError:
+        pass
+
+    # Repair path: Claude occasionally hits max_tokens mid-string. Close the
+    # open string, drop the trailing partial element, then close any open
+    # arrays and objects by counting unmatched brackets.
+    repaired = _repair_truncated_json(text)
+    if repaired is not None:
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            pass
+
+    # Last resort: surface Claude's partial reply as plain narrative so the
+    # user still sees the analysis instead of a scary error. The pick-card
+    # renderer handles a `narrative` field as a fallback.
+    salvage = _salvage_narrative_from_partial(text)
+    if salvage:
+        return {"narrative": salvage, "partial": True, "model": CLAUDE_MODEL}
+    return {"error": "Model returned non-JSON and no partial text could be salvaged.",
+            "raw": text[:500]}
+
+
+def _repair_truncated_json(s):
+    """Close trailing open string/array/object in a truncated JSON payload.
+    Returns the repaired string or None if it doesn't look salvageable."""
+    if not s or not s.lstrip().startswith("{"):
+        return None
+    # Walk the string, track string state and bracket stack
+    stack = []        # stack of '{' or '['
+    in_str = False
+    escape = False
+    for ch in s:
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            if in_str:
+                escape = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch in "{[":
+            stack.append(ch)
+        elif ch == "}" and stack and stack[-1] == "{":
+            stack.pop()
+        elif ch == "]" and stack and stack[-1] == "[":
+            stack.pop()
+    out = s
+    if in_str:
+        out += '"'  # close the unterminated string
+    # Trim trailing comma or bare partial token before closing containers
+    out = out.rstrip().rstrip(",").rstrip()
+    # If we trimmed back into a key like `"foo":` with no value, give it one
+    if out.endswith(":"):
+        out += ' ""'
+    # Close containers in reverse
+    for ch in reversed(stack):
+        out += "}" if ch == "{" else "]"
+    return out
+
+
+def _salvage_narrative_from_partial(s):
+    """Pull human-readable bullets out of a partially-formed JSON reply so the
+    user sees SOMETHING useful instead of a parser error."""
+    import re
+    bullets = re.findall(r'"([^"\\]{20,})"', s or "")
+    if not bullets:
+        return None
+    # De-dup while preserving order; cap at ~8 bullets
+    seen = set(); out = []
+    for b in bullets:
+        if b in seen or b.lower() in ("stat_read", "matchup_factors",
+                                       "risk_flags", "ai_pick", "rationale",
+                                       "narrative", "pick", "market", "side",
+                                       "confidence"):
+            continue
+        seen.add(b)
+        out.append(b)
+        if len(out) >= 8:
+            break
+    return "\n\n".join("• " + b for b in out) if out else None
 
 
 def analyze_game(game, provider="claude", force_refresh=False):

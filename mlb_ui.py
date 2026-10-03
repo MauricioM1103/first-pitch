@@ -2207,6 +2207,14 @@ function renderAI(d) {
     return '<div class="ai-err">' + esc(d.error) + '</div>'
       + (d.raw ? '<pre style="white-space:pre-wrap;color:var(--muted-2);font-size:11px">' + esc(d.raw) + '</pre>' : '');
   }
+  // Fallback path: Claude's reply hit max_tokens or returned non-JSON and the
+  // server salvaged plain-text bullets. Show them so the user still gets the
+  // analysis instead of a bare error.
+  if (d.narrative) {
+    return '<div style="font-size:12.5px;line-height:1.55;white-space:pre-wrap;color:var(--ink)">'
+         + esc(d.narrative) + '</div>'
+         + (d.partial ? '<div style="color:var(--muted);font-size:10px;margin-top:8px;letter-spacing:0.08em;text-transform:uppercase">partial response — re-run for a full structured read</div>' : '');
+  }
   const pick = d.pick || {};
   const stars = '★'.repeat(pick.confidence || 1) + '☆'.repeat(3 - (pick.confidence || 1));
   const sideLabel = (pick.side || '').replace(/^./, c => c.toUpperCase());
@@ -5433,6 +5441,11 @@ function renderAnalysis(d) {
   if (d.error) {
     return '<div class="ag-error">' + esc(d.error) + '</div>'
       + (d.raw ? '<pre style="white-space:pre-wrap;color:var(--muted-2);font-size:11px">' + esc(d.raw) + '</pre>' : '');
+  }
+  if (d.narrative) {
+    return '<div style="font-size:12.5px;line-height:1.55;white-space:pre-wrap;color:var(--ink)">'
+         + esc(d.narrative) + '</div>'
+         + (d.partial ? '<div style="color:var(--muted);font-size:10px;margin-top:8px;letter-spacing:0.08em;text-transform:uppercase">partial response — re-run for a full structured read</div>' : '');
   }
   const pick = d.pick || {};
   const stars = '★'.repeat(pick.confidence || 1) + '☆'.repeat(3 - (pick.confidence || 1));
