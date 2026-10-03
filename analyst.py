@@ -19,6 +19,7 @@ import time
 
 _cache = {}  # (provider, game_pk) -> (analysis_dict, timestamp)
 _CACHE_TTL_S = 6 * 3600  # 6 hours per game
+_CACHE_MAX = 32          # cap entries so free-tier memory stays sane
 
 CLAUDE_MODEL = "claude-sonnet-5-5"  # Current Sonnet; swap to claude-opus-5-5 for depth
 CLAUDE_MAX_TOKENS = 900
@@ -168,8 +169,17 @@ def analyze_game(game, provider="claude", force_refresh=False):
     result = _call_claude(prompt)
     result["generated_at"] = time.strftime("%I:%M %p ET", time.localtime())
     result["model"] = CLAUDE_MODEL
-    _cache[key] = (result, now)
+    _cache_put(key, result, now)
     return result
+
+
+def _cache_put(key, value, now):
+    """Insert with LRU-ish eviction so the cache stays below _CACHE_MAX."""
+    _cache[key] = (value, now)
+    if len(_cache) > _CACHE_MAX:
+        # Drop oldest entry
+        oldest = min(_cache, key=lambda k: _cache[k][1])
+        _cache.pop(oldest, None)
 
 
 # ============================================================================
@@ -233,5 +243,5 @@ def analyze_pick(pick, provider="claude", force_refresh=False):
     result = _call_claude(prompt)
     result["generated_at"] = time.strftime("%I:%M %p ET", time.localtime())
     result["model"] = CLAUDE_MODEL
-    _cache[key] = (result, now)
+    _cache_put(key, result, now)
     return result

@@ -5526,6 +5526,7 @@ def _in_eastern_date(iso_str, date_str):
 
 _MC_GAMES_CACHE = {}
 _MC_GAMES_TTL_S = 300
+_MC_GAMES_CACHE_MAX = 20  # cap to prevent unbounded growth on long-running workers
 
 
 def _mc_fetch_games(sport_slug, date_str):
@@ -5535,6 +5536,15 @@ def _mc_fetch_games(sport_slug, date_str):
     hit = _MC_GAMES_CACHE.get(key)
     if hit and now - hit[1] < _MC_GAMES_TTL_S:
         return hit[0]
+    # Evict expired or oldest entries to keep the cache bounded.
+    if len(_MC_GAMES_CACHE) >= _MC_GAMES_CACHE_MAX:
+        stale = [k for k, v in _MC_GAMES_CACHE.items() if now - v[1] > _MC_GAMES_TTL_S]
+        for k in stale:
+            _MC_GAMES_CACHE.pop(k, None)
+        while len(_MC_GAMES_CACHE) >= _MC_GAMES_CACHE_MAX:
+            # drop oldest
+            oldest = min(_MC_GAMES_CACHE, key=lambda k: _MC_GAMES_CACHE[k][1])
+            _MC_GAMES_CACHE.pop(oldest, None)
 
     out = []
     if sport_slug == "mlb":
@@ -5618,8 +5628,9 @@ def _mc_team_stats(sport_slug, game_ctx):
         model_slug = sport_slug if sport_slug in {"epl","laliga","ligamx"} else "epl"
         try:
             rates = soccer_model.get_team_goal_rates(model_slug)
-            state = soccer_model.get_or_run_backtest(model_slug)
-            elo = state.get("final_elo", {}) if state else {}
+            # Lightweight final-Elo lookup (reads ~5KB side-file, not the ~1.4MB
+            # full backtest cache) to keep memory off the Render free tier floor.
+            elo = soccer_model.get_final_elo(model_slug) or {}
         except Exception:
             rates, elo = {}, {}
         h_name = game_ctx.get("home_name", "")
@@ -5654,7 +5665,9 @@ def _mc_team_stats(sport_slug, game_ctx):
     if sport_slug == "nfl":
         try:
             import nfl_model
-            state = nfl_model.get_or_run_multi_season_backtest()
+            # Lightweight final-state lookup; avoids loading the full
+            # multi-season predictions list (hundreds of KB).
+            state = nfl_model.get_final_state()
             final_elo = state.get("final_elo", {}) if state else {}
             final_qb = state.get("final_qb_elo", {}) if state else {}
         except Exception:
@@ -5996,7 +6009,7 @@ def _mc_run_simulation(sport_slug, game_ctx, n_sims):
     if sport_slug == "nfl":
         try:
             import nfl_model
-            state = nfl_model.get_or_run_multi_season_backtest()
+            state = nfl_model.get_final_state()
             final_elo = state.get("final_elo", {}) if state else {}
             h_name = game_ctx.get("home_name", "")
             a_name = game_ctx.get("away_name", "")
@@ -6404,7 +6417,7 @@ main.mc-page, main.ai-page { max-width: 1040px; }
       <div>
         <label for="n-sims">Trials</label>
         <select class="trials-input" id="n-sims" name="n_sims">
-          {% for opt in [1000, 5000, 10000, 25000, 50000] %}
+          {% for opt in [1000, 2500, 5000, 10000, 15000] %}
           <option value="{{ opt }}" {% if opt == n_sims %}selected{% endif %}>{{ '{:,}'.format(opt) }}</option>
           {% endfor %}
         </select>
@@ -6529,7 +6542,10 @@ def montecarlo_unified():
         n_sims = int(request.values.get("n_sims") or 10000)
     except ValueError:
         n_sims = 10000
-    n_sims = max(500, min(50000, n_sims))
+    # Cap at 15k on prod — 50k sims produce margin lists that are MB-scale
+    # per request and tip the free-tier instance over its memory limit when
+    # several users hit the page at once.
+    n_sims = max(500, min(15000, n_sims))
     run_sim = request.method == "POST"
 
     date_str = datetime.now(EASTERN).date().isoformat()
@@ -6557,7 +6573,7 @@ def montecarlo_unified():
                 if run_sim:
                     sim = _mc_run_simulation(sport_slug, selected_game["ctx"], n_sims)
                     if sim and sim.get("margins"):
-                        bw = 1 if sport_slug != "nfl" else 3
+                        bw = 1 if sport_slug not in ("nfl", "ncaaf") else 3
                         hist = _histogram(sim["margins"], bucket_width=bw, max_buckets=25)
                         if hist:
                             hist_max = max(b["pct"] for b in hist) or 1
@@ -6566,6 +6582,14 @@ def montecarlo_unified():
                             edges = _mc_edge_table(sport_slug, selected_game["ctx"], sim)
                         except Exception:
                             edges = None
+                        # Drop the raw per-sim arrays — the template renders
+                        # histograms from `hist` and the edge table from
+                        # `edges`; keeping the 15k-element lists around just
+                        # bloats the request's heap for the response render.
+                        sim.pop("margins", None)
+                        sim.pop("totals", None)
+                        import gc
+                        gc.collect()
 
     return render_template_string(
         MC_UNIFIED_TEMPLATE,
@@ -6821,7 +6845,7 @@ def _ai_analyze_matchup(sport_slug, game_ctx):
     elif sport_slug == "nfl":
         try:
             import nfl_model
-            state = nfl_model.get_or_run_multi_season_backtest()
+            state = nfl_model.get_final_state()
             elo = state.get("final_elo", {}) if state else {}
             qb_elo = state.get("final_qb_elo", {}) if state else {}
             h_name = game_ctx.get("home_name",""); a_name = game_ctx.get("away_name","")

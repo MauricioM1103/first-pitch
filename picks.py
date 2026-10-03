@@ -65,10 +65,12 @@ def _mlb_bets(date_str):
 
 
 def _nfl_model_prob_fn():
+    # Use the lightweight final-state loader so we don't pull the full
+    # multi-season predictions list into memory on every picks render.
     try:
         import nfl_model
-        state = nfl_model.get_or_run_multi_season_backtest()
-        final_elo = state.get("final_elo", {}) if state else {}
+        state = nfl_model.get_final_state()
+        final_elo = (state or {}).get("final_elo", {})
         def _fn(g):
             h = nfl_model.abbr_from_name(g.get("home_name", ""))
             a = nfl_model.abbr_from_name(g.get("away_name", ""))
@@ -86,8 +88,7 @@ def _nfl_model_prob_fn():
 def _soccer_model_prob_fn(slug):
     try:
         import soccer_model
-        state = soccer_model.get_or_run_backtest(slug)
-        final_elo = state.get("final_elo", {}) if state else {}
+        final_elo = soccer_model.get_final_elo(slug) or {}
         def _fn(g):
             h_name = g.get("home_name", "")
             a_name = g.get("away_name", "")

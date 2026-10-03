@@ -743,6 +743,55 @@ def _pick_season():
     return today.year - 1
 
 
+def elo_only_cache_file(slug):
+    """Tiny side-file holding just final_elo — safe to load from constrained
+    hosts (Render free tier) without pulling the full ~1-5MB predictions list."""
+    return os.path.join(CACHE_DIR, f"soccer_{slug}_final_elo.json")
+
+
+def _write_elo_only_cache(league_slug, result):
+    """Write a slim JSON next to the full backtest cache for lightweight lookups."""
+    try:
+        with open(elo_only_cache_file(league_slug), "w") as f:
+            json.dump({
+                "final_elo":    result.get("final_elo", {}),
+                "generated_at": result.get("generated_at"),
+                "league_slug":  league_slug,
+            }, f)
+    except OSError:
+        pass
+
+
+def get_final_elo(league_slug):
+    """Lightweight final_elo lookup. Reads a tiny side-file instead of the
+    full backtest JSON (which can be several MB). Falls back to deriving the
+    side-file from the full cache, else runs the backtest (expensive).
+    """
+    slim = elo_only_cache_file(league_slug)
+    if os.path.exists(slim):
+        try:
+            with open(slim) as f:
+                return (json.load(f) or {}).get("final_elo", {})
+        except (OSError, json.JSONDecodeError):
+            pass
+    full = cache_file(league_slug)
+    if os.path.exists(full):
+        try:
+            with open(full) as f:
+                data = json.load(f)
+            elo = data.get("final_elo", {}) or {}
+            _write_elo_only_cache(league_slug, data)
+            import gc
+            del data
+            gc.collect()
+            return elo
+        except (OSError, json.JSONDecodeError):
+            pass
+    # Last resort: run the backtest
+    state = get_or_run_backtest(league_slug)
+    return (state or {}).get("final_elo", {})
+
+
 def get_or_run_backtest(league_slug, refresh=False, verbose=False):
     path = cache_file(league_slug)
     if not refresh and os.path.exists(path):
@@ -759,6 +808,7 @@ def get_or_run_backtest(league_slug, refresh=False, verbose=False):
     result["metrics"] = compute_metrics(result["predictions"])
     with open(path, "w") as f:
         json.dump(result, f)
+    _write_elo_only_cache(league_slug, result)
     return result
 
 
