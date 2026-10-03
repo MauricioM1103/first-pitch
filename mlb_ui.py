@@ -2128,6 +2128,22 @@ PICKS_TEMPLATE = r"""<!doctype html>
     <span class="pill" style="margin-left:auto">scan {{ scan_time_ms }} ms</span>
   </div>
 
+  {% if active_adj and active_adj.any %}
+  <div class="active-adj" style="margin: 4px 0 20px;">
+    <strong>Analyzer-tuned:</strong>
+    {% for sport, w in active_adj.weights.items() %}
+      <span class="adj-chip">{{ sport }} weights {{ (w.pricing*100)|int }}/{{ (w.mc*100)|int }}</span>
+    {% endfor %}
+    {% for sport, f in active_adj.floors.items() %}
+      <span class="adj-chip">{{ sport }} min prob {{ (f*100)|int }}%</span>
+    {% endfor %}
+    {% for m in active_adj.blacklist %}
+      <span class="adj-chip bad">drop {{ m }}</span>
+    {% endfor %}
+    <a href="/logged" class="adj-chip" style="text-decoration:none">why?</a>
+  </div>
+  {% endif %}
+
   <div class="filter-chips">
     <a class="chip {% if sport_filter == 'all' %}active{% endif %}" href="/?date={{ date_str }}">All sports</a>
     {% for s in sport_counts %}
@@ -2268,6 +2284,13 @@ def picks_landing():
     except Exception:
         pass
 
+    # Which analyzer-driven adjustments shaped this board
+    try:
+        import model_analytics
+        active_adj = model_analytics.active_adjustments_summary()
+    except Exception:
+        active_adj = {"any": False}
+
     # Per-sport counts for filter chips
     from collections import Counter
     sport_counter = Counter(p["sport_slug"] for p in all_picks)
@@ -2303,6 +2326,7 @@ def picks_landing():
         today=today,
         is_today=(date_str == today),
         now=datetime.now(CENTRAL).strftime("%I:%M %p CT").lstrip("0"),
+        active_adj=active_adj,
     )
 
 
@@ -7296,6 +7320,21 @@ main.logged-page { max-width: 1040px; }
 .insight.warn  { border-left-color: #f59e0b; color: var(--ink); }
 .insight.info  { border-left-color: var(--accent, #60a5fa); color: var(--muted); }
 
+.active-adj {
+  background: color-mix(in oklab, var(--good) 10%, var(--card));
+  border: 1px solid var(--good); border-radius: 8px;
+  padding: 10px 14px; margin: 10px 0 20px;
+  font-family: "JetBrains Mono", monospace; font-size: 11.5px;
+  line-height: 1.6; color: var(--ink);
+}
+.active-adj .adj-chip {
+  display: inline-block; margin: 2px 4px 2px 0;
+  padding: 2px 8px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--rule-strong);
+  font-size: 10.5px; color: var(--ink);
+}
+.active-adj .adj-chip.bad { border-color: #ef4444; color: #ef4444; }
+
 .breakdown-grid {
   display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
 }
@@ -7441,6 +7480,21 @@ main.logged-page { max-width: 1040px; }
       {% endfor %}
     </div>
   </section>
+
+  {% if active_adj and active_adj.any %}
+  <div class="active-adj">
+    <strong>Analyzer-driven adjustments applied to today's board:</strong>
+    {% for sport, w in active_adj.weights.items() %}
+      <span class="adj-chip">{{ sport }} weights {{ (w.pricing*100)|int }}/{{ (w.mc*100)|int }}</span>
+    {% endfor %}
+    {% for sport, f in active_adj.floors.items() %}
+      <span class="adj-chip">{{ sport }} min prob {{ (f*100)|int }}%</span>
+    {% endfor %}
+    {% for m in active_adj.blacklist %}
+      <span class="adj-chip bad">drop {{ m }}</span>
+    {% endfor %}
+  </div>
+  {% endif %}
 
   {% if analysis %}
   <section class="records-section">
@@ -7646,10 +7700,23 @@ def logged_plays():
         persist_status = log_persist.status_summary()
     except Exception as e:
         persist_status = {"enabled": False, "reason": f"status check failed: {e}"}
+    # Trigger the daily analysis in a background thread (fire-and-forget) so
+    # /logged never blocks on it. We still read the LATEST available analysis
+    # synchronously — on first-ever visit this is None and the UI shows the
+    # empty-state card; subsequent visits see yesterday's analysis until the
+    # background job finishes writing today's.
     try:
-        analysis = model_analytics.ensure_today_analysis()
+        model_analytics.start_background_analysis()
+        analysis = model_analytics.read_latest_analysis() or {
+            "insights": [], "lookback_days": 90, "settled_picks": 0,
+            "generated_at": None,
+        }
     except Exception as e:
         analysis = {"error": str(e), "insights": []}
+    try:
+        active_adj = model_analytics.active_adjustments_summary()
+    except Exception:
+        active_adj = {"any": False}
     return render_template_string(
         LOGGED_TEMPLATE,
         fonts_link=FONTS_LINK,
@@ -7663,6 +7730,7 @@ def logged_plays():
         graded_by_date=graded_by_date,
         persist_status=persist_status,
         analysis=analysis,
+        active_adj=active_adj,
     )
 
 

@@ -439,11 +439,16 @@ def _apply_consensus(picks):
     try:
         import model_analytics
         sport_weights = model_analytics.get_sport_weights()
+        sport_min_prob = model_analytics.get_sport_min_prob()
+        market_blacklist = model_analytics.get_market_blacklist()
     except Exception:
-        sport_weights = {}
+        sport_weights, sport_min_prob, market_blacklist = {}, {}, set()
 
     kept = []
     for p in picks:
+        # Drop market types the analyzer flagged as deeply unprofitable.
+        if p.get("market") in market_blacklist:
+            continue
         sim = _sim_for(p["sport_slug"], p.get("home_team"), p.get("away_team"))
         sim_prob = _sim_prob_for_pick(sim, p)
         fair = p.get("fair_prob") or 0.0
@@ -468,6 +473,12 @@ def _apply_consensus(picks):
         # Overwrite fair_prob so every downstream reader (bulletin, filters,
         # strong tier, logged plays, edge table) uses the consensus number.
         p["fair_prob"] = consensus
+
+        # Per-sport probability floor from the analyzer (default 46% from
+        # MIN_FAIR_PROB; raised when a sport's low-end picks are losing).
+        floor = sport_min_prob.get(p.get("sport"), MIN_FAIR_PROB)
+        if consensus < floor:
+            continue
 
         # Recompute EV and quarter-Kelly against consensus vs the book price.
         dec = p.get("decimal") or 0.0

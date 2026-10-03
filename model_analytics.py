@@ -33,6 +33,7 @@ import log_persist
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 MIN_SAMPLES_FOR_RECO     = 30   # don't trust a weight shift under this n
 MIN_SAMPLES_FOR_CALIB    = 10   # per-bin threshold for calibration display
+MIN_SAMPLES_FOR_FILTER   = 20   # min settled picks before applying a filter tweak
 MAX_WEIGHT_SHIFT         = 0.15 # cap any single-sport blend adjustment
 DEFAULT_WEIGHT           = 0.5  # pricing_prob = 0.5, mc_prob = 0.5 by default
 LOOKBACK_DAYS            = 90
@@ -222,12 +223,99 @@ def recommended_weights(picks):
 
 
 # ---------------------------------------------------------------------------
+# Picks-pipeline feedback levers
+# ---------------------------------------------------------------------------
+
+def recommended_min_fair_prob(picks):
+    """Per-sport: find the consensus_prob floor that would have maximized ROI
+    over the lookback window. If a sport's low-end picks (46-54%) have been
+    losing but its 55%+ picks are winning, raise its floor. Only moves the
+    floor in 1% steps up from 0.46; capped at 0.60 so we don't nuke a sport.
+
+    Returns {sport: {"min_fair_prob": float, "roi_at_rec": float,
+                     "roi_at_default": float, "n": int}} with entries only
+    where the new floor actually improves ROI.
+    """
+    by_sport = defaultdict(list)
+    for p in picks:
+        if not _settled(p): continue
+        if p.get("consensus_prob") is None: continue
+        by_sport[p.get("sport") or "?"].append(p)
+
+    DEFAULT_FLOOR = 0.46
+    out = {}
+    for sport, ps in by_sport.items():
+        if len(ps) < MIN_SAMPLES_FOR_FILTER:
+            continue
+        best_floor = DEFAULT_FLOOR
+        best_roi = _roi(ps, DEFAULT_FLOOR)
+        default_roi = best_roi
+        for floor in [0.48, 0.50, 0.52, 0.54, 0.56, 0.58, 0.60]:
+            kept = [p for p in ps if (p.get("consensus_prob") or 0) >= floor]
+            if len(kept) < 10:
+                continue
+            r = _roi(ps, floor)
+            if r > best_roi + 0.5:  # need meaningful improvement
+                best_roi = r
+                best_floor = floor
+        if best_floor > DEFAULT_FLOOR:
+            out[sport] = {
+                "min_fair_prob":   best_floor,
+                "roi_at_rec":      round(best_roi, 2),
+                "roi_at_default":  round(default_roi, 2),
+                "improvement_pp":  round(best_roi - default_roi, 2),
+                "n":               len(ps),
+            }
+    return out
+
+
+def _roi(picks, floor):
+    kept = [p for p in picks if (p.get("consensus_prob") or 0) >= floor]
+    if not kept:
+        return 0.0
+    units = sum((p.get("profit_u") or 0) for p in kept)
+    return units / len(kept) * 100
+
+
+def market_blacklist(picks):
+    """Per-market: if a market type is deep underwater (ROI ≤ -8% over ≥ N
+    settled picks), flag it so picks.collect_picks can drop it tomorrow.
+
+    Returns {market_name: {"roi_pct": float, "n": int, "wins": int, "losses": int}}.
+    """
+    by_market = defaultdict(lambda: {"n": 0, "wins": 0, "losses": 0, "units": 0.0})
+    for p in picks:
+        if not _settled(p): continue
+        key = p.get("market") or "?"
+        b = by_market[key]
+        b["n"] += 1
+        if _was_win(p): b["wins"] += 1
+        else: b["losses"] += 1
+        b["units"] += p.get("profit_u") or 0
+    out = {}
+    for market, b in by_market.items():
+        if b["n"] < MIN_SAMPLES_FOR_FILTER:
+            continue
+        roi = (b["units"] / b["n"]) * 100
+        if roi <= -8:  # deeply unprofitable
+            out[market] = {
+                "roi_pct": round(roi, 2),
+                "n":       b["n"],
+                "wins":    b["wins"],
+                "losses":  b["losses"],
+            }
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Natural-language insights
 # ---------------------------------------------------------------------------
 
-def generate_insights(metrics_rows, calib, weights):
+def generate_insights(metrics_rows, calib, weights, floors=None, blacklist=None):
     """Return a list of short flags for the /logged dashboard."""
     insights = []
+    floors = floors or {}
+    blacklist = blacklist or {}
 
     # Sport × model: who's actually winning the consensus bets
     cons_rows = [r for r in metrics_rows if r["model"] == "consensus"]
@@ -294,6 +382,25 @@ def generate_insights(metrics_rows, calib, weights):
                     f"{w['n']} picks).",
         })
 
+    # Per-sport floor adjustments
+    for sport, f in floors.items():
+        insights.append({
+            "tone": "info",
+            "text": f"{sport}: raising min probability floor from 46% to "
+                    f"{int(f['min_fair_prob']*100)}% "
+                    f"(+{f['improvement_pp']:.1f}pp ROI over {f['n']} picks). "
+                    f"Low-confidence {sport} picks will stop making the board.",
+        })
+
+    # Market blacklist
+    for market, b in blacklist.items():
+        insights.append({
+            "tone": "bad",
+            "text": f"Market blacklist: {market} is {b['wins']}-{b['losses']} "
+                    f"({b['roi_pct']:+.1f}% ROI over {b['n']} picks). Dropping "
+                    f"it from recommendations until it recovers.",
+        })
+
     return insights
 
 
@@ -308,7 +415,9 @@ def run_analysis(lookback_days=LOOKBACK_DAYS, today=None):
     metrics = model_metrics_per_sport(picks)
     calib = calibration_bins(picks)
     weights = recommended_weights(picks)
-    insights = generate_insights(metrics, calib, weights)
+    floors = recommended_min_fair_prob(picks)
+    blacklist = market_blacklist(picks)
+    insights = generate_insights(metrics, calib, weights, floors, blacklist)
     settled_n = sum(1 for p in picks if _settled(p))
     result = {
         "generated_at":   datetime.utcnow().isoformat(timespec="seconds") + "Z",
@@ -317,7 +426,9 @@ def run_analysis(lookback_days=LOOKBACK_DAYS, today=None):
         "settled_picks":  settled_n,
         "metrics":        metrics,
         "calibration":    calib,
-        "recommended_weights": weights,
+        "recommended_weights":  weights,
+        "recommended_floors":   floors,
+        "market_blacklist":     blacklist,
         "insights":       insights,
     }
     # Persist locally + GitHub
@@ -404,6 +515,79 @@ def get_sport_weights():
             out[sport] = (w.get("pricing_w", DEFAULT_WEIGHT),
                           w.get("mc_w", DEFAULT_WEIGHT))
     return out
+
+
+def get_sport_min_prob():
+    """Per-sport minimum consensus probability from the latest analysis."""
+    a = read_latest_analysis()
+    if not a:
+        return {}
+    out = {}
+    for sport, f in (a.get("recommended_floors") or {}).items():
+        if f.get("improvement_pp", 0) > 0:
+            out[sport] = f.get("min_fair_prob", 0.46)
+    return out
+
+
+def get_market_blacklist():
+    """Markets the picks pipeline should skip tomorrow."""
+    a = read_latest_analysis()
+    if not a:
+        return set()
+    return set((a.get("market_blacklist") or {}).keys())
+
+
+def active_adjustments_summary():
+    """Short structured summary of what the analyzer has applied to today's picks."""
+    weights = get_sport_weights()
+    floors = get_sport_min_prob()
+    blacklist = get_market_blacklist()
+    return {
+        "weights":   {s: {"pricing": round(w[0], 2), "mc": round(w[1], 2)}
+                      for s, w in weights.items()},
+        "floors":    {s: round(f, 2) for s, f in floors.items()},
+        "blacklist": sorted(blacklist),
+        "any":       bool(weights or floors or blacklist),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Background execution
+# ---------------------------------------------------------------------------
+
+_BG_LOCK = __import__("threading").Lock()
+_BG_RUNNING = {"flag": False, "started_at": None}
+
+
+def start_background_analysis():
+    """Fire run_analysis() in a daemon thread. Idempotent — if one is already
+    running, this is a no-op. Returns True if a new thread was launched.
+    """
+    import threading
+    with _BG_LOCK:
+        if _BG_RUNNING["flag"]:
+            return False
+        _BG_RUNNING["flag"] = True
+        _BG_RUNNING["started_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+    def _runner():
+        try:
+            run_analysis()
+        except Exception as e:
+            # Keep going — this is a best-effort background job
+            print(f"[model_analytics] background analysis failed: {e}", flush=True)
+        finally:
+            with _BG_LOCK:
+                _BG_RUNNING["flag"] = False
+
+    t = threading.Thread(target=_runner, daemon=True, name="model-analytics")
+    t.start()
+    return True
+
+
+def background_status():
+    with _BG_LOCK:
+        return dict(_BG_RUNNING)
 
 
 if __name__ == "__main__":
