@@ -1,33 +1,46 @@
 #!/usr/bin/env python3
-"""NHL Poisson goal-scoring model.
+"""NHL Elo backtest + Poisson goal-scoring simulator.
 
-Fetches current (and if empty, prior) season team summary stats from the
-NHL public stats API (no key required). Projects per-matchup goal rates
-and runs a Monte Carlo simulation similar to mlb_model but with hockey's
-smaller OT/shootout coin-flip for tied games.
+Two complementary pieces, both fed by NHL's public stats API (no key):
+
+1. Elo rating backtest (new): walk-forward fit from historical game results
+   across the last N seasons. Each team starts at 1500; after every game
+   their rating updates by K * MOV_mult * (actual - expected). Season-
+   boundary regression toward the mean (1/3). Writes a slim side-file
+   (nhl_final_elo.json) alongside the full predictions cache so the live
+   site can look up team Elo without pulling the predictions list.
+
+2. Poisson goal simulator (existing): projects per-game goal rates by
+   blending team season averages with team Elo diff, then draws N
+   independent samples with OT/SO coin-flip for ties.
 
 Public endpoints used:
   * https://api.nhle.com/stats/rest/en/team/summary?cayenneExp=seasonId=YYYYZZZZ...
+  * https://api.nhle.com/stats/rest/en/game?cayenneExp=seasonId=YYYYZZZZ...
   * https://api-web.nhle.com/v1/standings/now
-
-No API key. Cached locally for 24 hours to keep page loads fast.
 """
 import json
 import math
 import os
 import random
 import time
-from datetime import date
+from datetime import date, datetime, timedelta
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 CACHE_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_PATH = os.path.join(CACHE_DIR, "nhl_team_stats_cache.json")
+BACKTEST_CACHE_PATH = os.path.join(CACHE_DIR, "nhl_backtest_cache.json")
+ELO_ONLY_CACHE_PATH = os.path.join(CACHE_DIR, "nhl_final_elo.json")
 CACHE_MAX_AGE_H = 24
+BACKTEST_MAX_AGE_H = 24 * 7  # Elo fit refreshed weekly
 
 INITIAL_ELO = 1500.0
-NHL_HFA_GOALS = 0.14  # ~0.14 goal home advantage per side historically
-LEAGUE_AVG_GPG = 2.95  # NHL avg goals per team per game, recent seasons
+NHL_HFA_GOALS = 0.14    # ~0.14 goal home advantage per side historically
+NHL_HFA_ELO = 35.0      # ~35 Elo ~ 0.14 goal / small advantage
+K_FACTOR = 6.0          # smaller K for hockey (82-game seasons, higher variance)
+LEAGUE_AVG_GPG = 2.95   # NHL avg goals per team per game, recent seasons
+BACKTEST_SEASONS = 5    # ~410 games/season * 5 = 2050 games for fit
 
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
@@ -117,19 +130,223 @@ def get_or_fetch_team_stats():
     return out
 
 
-def project_lambdas(home_name, away_name, stats=None):
-    """Return (λ_home_goals, λ_away_goals) from team season averages."""
+def project_lambdas(home_name, away_name, stats=None, elo=None):
+    """Return (λ_home_goals, λ_away_goals) blending team season averages
+    with team Elo differential (so a hot team's recent form pushes the
+    projection without needing a mid-season rate recompute).
+    """
     if stats is None:
         stats = get_or_fetch_team_stats()
+    if elo is None:
+        elo = get_or_fit_final_elo()
     h = stats.get(home_name) or {}
     a = stats.get(away_name) or {}
     h_gf = h.get("gf_per") or LEAGUE_AVG_GPG
     h_ga = h.get("ga_per") or LEAGUE_AVG_GPG
     a_gf = a.get("gf_per") or LEAGUE_AVG_GPG
     a_ga = a.get("ga_per") or LEAGUE_AVG_GPG
-    lam_h = ((h_gf + a_ga) / 2.0) + NHL_HFA_GOALS / 2
-    lam_a = ((a_gf + h_ga) / 2.0) - NHL_HFA_GOALS / 2
+    base_h = ((h_gf + a_ga) / 2.0) + NHL_HFA_GOALS / 2
+    base_a = ((a_gf + h_ga) / 2.0) - NHL_HFA_GOALS / 2
+    # Elo blend: 100 Elo diff ≈ 0.25 goal shift
+    h_elo = elo.get(home_name, INITIAL_ELO) if elo else INITIAL_ELO
+    a_elo = elo.get(away_name, INITIAL_ELO) if elo else INITIAL_ELO
+    diff = (h_elo + NHL_HFA_ELO) - a_elo
+    shift = diff / 400.0  # 100 Elo → 0.25 goal
+    lam_h = base_h + shift / 2
+    lam_a = base_a - shift / 2
     return max(0.3, lam_h), max(0.3, lam_a)
+
+
+# ---------------------------------------------------------------------------
+# Elo backtest (walk-forward fit from NHL.com game endpoint)
+# ---------------------------------------------------------------------------
+
+def _mov_mult(margin):
+    return math.log(max(1, abs(margin)) + 1)
+
+
+def _elo_update(h_elo, a_elo, h_goals, a_goals, k=K_FACTOR):
+    """Update ratings based on actual result (OT/SO winners count as regular W)."""
+    y = 1.0 if h_goals > a_goals else (0.5 if h_goals == a_goals else 0.0)
+    exp_h = 1.0 / (1.0 + 10 ** (-((h_elo + NHL_HFA_ELO) - a_elo) / 400.0))
+    mov = _mov_mult(h_goals - a_goals)
+    delta = k * mov * (y - exp_h)
+    return h_elo + delta, a_elo - delta
+
+
+_TEAM_NAME_CACHE = {}
+
+
+def _fetch_team_names():
+    """Return {team_id: fullName}. One-off call to the team stats endpoint."""
+    if _TEAM_NAME_CACHE:
+        return _TEAM_NAME_CACHE
+    try:
+        url = "https://api.nhle.com/stats/rest/en/team?limit=100"
+        data = _fetch_json(url, timeout=20)
+    except Exception:
+        return {}
+    for t in data.get("data", []) or []:
+        tid = t.get("id")
+        name = t.get("fullName") or t.get("rawTricode")
+        if tid is not None and name:
+            _TEAM_NAME_CACHE[tid] = name
+    return _TEAM_NAME_CACHE
+
+
+def fetch_season_games(season_id):
+    """Pull completed regular-season games (gameType=2) for a season.
+
+    NHL endpoint uses `season` (not seasonId) and `visitingTeamId`/`visitingScore`
+    (not awayTeamId/awayScore). Pages back 100 at a time until it stops returning.
+    """
+    team_names = _fetch_team_names()
+    games = []
+    page = 0
+    while True:
+        offset = page * 100
+        url = (f"https://api.nhle.com/stats/rest/en/game"
+               f"?cayenneExp=season={season_id}%20and%20gameType=2"
+               f"&limit=100&start={offset}")
+        try:
+            data = _fetch_json(url, timeout=25)
+        except Exception:
+            break
+        rows = data.get("data", []) or []
+        if not rows:
+            break
+        for g in rows:
+            h = g.get("homeTeamId"); a = g.get("visitingTeamId")
+            hs = g.get("homeScore"); as_ = g.get("visitingScore")
+            state = g.get("gameStateId")
+            if h is None or a is None or hs is None or as_ is None:
+                continue
+            # gameStateId: 7 = Final / Official. Skip in-progress or scheduled.
+            if state not in (6, 7, 8):
+                continue
+            games.append({
+                "game_id":    g.get("id"),
+                "date":       (g.get("gameDate") or "")[:10],
+                "home_id":    h,
+                "away_id":    a,
+                "home_name":  team_names.get(h, f"TeamID {h}"),
+                "away_name":  team_names.get(a, f"TeamID {a}"),
+                "home_goals": hs,
+                "away_goals": as_,
+                "season":     season_id,
+            })
+        page += 1
+        if page > 20:  # safety cap (82 games * 32 teams / 2 = 1312/season, 14 pages)
+            break
+    games.sort(key=lambda r: (r["date"], r["game_id"] or 0))
+    return games
+
+
+def run_backtest(num_seasons=BACKTEST_SEASONS, verbose=False):
+    """Walk-forward Elo fit across N recent NHL seasons."""
+    end_sid = _current_season_id()
+    # Last fully-completed season (don't fit on partial season)
+    first_sid = _prior_season_id(end_sid) - (num_seasons - 1) * 10001
+    seasons = []
+    sid = first_sid
+    for _ in range(num_seasons):
+        seasons.append(sid)
+        sid += 10001
+
+    elo = {}
+    predictions = []
+    first_scored = seasons[1] if len(seasons) > 1 else seasons[0]  # warmup = 1st season
+    for sid in seasons:
+        if elo:  # Season-boundary regression toward 1500
+            for t in list(elo.keys()):
+                elo[t] = INITIAL_ELO + (2.0 / 3.0) * (elo[t] - INITIAL_ELO)
+        games = fetch_season_games(sid)
+        if verbose:
+            print(f"[nhl backtest] {sid}: {len(games)} games")
+        for g in games:
+            h, a = g["home_name"] or f"T{g['home_id']}", g["away_name"] or f"T{g['away_id']}"
+            elo.setdefault(h, INITIAL_ELO); elo.setdefault(a, INITIAL_ELO)
+            exp_h = 1.0 / (1.0 + 10 ** (-((elo[h] + NHL_HFA_ELO) - elo[a]) / 400.0))
+            if sid >= first_scored:
+                predictions.append({
+                    "date": g["date"], "home": h, "away": a,
+                    "p_home": exp_h,
+                    "home_win": g["home_goals"] > g["away_goals"],
+                    "home_goals": g["home_goals"], "away_goals": g["away_goals"],
+                    "season": sid,
+                })
+            elo[h], elo[a] = _elo_update(elo[h], elo[a],
+                                          g["home_goals"], g["away_goals"])
+
+    final_elo = {t: round(v, 1) for t, v in elo.items()}
+    # Accuracy on scored window
+    n = len(predictions); correct = sum(1 for p in predictions
+                                        if (p["p_home"] >= 0.5) == p["home_win"])
+    ll = 0.0
+    import math as _m
+    for p in predictions:
+        y = 1.0 if p["home_win"] else 0.0
+        ph = max(1e-6, min(1 - 1e-6, p["p_home"]))
+        ll -= y * _m.log(ph) + (1 - y) * _m.log(1 - ph)
+    return {
+        "final_elo": final_elo,
+        "predictions": predictions,
+        "n_scored": n,
+        "accuracy": (correct / n) if n else None,
+        "log_loss": (ll / n) if n else None,
+        "seasons": seasons,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "hyperparams": {"K": K_FACTOR, "HFA_ELO": NHL_HFA_ELO,
+                        "INITIAL_ELO": INITIAL_ELO, "regression": 2/3},
+    }
+
+
+def _write_elo_only(result):
+    try:
+        with open(ELO_ONLY_CACHE_PATH, "w") as f:
+            json.dump({"final_elo": result.get("final_elo", {}),
+                       "generated_at": result.get("generated_at"),
+                       "accuracy": result.get("accuracy"),
+                       "log_loss": result.get("log_loss")}, f)
+    except OSError:
+        pass
+
+
+def get_or_fit_final_elo(refresh=False):
+    """Lightweight path: just the {team: elo} dict."""
+    if not refresh and os.path.exists(ELO_ONLY_CACHE_PATH):
+        try:
+            with open(ELO_ONLY_CACHE_PATH) as f:
+                data = json.load(f)
+            gen = datetime.fromisoformat(data.get("generated_at", "1970-01-01"))
+            if (datetime.now() - gen) < timedelta(hours=BACKTEST_MAX_AGE_H):
+                return data.get("final_elo", {})
+        except Exception:
+            pass
+    if not refresh and os.path.exists(BACKTEST_CACHE_PATH):
+        try:
+            with open(BACKTEST_CACHE_PATH) as f:
+                data = json.load(f)
+            final = dict(data.get("final_elo") or {})
+            _write_elo_only(data)
+            import gc
+            del data
+            gc.collect()
+            return final
+        except Exception:
+            pass
+    # Full fit
+    try:
+        result = run_backtest(verbose=False)
+    except Exception:
+        return {}
+    try:
+        with open(BACKTEST_CACHE_PATH, "w") as f:
+            json.dump(result, f)
+    except OSError:
+        pass
+    _write_elo_only(result)
+    return result.get("final_elo", {})
 
 
 def simulate_match(home_name, away_name, n=10000, seed=None):

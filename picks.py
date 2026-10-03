@@ -175,6 +175,57 @@ def _is_draw_pick(pick):
     return _is_soccer(pick.get("sport_slug", "")) and "draw" in pick.get("pick", "").lower()
 
 
+import re as _re
+
+_LINE_RE = _re.compile(r"[+-]?\d+(?:\.\d+)?")
+
+
+def _is_half_or_whole(line):
+    """True if line is a half-point (X.5) or whole number (X.0)."""
+    if line is None:
+        return False
+    frac = abs(line - int(line))
+    return frac < 1e-9 or abs(frac - 0.5) < 1e-9
+
+
+def _is_valid_pick_line(p):
+    """Reject Pinnacle Asian handicap lines that don't exist on US books
+    (0.0 / 0.25 / 0.75 spreads, 1.75 / 2.25 totals, etc.)."""
+    market = p.get("market", "") or ""
+    text = (p.get("pick", "") or "")
+    slug = p.get("sport_slug", "")
+
+    if "Spread" in market or market in ("Run Line", "Puck Line"):
+        # Pull a signed number from the pick label ("Team X +1.5", "Team Y -3.5")
+        m = _LINE_RE.search(text)
+        if not m:
+            return False
+        try:
+            line = float(m.group(0))
+        except ValueError:
+            return False
+        # 0.0 handicap (draw-no-bet style) — no US-book equivalent
+        if abs(line) < 0.01:
+            return False
+        # Baseball run line + hockey puck line are fixed at ±1.5
+        if slug in ("mlb", "nhl"):
+            return abs(abs(line) - 1.5) < 0.01
+        # Everything else: half-points or whole points (skip 0.25-step Asian lines)
+        return _is_half_or_whole(line)
+
+    if "Total" in market:
+        m = _re.search(r"(?i)(over|under)\s*([\d.]+)", text)
+        if not m:
+            return True
+        try:
+            line = float(m.group(2))
+        except ValueError:
+            return False
+        return _is_half_or_whole(line)
+
+    return True  # ML, BTTS, Draw — no line to validate
+
+
 def _passes_filter(p):
     """Reverse-engineered filter from the reference picks."""
     fair = p.get("fair_prob") or 0.0
@@ -184,6 +235,8 @@ def _passes_filter(p):
     if dec < MIN_DECIMAL:
         return False
     if _is_draw_pick(p) and dec >= SOCCER_DRAW_MAX_DEC:
+        return False
+    if not _is_valid_pick_line(p):
         return False
     return True
 

@@ -50,7 +50,11 @@ SPORTS = [
         "pinnacle_league_id": 1456,
         "odds_api_key": "icehockey_nhl",
         "ml_outcomes": 2,             # NHL ML is 2-way (regulation/OT/SO)
-        "has_halves": False,          # periods are 20-min thirds, not halves
+        # Pinnacle serves 1st-period markets under period=1 the same way
+        # the NFL first half is modeled. We flip the display label to "1P"
+        # (first period) in generic_odds for NHL specifically.
+        "has_halves": True,
+        "period_1_label": "1P",
         "spread_label": "Puck Line",
         "team_sport": True,
     },

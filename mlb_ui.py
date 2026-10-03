@@ -5772,17 +5772,20 @@ def _mc_team_stats(sport_slug, game_ctx):
         try:
             import nhl_model
             stats = nhl_model.get_or_fetch_team_stats()
+            elo = nhl_model.get_or_fit_final_elo()
         except Exception:
-            stats = {}
+            stats, elo = {}, {}
         h_name = game_ctx.get("home_name", "")
         a_name = game_ctx.get("away_name", "")
         hs = stats.get(h_name) or {}
         as_ = stats.get(a_name) or {}
         try:
             import nhl_model
-            lam_h, lam_a = nhl_model.project_lambdas(h_name, a_name, stats)
+            lam_h, lam_a = nhl_model.project_lambdas(h_name, a_name, stats, elo)
         except Exception:
             lam_h = lam_a = 2.95
+        h_elo = round(elo.get(h_name, 1500.0), 1) if elo else 1500.0
+        a_elo = round(elo.get(a_name, 1500.0), 1) if elo else 1500.0
         fair = game_ctx.get("fair") or {}
         def _f(v, d=2):
             try: return round(float(v), d)
@@ -5791,6 +5794,10 @@ def _mc_team_stats(sport_slug, game_ctx):
             "home_name": h_name,
             "away_name": a_name,
             "rows": [
+                {"group": "Rating",     "label": "Team Elo",
+                 "home": h_elo, "away": a_elo},
+                {"group": "Rating",     "label": "Elo diff (incl. HFA)",
+                 "home": round(h_elo + 35 - a_elo, 1), "away": round(a_elo - h_elo - 35, 1)},
                 {"group": "Record",     "label": "Record (W-L-OTL)",
                  "home": f"{hs.get('wins',0)}-{hs.get('losses',0)}-{hs.get('ot_losses',0)}",
                  "away": f"{as_.get('wins',0)}-{as_.get('losses',0)}-{as_.get('ot_losses',0)}"},
@@ -7190,6 +7197,40 @@ main.logged-page { max-width: 1040px; }
   color: var(--ink); font-variant-numeric: tabular-nums;
 }
 
+.breakdown-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+}
+.breakdown-col {
+  background: var(--card); border: 1px solid var(--rule); border-radius: 10px;
+  padding: 14px 16px;
+}
+.breakdown-col h3 {
+  font-family: "JetBrains Mono", monospace; font-size: 10px;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted); margin: 0 0 8px;
+}
+.brk-table {
+  width: 100%; border-collapse: collapse;
+  font-family: "JetBrains Mono", monospace; font-size: 12px;
+}
+.brk-table thead th {
+  text-align: left; padding: 6px 4px;
+  color: var(--muted); font-weight: 500; font-size: 10px;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  border-bottom: 1px solid var(--rule-strong);
+}
+.brk-table td {
+  padding: 6px 4px; border-bottom: 1px solid var(--rule);
+  color: var(--ink); font-variant-numeric: tabular-nums; text-align: right;
+}
+.brk-table td.brk-key { text-align: left; color: var(--ink); font-weight: 500; }
+.brk-table td.good { color: var(--good); text-shadow: var(--ev-strong-glow); }
+.brk-table td.bad  { color: #ef4444; }
+.brk-table tr:last-child td { border-bottom: none; }
+@media (max-width: 680px) {
+  .breakdown-grid { grid-template-columns: 1fr; }
+}
+
 .date-group {
   background: var(--card); border: 1px solid var(--rule); border-radius: 10px;
   padding: 16px 18px; margin-bottom: 12px;
@@ -7287,6 +7328,49 @@ main.logged-page { max-width: 1040px; }
     </div>
   </section>
 
+  {% if by_sport or by_market %}
+  <section class="records-section">
+    <h2>Model Health <span style="color:var(--muted);font-size:14px">last 90 days</span></h2>
+    <div class="sub">Which sports and markets our models are actually winning on. A sport under 48% or negative ROI over a meaningful sample is a signal to tune or drop that model.</div>
+    <div class="breakdown-grid">
+      <div class="breakdown-col">
+        <h3>By sport</h3>
+        <table class="brk-table">
+          <thead><tr><th>Sport</th><th>Record</th><th>Win %</th><th>Units</th><th>ROI</th></tr></thead>
+          <tbody>
+          {% for r in by_sport %}
+            <tr>
+              <td class="brk-key">{{ r.key }}</td>
+              <td>{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}</td>
+              <td class="{{ 'good' if r.win_pct >= 55 else ('bad' if r.win_pct < 48 and r.settled >= 10 else '') }}">{{ '%.1f' % r.win_pct }}%</td>
+              <td class="{{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">{{ '%+.2f' % r.units }}u</td>
+              <td class="{{ 'good' if r.roi_pct > 0 else ('bad' if r.roi_pct < 0 else '') }}">{{ '%+.1f' % r.roi_pct }}%</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="breakdown-col">
+        <h3>By market</h3>
+        <table class="brk-table">
+          <thead><tr><th>Market</th><th>Record</th><th>Win %</th><th>Units</th><th>ROI</th></tr></thead>
+          <tbody>
+          {% for r in by_market %}
+            <tr>
+              <td class="brk-key">{{ r.key }}</td>
+              <td>{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}</td>
+              <td class="{{ 'good' if r.win_pct >= 55 else ('bad' if r.win_pct < 48 and r.settled >= 10 else '') }}">{{ '%.1f' % r.win_pct }}%</td>
+              <td class="{{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">{{ '%+.2f' % r.units }}u</td>
+              <td class="{{ 'good' if r.roi_pct > 0 else ('bad' if r.roi_pct < 0 else '') }}">{{ '%+.1f' % r.roi_pct }}%</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+  {% endif %}
+
   {% if not dates %}
   <div class="date-group">
     <h3 style="margin:0">No logged picks yet.</h3>
@@ -7359,6 +7443,9 @@ def logged_plays():
     except Exception:
         graded_by_date = {}
     summary = plays_log.summary(graded_by_date)
+    # Per-sport and per-market breakdowns (90-day window)
+    by_sport  = plays_log.breakdown_by_key(graded_by_date, lambda p: p.get("sport"))
+    by_market = plays_log.breakdown_by_key(graded_by_date, lambda p: p.get("market"))
     dates = sorted(graded_by_date.keys(), reverse=True)
     return render_template_string(
         LOGGED_TEMPLATE,
@@ -7367,6 +7454,8 @@ def logged_plays():
         theme_script=THEME_SCRIPT,
         sport_strip=render_sport_strip("logged"),
         summary=summary,
+        by_sport=by_sport,
+        by_market=by_market,
         dates=dates,
         graded_by_date=graded_by_date,
     )

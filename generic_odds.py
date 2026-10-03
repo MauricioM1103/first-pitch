@@ -502,7 +502,10 @@ def build_sport_games(sport, model_prob_fn=None):
                 _add_bet(bets, "Total", "under", f"Under {t['line']}",
                          fair_u, u_dec, best_ud, best_ub, limit=g["total_limit"])
 
-        # ===== 1H markets (NFL + soccer halves) =====
+        # ===== Period-1 markets (NFL 1H, soccer 1H, NHL 1st period) =====
+        # NHL serves period=1 as the 1st period (not a half). Label it "1P"
+        # instead of "1H" so the UI reads naturally for hockey.
+        p1 = sport.get("period_1_label", "1H")
         if g.get("ml_h1"):
             ml = g["ml_h1"]
             h_dec = american_to_decimal(ml["home_am"])
@@ -518,12 +521,12 @@ def build_sport_games(sport, model_prob_fn=None):
                 p_a = american_to_prob(ml["away_am"])
                 fh, fa = devig_two_sided(p_h, p_a)
                 fd = None
-            _add_bet(bets, "1H ML", "home", f"{home_name} (1H)", fh, h_dec, None, None,
+            _add_bet(bets, f"{p1} ML", "home", f"{home_name} ({p1})", fh, h_dec, None, None,
                      limit=g["ml_h1_limit"])
-            _add_bet(bets, "1H ML", "away", f"{away_name} (1H)", fa, a_dec, None, None,
+            _add_bet(bets, f"{p1} ML", "away", f"{away_name} ({p1})", fa, a_dec, None, None,
                      limit=g["ml_h1_limit"])
             if fd:
-                _add_bet(bets, "1H ML", "draw", "Draw (1H)", fd, d_dec, None, None,
+                _add_bet(bets, f"{p1} ML", "draw", f"Draw ({p1})", fd, d_dec, None, None,
                          limit=g["ml_h1_limit"])
 
         if g.get("spread_h1"):
@@ -535,11 +538,11 @@ def build_sport_games(sport, model_prob_fn=None):
                 p_a = american_to_prob(sp["away_am"])
                 fh, fa = devig_two_sided(p_h, p_a)
                 hpt = sp["line_home"]; apt = -hpt if hpt is not None else None
-                _add_bet(bets, "1H Spread", "home",
-                         f"{home_name} {'' if (hpt or 0) < 0 else '+'}{hpt} (1H)",
+                _add_bet(bets, f"{p1} Spread", "home",
+                         f"{home_name} {'' if (hpt or 0) < 0 else '+'}{hpt} ({p1})",
                          fh, h_dec, None, None)
-                _add_bet(bets, "1H Spread", "away",
-                         f"{away_name} {'' if (apt or 0) < 0 else '+'}{apt} (1H)",
+                _add_bet(bets, f"{p1} Spread", "away",
+                         f"{away_name} {'' if (apt or 0) < 0 else '+'}{apt} ({p1})",
                          fa, a_dec, None, None)
 
         if g.get("total_h1"):
@@ -550,9 +553,9 @@ def build_sport_games(sport, model_prob_fn=None):
                 p_o = american_to_prob(t["over_am"])
                 p_u = american_to_prob(t["under_am"])
                 fo, fu = devig_two_sided(p_o, p_u)
-                _add_bet(bets, "1H Total", "over", f"Over {t['line']} (1H)",
+                _add_bet(bets, f"{p1} Total", "over", f"Over {t['line']} ({p1})",
                          fo, o_dec, None, None)
-                _add_bet(bets, "1H Total", "under", f"Under {t['line']} (1H)",
+                _add_bet(bets, f"{p1} Total", "under", f"Under {t['line']} ({p1})",
                          fu, u_dec, None, None)
 
         # ===== BTTS (soccer only) — Both Teams To Score =====

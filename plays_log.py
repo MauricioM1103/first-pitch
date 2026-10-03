@@ -217,7 +217,7 @@ def grade_pick(pick, event):
     away_name = _norm(pick.get("away_team"))
     pick_norm = _norm(text)
 
-    # Moneyline (incl. 1H ML and soccer draws)
+    # Moneyline (incl. 1H / 1P ML and soccer draws)
     if "ML" in market:
         if "draw" in pick_norm:
             return "W" if home == away else "L"
@@ -251,7 +251,7 @@ def grade_pick(pick, event):
 
     # Spread / Run Line / Puck Line — pick text looks like
     #   "Dallas Cowboys -3.5" or "Yankees +1.5"
-    if market in ("Spread", "Run Line", "Puck Line", "1H Spread"):
+    if market in ("Spread", "Run Line", "Puck Line", "1H Spread", "1P Spread"):
         m = re.search(r"([+-][\d.]+)", text)
         if not m:
             return "pending"
@@ -394,3 +394,41 @@ def summary(graded_by_date, today=None):
         out[f"all_{label}"]    = record_in_window(graded_by_date, days, False, today)
         out[f"strong_{label}"] = record_in_window(graded_by_date, days, True,  today)
     return out
+
+
+def breakdown_by_key(graded_by_date, key_fn, days_back=90, today=None):
+    """Group settled picks by a key (sport, market, etc) and compute per-group record.
+
+    Returns list of {key, wins, losses, pushes, settled, win_pct, units, roi_pct}
+    sorted by settled desc.
+    """
+    today = today or date.today()
+    cutoff = today - timedelta(days=days_back - 1)
+    buckets = {}
+    for ds, picks in graded_by_date.items():
+        try:
+            d = datetime.strptime(ds, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if d < cutoff or d > today:
+            continue
+        for pk in picks:
+            k = key_fn(pk) or "(unknown)"
+            b = buckets.setdefault(k, {"wins": 0, "losses": 0, "pushes": 0, "units": 0.0})
+            r = pk.get("result")
+            if r == "W":   b["wins"] += 1
+            elif r == "L": b["losses"] += 1
+            elif r == "P": b["pushes"] += 1
+            b["units"] += pk.get("profit_u", 0) or 0
+    rows = []
+    for k, b in buckets.items():
+        settled = b["wins"] + b["losses"]
+        pct = (b["wins"] / settled * 100) if settled else 0.0
+        roi = (b["units"] / settled * 100) if settled else 0.0
+        rows.append({
+            "key": k, "wins": b["wins"], "losses": b["losses"],
+            "pushes": b["pushes"], "settled": settled,
+            "win_pct": pct, "units": b["units"], "roi_pct": roi,
+        })
+    rows.sort(key=lambda r: (-r["settled"], -r["units"]))
+    return rows
