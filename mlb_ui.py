@@ -53,6 +53,27 @@ _CACHE_TTL_S = 30 * 60
 app = Flask(__name__)
 
 
+@app.template_filter("ct")
+def _ct_filter(iso_str, fmt="%I:%M %p CT"):
+    """Jinja filter: convert a UTC ISO timestamp to a Central-time display.
+
+    Usage in templates: {{ g.start_time|ct }}  -> "7:05 PM CT"
+    Returns the input unchanged if it isn't a parseable UTC timestamp.
+    """
+    if not iso_str:
+        return ""
+    try:
+        from datetime import datetime as _dt
+        iso = iso_str.replace("Z", "+00:00") if iso_str.endswith("Z") else iso_str
+        dt = _dt.fromisoformat(iso)
+        if dt.tzinfo is None:
+            from datetime import timezone
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(CENTRAL).strftime(fmt).lstrip("0")
+    except Exception:
+        return iso_str
+
+
 # ============================================================================
 # fetch primitives
 # ============================================================================
@@ -2161,7 +2182,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
           <span class="sport">{{ p.sport }}</span>
           <span class="market">{{ p.market }}</span>
           <span class="game">{{ p.game }}</span>
-          {% if p.start_time %}<span class="time">{{ p.start_time }}</span>{% endif %}
+          {% if p.start_time %}<span class="time">{{ p.start_time|ct }}</span>{% endif %}
         </div>
         <div class="pick-headline">
           {{ p.pick }}
@@ -4718,7 +4739,7 @@ SOCCER_MC_TEMPLATE = r"""<!doctype html>
   <div class="sim-card">
     <div class="sim-head">
       <div class="sim-matchup">{{ s.away }} <span style="color:var(--muted)">at</span> {{ s.home }}</div>
-      <div class="sim-time">{{ s.start_time or '' }}</div>
+      <div class="sim-time">{{ (s.start_time|ct) if s.start_time else '' }}</div>
     </div>
     <div class="sim-grid">
       <div class="sim-cell">
@@ -5681,7 +5702,9 @@ def _mc_team_stats(sport_slug, game_ctx):
                 {"group": "Record", "label": "Streak",    "home": h.get('streak_code','—'), "away": a.get('streak_code','—')},
                 {"group": "Record", "label": "Run diff",  "home": h.get('run_diff','—'),    "away": a.get('run_diff','—')},
                 # Scoring
-                {"group": "Scoring",    "label": "Runs / Game",    "home": h.get('rpg','—'),      "away": a.get('rpg','—')},
+                {"group": "Scoring",    "label": "Runs / Game",
+                 "home": f"{h.get('rpg'):.2f}" if h.get('rpg') is not None else "—",
+                 "away": f"{a.get('rpg'):.2f}" if a.get('rpg') is not None else "—"},
                 {"group": "Scoring",    "label": "OPS",            "home": h.get('ops','—'),      "away": a.get('ops','—')},
                 # Pitching
                 {"group": "Pitching",   "label": "Team ERA",       "home": h.get('team_era','—'), "away": a.get('team_era','—')},
@@ -6536,7 +6559,7 @@ main.mc-page, main.ai-page { max-width: 1040px; }
       <option value="">— choose a game —</option>
       {% for g in games %}
       <option value="{{ g.id }}" {% if game_id == g.id %}selected{% endif %}>
-        {{ g.away }} at {{ g.home }}{% if g.start_time %} · {{ g.start_time[11:16] }} UTC{% endif %}
+        {{ g.away }} at {{ g.home }}{% if g.start_time %} · {{ g.start_time|ct }}{% endif %}
       </option>
       {% endfor %}
     </select>
@@ -6922,7 +6945,7 @@ AI_UNIFIED_TEMPLATE = r"""<!doctype html>
       <option value="">— choose a game —</option>
       {% for g in games %}
       <option value="{{ g.id }}" {% if game_id == g.id %}selected{% endif %}>
-        {{ g.away }} at {{ g.home }}{% if g.start_time %} · {{ g.start_time[11:16] }} UTC{% endif %}
+        {{ g.away }} at {{ g.home }}{% if g.start_time %} · {{ g.start_time|ct }}{% endif %}
       </option>
       {% endfor %}
     </select>

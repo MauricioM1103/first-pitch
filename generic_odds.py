@@ -341,6 +341,10 @@ def _add_bet(bets, market, side, pick, fair_prob, pin_decimal, best_dec, best_bo
         "side": side,
         "pick": pick,
         "fair_prob": fair_prob,
+        # Preserve the raw Pinnacle devigged probability so the consensus
+        # layer in picks.py can always blend with the market, even for
+        # sports whose model path later overwrites fair_prob.
+        "pinnacle_prob": fair_prob,
         "pin_decimal": pin_decimal,
         "pin_american": decimal_to_american(pin_decimal) if pin_decimal else None,
         "book": use_source,

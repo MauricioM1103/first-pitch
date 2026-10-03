@@ -41,15 +41,21 @@ def _mlb_bets(date_str):
             use_book = best_book if (best_dec and best_dec > (b["decimal"] or 0)) else "pinnacle"
             # Recompute EV against the chosen book
             ev_pct = (b["fair_prob"] * use_dec - (1 - b.get("push_prob", 0))) * 100 if use_dec and b.get("fair_prob") else b["ev_pct"]
+            # MLB bets path doesn't carry a devigged Pinnacle prob yet; use the
+            # best-available decimal's inverse as a sharp-ish approximation.
+            # The Pinnacle moneyline is already low-vig so this is close.
+            pin_dec = b.get("decimal") or 0
+            pin_approx = (1.0 / pin_dec) if pin_dec > 1.0 else b.get("fair_prob")
             out.append({
                 "id": f"mlb_{g.get('game_pk')}_{b['market']}_{b['side']}",
                 "sport": "MLB",
                 "sport_slug": "mlb",
                 "game": f"{g['away']['team']} at {g['home']['team']}",
-                "start_time": g.get("first_pitch"),
+                "start_time": g.get("first_pitch_utc") or g.get("first_pitch"),
                 "market": b["market"],
                 "pick": b["pick"],
                 "fair_prob": b["fair_prob"],
+                "pinnacle_prob": b.get("pinnacle_prob") or pin_approx,
                 "decimal": use_dec,
                 "american": mlb_odds.decimal_to_american(use_dec) if use_dec else b.get("american"),
                 "book": use_book,
@@ -105,11 +111,17 @@ def _model_source(slug):
     labels = {
         "mlb":    "Elo + SP model (12-season fit)",
         "nfl":    "Elo + QB model (12-season fit)",
-        "epl":    "3-way Elo (12-season fit)",
-        "laliga": "3-way Elo (12-season fit)",
-        "ligamx": "3-way Elo (12-season fit)",
+        "ncaaf":  "Normal-dist scoring from CFBD-fit team Elo",
+        "nhl":    "Poisson goals + Elo (5-season fit)",
+        "epl":    "3-way Elo + Dixon-Coles (12-season fit)",
+        "laliga": "3-way Elo + Dixon-Coles (12-season fit)",
+        "ligamx": "3-way Elo + Dixon-Coles (12-season fit)",
+        "ucl":    "Dixon-Coles sim with EPL-prior goal rates",
+        "europa": "Dixon-Coles sim with EPL-prior goal rates",
+        "international": "Dixon-Coles sim with league-average goal rates",
+        "ufc":    "Pinnacle devig only (fighter-level model TBD)",
     }
-    return labels.get(slug, "Pinnacle devig only (no bespoke model)")
+    return labels.get(slug, "Pinnacle devig")
 
 
 _SOCCER_WITH_MODEL = {"epl", "laliga", "ligamx"}
@@ -141,6 +153,7 @@ def _sport_bets(sport):
                 "market": b["market"],
                 "pick": b["pick"],
                 "fair_prob": b["fair_prob"],
+                "pinnacle_prob": b.get("pinnacle_prob"),
                 "decimal": b["book_decimal"] or b["pin_decimal"],
                 "american": b["book_american"] or b["pin_american"],
                 "book": b["book"],
@@ -161,6 +174,7 @@ def _sport_bets(sport):
 
 MIN_FAIR_PROB      = 0.46   # fair/sharp AND model probability threshold
 MIN_DECIMAL        = 1.60   # don't show short-favorite picks (-167+)
+MIN_EV_PCT         = 2.0    # require real edge after market blend — 0% EV is not a pick
 SOCCER_DRAW_MAX_DEC = 3.70  # soccer draws only when market has them in reach
 STRONG_PROB_TIER   = 0.60   # "strong" badge for high-conviction picks
 MAX_PICKS          = 30     # cap list length (concise board, not firehose)
@@ -227,7 +241,7 @@ def _is_valid_pick_line(p):
 
 
 def _passes_filter(p):
-    """Reverse-engineered filter from the reference picks."""
+    """Hard filters applied before the consensus EV check."""
     fair = p.get("fair_prob") or 0.0
     dec = p.get("decimal") or 0.0
     if fair < MIN_FAIR_PROB:
@@ -239,6 +253,32 @@ def _passes_filter(p):
     if not _is_valid_pick_line(p):
         return False
     return True
+
+
+def _passes_ev_filter(p):
+    """Final EV check — only run after consensus has blended with the market.
+    A pick with 55% fair at -118 (implied 54%) is +1pp of edge, not a bet."""
+    ev = p.get("ev_pct")
+    if ev is None:
+        return True  # don't lose picks when we can't compute (shouldn't happen)
+    return ev >= MIN_EV_PCT
+
+
+def _is_started(pick, now_utc=None):
+    """True if the game has already kicked off (don't show those on the board)."""
+    st = pick.get("start_time")
+    if not st:
+        return False
+    try:
+        from datetime import datetime as _dt, timezone
+        iso = st.replace("Z", "+00:00") if st.endswith("Z") else st
+        dt = _dt.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        now = now_utc or _dt.now(timezone.utc)
+        return dt < now
+    except Exception:
+        return False
 
 
 def _pick_is_on_date(pick, date_str):
@@ -288,8 +328,15 @@ def _pick_is_on_date(pick, date_str):
 # Sims are cached per (sport, home, away) for the request so a game with three
 # bets (ML, Spread, Total) runs the sim once.
 
-CONSENSUS_MAX_DIVERGENCE = 0.15   # drop pick if |sim − fair| > 15pp
-CONSENSUS_SIM_TRIALS     = 2000   # per-pick MC trial count (fast, ±1pp precision)
+CONSENSUS_MAX_DIVERGENCE = 0.08   # drop pick if |sim − fair| > 8pp (tightened from 15)
+CONSENSUS_FLAG_DIVERGENCE = 0.05  # flag the pick as "divergent" between 5-8pp
+CONSENSUS_SIM_TRIALS     = 1500   # smaller sims for consensus — memory + speed
+# Final blend used for the fair prob we actually bet into: 40% our model
+# (which itself is the avg of pricing + MC), 60% Pinnacle's devigged line.
+# Pinnacle is the sharpest line we have access to; our models beat them
+# only in flashes, so a market-weighted blend is honest.
+MARKET_WEIGHT            = 0.60
+MODEL_WEIGHT             = 0.40
 
 _SIM_CACHE = {}
 
@@ -454,28 +501,60 @@ def _apply_consensus(picks):
         fair = p.get("fair_prob") or 0.0
 
         if sim_prob is None:
-            # No MC coverage for this market — fall back to fair prob alone
+            # No MC coverage for this market (e.g. MLB bets path, which has
+            # its own model). Still blend with market so MLB picks go through
+            # the same 40/60 EV discipline as everything else.
             p["mc_prob"] = None
-            p["consensus_prob"] = fair
             p["divergence"] = None
+            p["pricing_prob"] = fair
+            pinnacle = p.get("pinnacle_prob")
+            if pinnacle is not None and pinnacle > 0:
+                blended = MODEL_WEIGHT * fair + MARKET_WEIGHT * pinnacle
+                p["model_consensus"] = fair
+                p["consensus_prob"] = blended
+                p["fair_prob"] = blended
+                dec = p.get("decimal") or 0.0
+                if dec > 1.0:
+                    push = p.get("push_prob", 0) or 0
+                    p["ev_pct"] = (blended * dec - (1 - push)) * 100
+                    b = dec - 1.0
+                    q = 1.0 - blended
+                    kelly = ((blended * b - q) / b) * 0.25 * 100.0 if b > 0 else 0.0
+                    p["kelly_pct"] = max(0.0, kelly)
+            else:
+                p["consensus_prob"] = fair
             kept.append(p)
             continue
 
         p["mc_prob"] = sim_prob
         p["divergence"] = abs(sim_prob - fair)
-        # Blend with per-sport weights from the daily analyzer when available.
+
+        # Model consensus first: pricing + MC blended per-sport by analyzer.
         pw, mw = sport_weights.get(p.get("sport"), (0.5, 0.5))
-        consensus = pw * fair + mw * sim_prob
+        model_consensus = pw * fair + mw * sim_prob
         p["pricing_weight"] = pw
         p["mc_weight"] = mw
-        p["pricing_prob"] = fair      # keep the original for display
+        p["pricing_prob"] = fair
+        p["model_consensus"] = model_consensus
+
+        # Final fair = 40% our model's view + 60% Pinnacle's devigged market
+        # price. The market is sharp; our models earn their weight only
+        # where they consistently beat the no-vig line. This also means EV
+        # genuinely reflects a market disagreement, not model self-confidence.
+        pinnacle = p.get("pinnacle_prob")
+        if pinnacle is not None and pinnacle > 0:
+            consensus = MODEL_WEIGHT * model_consensus + MARKET_WEIGHT * pinnacle
+            p["pinnacle_prob"] = pinnacle
+        else:
+            consensus = model_consensus
         p["consensus_prob"] = consensus
-        # Overwrite fair_prob so every downstream reader (bulletin, filters,
-        # strong tier, logged plays, edge table) uses the consensus number.
+        # fair_prob now = consensus so every downstream reader uses it
         p["fair_prob"] = consensus
 
-        # Per-sport probability floor from the analyzer (default 46% from
-        # MIN_FAIR_PROB; raised when a sport's low-end picks are losing).
+        # Flag picks whose pricing/MC disagree 5-8pp — included but marked
+        p["divergent_flag"] = (CONSENSUS_FLAG_DIVERGENCE <= p["divergence"] < CONSENSUS_MAX_DIVERGENCE)
+
+        # Per-sport probability floor from the analyzer (default from MIN_FAIR_PROB)
         floor = sport_min_prob.get(p.get("sport"), MIN_FAIR_PROB)
         if consensus < floor:
             continue
@@ -516,38 +595,44 @@ def collect_picks(date_str, today_only=True):
             continue
         all_picks.extend(_sport_bets(sport))
 
-    # Filter to today's games only (Eastern local date)
+    # Filter to today's games only (Central local date), already-started filter
     if today_only:
         all_picks = [p for p in all_picks if _pick_is_on_date(p, date_str)]
+    all_picks = [p for p in all_picks if not _is_started(p)]
 
     # Filter to confidence picks (prob + decimal + draw rule + line-shape)
     filtered = [p for p in all_picks if _passes_filter(p)]
 
-    # Consensus pass: run the sport's MC sim for each pick's game and reject
-    # picks where the sim disagrees with the model's fair prob by more than
-    # CONSENSUS_MAX_DIVERGENCE. Also attaches `mc_prob` and `consensus_prob`.
+    # Consensus pass: run the sport's MC sim, blend 40% model + 60% market,
+    # drop picks where pricing vs MC diverge by more than CONSENSUS_MAX_DIVERGENCE.
+    # Rewrites ev_pct against the blended consensus.
     filtered = _apply_consensus(filtered)
 
-    # Deduplicate: only the single highest-consensus side per (game, market).
-    best_per_market = {}
-    for p in filtered:
-        key = (p["sport_slug"], p.get("game", ""), p.get("market", ""))
-        current = best_per_market.get(key)
-        if not current or (p.get("consensus_prob") or 0) > (current.get("consensus_prob") or 0):
-            best_per_market[key] = p
-    deduped = list(best_per_market.values())
+    # Final EV gate — a pick must beat the market by at least MIN_EV_PCT after
+    # the 40/60 blend. Zero or negative EV picks don't belong on the board.
+    filtered = [p for p in filtered if _passes_ev_filter(p)]
 
-    # Rank by CONSENSUS probability (desc), EV as a tiebreaker. Picks where
-    # both the pricing model AND the Monte Carlo sim agree rise to the top.
-    deduped.sort(key=lambda x: (-(x.get("consensus_prob") or x.get("fair_prob") or 0.0),
-                                 -(x.get("ev_pct") or 0.0)))
+    # ONE PICK PER GAME. Picking both the ML and the Over for the same game is
+    # just double-dipping the same read; keep the highest-EV pick for each game.
+    best_per_game = {}
+    for p in filtered:
+        key = (p["sport_slug"], p.get("game", ""))
+        current = best_per_game.get(key)
+        if not current or (p.get("ev_pct") or 0) > (current.get("ev_pct") or 0):
+            best_per_game[key] = p
+    deduped = list(best_per_game.values())
+
+    # Rank by EV (desc) with consensus prob as a tiebreaker. EV is the real
+    # ordering signal — a +4% EV pick beats a +1% EV pick even if the second
+    # has a higher raw probability. Probability still gates via MIN_FAIR_PROB.
+    deduped.sort(key=lambda x: (-(x.get("ev_pct") or 0.0),
+                                 -(x.get("consensus_prob") or 0.0)))
     deduped = deduped[:MAX_PICKS]
 
-    # Tag strong tier against the consensus number — a pick is only "strong"
-    # when BOTH signals clear the 60% bar.
+    # Tag strong tier: both ≥ 60% consensus AND ≥ 4% EV to earn the star.
     for p in deduped:
         base = p.get("consensus_prob") or p.get("fair_prob") or 0.0
-        p["strong"] = base >= STRONG_PROB_TIER
+        p["strong"] = (base >= STRONG_PROB_TIER) and ((p.get("ev_pct") or 0) >= 4.0)
         p["bulletin"] = generate_bulletin(p)
     return deduped
 
@@ -598,12 +683,30 @@ def generate_bulletin(pick):
         )
     base = ". ".join(bits) + "."
     slug = pick["sport_slug"]
-    if slug == "mlb":
-        base += " MLB model: Elo + starting-pitcher ERA/WHIP + Poisson."
-    elif slug == "nfl":
-        base += " NFL model: team Elo blended with per-QB rating (12-season fit)."
-    elif slug in _SOCCER_WITH_MODEL:
-        base += " Soccer model: 3-way Elo (home/draw/away) with +100 HFA."
-    else:
-        base += " (No bespoke model for this sport — fair prob is Pinnacle devig.)"
+    model_labels = {
+        "mlb":    "MLB model: Elo + starting-pitcher ERA/WHIP + Poisson. "
+                  "Blended 40% model + 60% Pinnacle devig before EV.",
+        "nfl":    "NFL model: team Elo blended with per-QB rating (12-season fit). "
+                  "Blended 40% model + 60% Pinnacle devig before EV.",
+        "ncaaf":  "NCAAF model: normal-distribution scoring from CFBD-fit Elo. "
+                  "Blended 40% model + 60% Pinnacle devig before EV.",
+        "nhl":    "NHL model: Poisson goals + 5-season Elo fit (NHL.com season stats). "
+                  "Blended 40% model + 60% Pinnacle devig before EV.",
+        "epl":    "EPL model: 3-way Elo + Dixon-Coles (12-season fit). "
+                  "Blended 40% model + 60% Pinnacle devig before EV.",
+        "laliga": "La Liga model: 3-way Elo + Dixon-Coles (12-season fit). "
+                  "Blended 40% model + 60% Pinnacle devig before EV.",
+        "ligamx": "Liga MX model: 3-way Elo + Dixon-Coles (12-season fit). "
+                  "Blended 40% model + 60% Pinnacle devig before EV.",
+        "ucl":    "UCL: Dixon-Coles sim with EPL-prior goal rates (fallback). "
+                  "Blended 40% model + 60% Pinnacle devig before EV.",
+        "europa": "Europa: Dixon-Coles sim with EPL-prior goal rates (fallback). "
+                  "Blended 40% model + 60% Pinnacle devig before EV.",
+        "international": "International: Dixon-Coles sim with league-prior rates "
+                         "(fallback). Blended 40% model + 60% Pinnacle devig before EV.",
+        "ufc":    "UFC: Pinnacle devig only. Dedicated fighter model is a known gap.",
+    }
+    base += " " + model_labels.get(slug, "Model: Pinnacle devig.")
+    if pick.get("divergent_flag"):
+        base += " ⚠ Pricing model and Monte Carlo diverge 5-8pp — size down."
     return base
