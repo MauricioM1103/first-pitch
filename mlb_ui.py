@@ -5835,25 +5835,41 @@ def _mc_edge_table(sport_slug, game_ctx, sim):
 
     Returns [{market, sim_prob, book_prob, decimal, american, book, edge_pct, kelly_pct}].
     Uses the best US book price available (via game_ctx['bets']) and falls back
-    to Pinnacle. Kelly is quartered to match the rest of the site.
+    to Pinnacle. Kelly is quartered to match the rest of the site. Shares the
+    same Asian-line filter the picks board uses so we don't recommend edges on
+    lines that don't exist on US books (+0.0, 0.25-step, 1.75 totals, etc.).
     """
     from mlb_odds import decimal_to_american
+    import picks as _picks_mod
 
     rows = []
 
-    def _add(market, sim_prob_pct, decimal, book_name, book_prob_pct=None):
+    def _add(label, sim_prob_pct, decimal, book_name, book_prob_pct=None,
+             market_type="ML", pick_label=None):
+        """Add an edge-table row. `label` is what's displayed (e.g.
+        "Finland -0.25"); `market_type` is the market family used by the
+        line-validity filter (e.g. "Spread", "Total", "ML", "BTTS").
+        """
         if decimal is None or decimal <= 1.0 or sim_prob_pct is None:
+            return
+        # Reject lines the picks board also skips (+0.0, 0.25-step Asians,
+        # 1.75/2.25 totals, etc.) so the edge table only shows plays that
+        # exist at DK/FD/BetMGM.
+        if not _picks_mod._is_valid_pick_line({
+            "market": market_type,
+            "pick": pick_label or label,
+            "sport_slug": sport_slug,
+        }):
             return
         p = sim_prob_pct / 100.0
         edge_pts = sim_prob_pct - (book_prob_pct if book_prob_pct is not None
                                    else (100.0 / decimal))
-        # Quarter Kelly
         b = decimal - 1.0
         q = 1.0 - p
         kelly = ((p * b - q) / b) * 0.25 * 100.0 if b > 0 else 0.0
         kelly = max(0.0, kelly)
         rows.append({
-            "market": market,
+            "market": label,
             "sim_prob": sim_prob_pct,
             "book_prob": book_prob_pct if book_prob_pct is not None else (100.0 / decimal),
             "decimal": decimal,
@@ -5881,7 +5897,8 @@ def _mc_edge_table(sport_slug, game_ctx, sim):
                 dec = best_dec.get(side) or b.get("decimal")
                 bk = best_book.get(side) or "pinnacle"
                 label = f"{home_name if side == 'home' else away_name} ML"
-                _add(label, sim_prob, dec, bk)
+                _add(label, sim_prob, dec, bk, market_type="ML",
+                     pick_label=b.get("pick") or label)
         # Total — need to count sims over book line
         for b in bets:
             if b.get("market") == "Total":
@@ -5907,7 +5924,7 @@ def _mc_edge_table(sport_slug, game_ctx, sim):
     home_name = game_ctx.get("home_name", "")
     away_name = game_ctx.get("away_name", "")
 
-    # ML (3-way for soccer, 2-way for NFL)
+    # ML (3-way for soccer, 2-way for NFL / NHL)
     ml = game_ctx.get("ml") or {}
     for b in bets:
         if b.get("market") == "ML":
@@ -5922,10 +5939,10 @@ def _mc_edge_table(sport_slug, game_ctx, sim):
                 continue
             dec = b.get("book_decimal") or b.get("pin_decimal")
             bk  = b.get("book") or "pinnacle"
-            _add(label, sim_prob, dec, bk)
+            _add(label, sim_prob, dec, bk, market_type="ML",
+                 pick_label=b.get("pick") or label)
 
-    # Spread / Run Line — can't easily derive from sim's margin list without totals,
-    # but we can estimate cover probability from margins
+    # Spread / Run Line / Puck Line — estimate cover probability from the sim's margin list.
     sp = game_ctx.get("spread") or {}
     if sp.get("line_home") is not None and sim.get("margins"):
         hpt = sp["line_home"]
@@ -5935,7 +5952,8 @@ def _mc_edge_table(sport_slug, game_ctx, sim):
             home_cover = sum(1 for m in margins if m + hpt > 0) / n * 100
             away_cover = 100 - home_cover
             for b in bets:
-                if b.get("market") in ("Spread", "Run Line"):
+                mkt = b.get("market")
+                if mkt in ("Spread", "Run Line", "Puck Line"):
                     side = b["side"]
                     sim_prob = home_cover if side == "home" else away_cover
                     dec = b.get("book_decimal") or b.get("pin_decimal")
@@ -5943,7 +5961,9 @@ def _mc_edge_table(sport_slug, game_ctx, sim):
                     pt = hpt if side == "home" else -hpt
                     sign = "+" if pt >= 0 else ""
                     name = home_name if side == "home" else away_name
-                    _add(f"{name} {sign}{pt}", sim_prob, dec, bk)
+                    label_text = f"{name} {sign}{pt}"
+                    _add(label_text, sim_prob, dec, bk, market_type=mkt,
+                         pick_label=b.get("pick") or label_text)
 
     # Total — need totals; derive from projected mean + margin distribution
     tot = game_ctx.get("total") or {}
@@ -5970,7 +5990,9 @@ def _mc_edge_table(sport_slug, game_ctx, sim):
                 sim_prob = over if side == "over" else under
                 dec = b.get("book_decimal") or b.get("pin_decimal")
                 bk  = b.get("book") or "pinnacle"
-                _add(f"{'Over' if side == 'over' else 'Under'} {line}", sim_prob, dec, bk)
+                label_text = f"{'Over' if side == 'over' else 'Under'} {line}"
+                _add(label_text, sim_prob, dec, bk, market_type="Total",
+                     pick_label=b.get("pick") or label_text)
 
     # BTTS (soccer)
     if sim.get("btts_yes_pct") is not None:
@@ -5980,7 +6002,9 @@ def _mc_edge_table(sport_slug, game_ctx, sim):
                 sim_prob = sim["btts_yes_pct"] if side == "yes" else (100 - sim["btts_yes_pct"])
                 dec = b.get("book_decimal")
                 bk  = b.get("book") or "pinnacle"
-                _add(f"BTTS {'Yes' if side == 'yes' else 'No'}", sim_prob, dec, bk)
+                label_text = f"BTTS {'Yes' if side == 'yes' else 'No'}"
+                _add(label_text, sim_prob, dec, bk, market_type="BTTS",
+                     pick_label=b.get("pick") or label_text)
 
     return rows
 
@@ -7046,33 +7070,58 @@ Write 6 sections with markdown headings (## Section):
 450-650 words. Be specific, cite sources when you use them. If search returns
 nothing useful, say so and work from training knowledge rather than inventing."""
 
-    try:
-        # Prefer the web-search tool when available so Claude pulls live news.
-        # If the server-side tool call fails (older account, deprecated name),
-        # fall back to a plain messages.create() with the same prompt.
-        kwargs = dict(
+    def _attempt(use_search):
+        """One API call. Returns (text, stop_reason, used_search, err)."""
+        k = dict(
             model=analyst_mod.CLAUDE_MODEL,
-            max_tokens=2000,
+            max_tokens=4000,
             messages=[{"role": "user", "content": prompt}],
         )
-        msg = None
+        if use_search:
+            # Anthropic server-side web search tool. If the account doesn't
+            # have it enabled we catch the error and fall back.
+            k["tools"] = [{
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": 5,
+            }]
         try:
-            msg = client.messages.create(
-                **kwargs,
-                tools=[{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
-            )
-        except Exception:
-            msg = None
-        if msg is None:
-            msg = client.messages.create(**kwargs)
-        text = ""
-        for block in (msg.content or []):
-            if getattr(block, "type", None) == "text":
+            resp = client.messages.create(**k)
+        except Exception as e:
+            return "", None, False, str(e)
+        parts = []
+        used_search = False
+        for block in (resp.content or []):
+            btype = getattr(block, "type", None)
+            if btype == "text":
                 t = getattr(block, "text", "") or ""
                 if t:
-                    text += (("\n\n" if text else "") + t)
+                    parts.append(t)
+            elif btype in ("server_tool_use", "web_search_tool_result", "tool_use"):
+                used_search = True
+        return "\n\n".join(parts), getattr(resp, "stop_reason", None), used_search, None
+
+    try:
+        # First try WITH web search for current news; fall back to no-tool
+        # if the account can't use it, or if the response had no text block
+        # (e.g. Claude only emitted tool_use/intermediate blocks before stopping).
+        text, stop_reason, used_search, err = _attempt(use_search=True)
+        tool_err = err
         if not text:
-            return {"error": "Claude returned no text."}
+            text2, stop_reason2, _, err2 = _attempt(use_search=False)
+            if text2:
+                text = text2
+                stop_reason = stop_reason2
+                used_search = False
+            elif err2:
+                # Both attempts failed outright
+                reason = tool_err or err2
+                return {"error": f"Claude call failed: {reason}"}
+        if not text:
+            return {"error": f"Claude returned no text (stop_reason={stop_reason}, "
+                              f"tool_err={tool_err or 'none'})."}
+        if used_search:
+            text = text + "\n\n*(web search used for current news / injuries)*"
         return {
             "html": _ai_render_markdown(text),
             "model": analyst_mod.CLAUDE_MODEL,
