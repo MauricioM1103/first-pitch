@@ -2257,11 +2257,13 @@ def picks_landing():
         all_picks = []
     scan_time_ms = int((time.time() - t0) * 1000)
 
-    # Snapshot today's picks for the /logged dashboard. Idempotent per date,
-    # so refreshing the page doesn't rewrite history.
+    # Snapshot the picks for the /logged dashboard. For TODAY's date we
+    # overwrite so the latest consensus state is persisted; for past dates
+    # the first snapshot locks history in. On Render free tier this also
+    # mirrors to GitHub (via log_persist) so the file survives spin-downs.
     try:
         import plays_log
-        if all_picks and date_str == datetime.now(CENTRAL).date().isoformat():
+        if all_picks:
             plays_log.save_daily_picks(date_str, all_picks)
     except Exception:
         pass
@@ -7259,6 +7261,24 @@ main.logged-page { max-width: 1040px; }
   color: var(--ink); font-variant-numeric: tabular-nums;
 }
 
+.persist-status {
+  padding: 10px 14px; border-radius: 8px; margin-bottom: 20px;
+  font-family: "JetBrains Mono", monospace; font-size: 11.5px;
+  line-height: 1.5; border: 1px solid var(--rule);
+}
+.persist-status.ok {
+  background: color-mix(in oklab, var(--good) 10%, var(--card));
+  border-color: var(--good); color: var(--ink);
+}
+.persist-status.warn {
+  background: color-mix(in oklab, #f59e0b 15%, var(--card));
+  border-color: #f59e0b; color: var(--ink);
+}
+.persist-status code {
+  background: var(--surface); padding: 1px 5px; border-radius: 3px;
+  font-size: 11px;
+}
+
 .breakdown-grid {
   display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
 }
@@ -7356,6 +7376,21 @@ main.logged-page { max-width: 1040px; }
     so you can see how the high-conviction tier is actually hitting versus the broader
     board. Pushes don't count toward W-L; units P/L assumes a flat 1-unit stake per
     pick at the odds shown on the board at pick time.</p>
+  </div>
+
+  <div class="persist-status {{ 'ok' if persist_status.enabled else 'warn' }}">
+    {% if persist_status.enabled %}
+      <strong>Persistent storage:</strong> enabled &middot;
+      {{ persist_status.picks_files or 0 }} picks files &middot;
+      {{ persist_status.graded_files or 0 }} graded files in
+      <code>{{ persist_status.repo }}</code> (branch <code>{{ persist_status.branch }}</code>).
+      Snapshots survive Render restarts.
+    {% else %}
+      <strong>Persistent storage disabled.</strong>
+      {{ persist_status.reason or 'GITHUB_TOKEN not set.' }}
+      Set <code>GITHUB_TOKEN</code> on Render (fine-grained PAT with Contents: Read &amp; Write
+      on this repo) so logs survive the next spin-down.
+    {% endif %}
   </div>
 
   <section class="records-section">
@@ -7499,16 +7534,19 @@ main.logged-page { max-width: 1040px; }
 @app.route("/logged")
 def logged_plays():
     """Dashboard of past picks with W/L records (7d / 30d / 90d, strong vs all)."""
-    import plays_log
+    import plays_log, log_persist
     try:
         graded_by_date = plays_log.grade_all(limit_dates=120)
     except Exception:
         graded_by_date = {}
     summary = plays_log.summary(graded_by_date)
-    # Per-sport and per-market breakdowns (90-day window)
     by_sport  = plays_log.breakdown_by_key(graded_by_date, lambda p: p.get("sport"))
     by_market = plays_log.breakdown_by_key(graded_by_date, lambda p: p.get("market"))
     dates = sorted(graded_by_date.keys(), reverse=True)
+    try:
+        persist_status = log_persist.status_summary()
+    except Exception as e:
+        persist_status = {"enabled": False, "reason": f"status check failed: {e}"}
     return render_template_string(
         LOGGED_TEMPLATE,
         fonts_link=FONTS_LINK,
@@ -7520,6 +7558,7 @@ def logged_plays():
         by_market=by_market,
         dates=dates,
         graded_by_date=graded_by_date,
+        persist_status=persist_status,
     )
 
 

@@ -22,7 +22,10 @@ from urllib.error import URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+import log_persist
+
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+REMOTE_LOGS_PATH = log_persist.DEFAULT_LOGS_PATH
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -45,78 +48,160 @@ def graded_file(date_str):
     return os.path.join(LOG_DIR, f"graded_{date_str}.json")
 
 
-def save_daily_picks(date_str, picks):
-    """Snapshot the day's picks. Idempotent per date — won't overwrite an
-    existing file (we want the snapshot locked in from the first view, so
-    later edits to the model don't retroactively rewrite history).
+def save_daily_picks(date_str, picks, overwrite_today=True):
+    """Snapshot the day's picks.
+
+    For TODAY's date we allow overwrite — the board updates throughout the
+    day (consensus probs refresh, new games get added) and we want the most
+    recent view on disk. For PAST dates the first snapshot locks in so
+    history never changes.
+
+    Also mirrors to the GitHub repo via log_persist when GITHUB_TOKEN is
+    set — critical on Render free tier, which wipes `logs/` on every
+    spin-down (so without the mirror, nothing survives from day to day).
     """
     ensure_log_dir()
     path = picks_file(date_str)
-    if os.path.exists(path):
+    try:
+        from zoneinfo import ZoneInfo
+        is_today = (date_str == datetime.now(ZoneInfo("America/Chicago")).date().isoformat())
+    except Exception:
+        is_today = True  # safer to allow overwrite than to silently skip
+
+    if os.path.exists(path) and not (overwrite_today and is_today):
         return False
+
     slim = []
     for p in picks:
         slim.append({
-            "id":          p.get("id"),
-            "sport":       p.get("sport"),
-            "sport_slug":  p.get("sport_slug"),
-            "home_team":   p.get("home_team"),
-            "away_team":   p.get("away_team"),
-            "market":      p.get("market"),
-            "pick":        p.get("pick"),
-            "decimal":     p.get("decimal"),
-            "american":    p.get("american"),
-            "book":        p.get("book"),
-            "fair_prob":   p.get("fair_prob"),
-            "ev_pct":      p.get("ev_pct"),
-            "strong":      bool(p.get("strong")),
-            "start_time":  p.get("start_time"),
+            "id":            p.get("id"),
+            "sport":         p.get("sport"),
+            "sport_slug":    p.get("sport_slug"),
+            "home_team":     p.get("home_team"),
+            "away_team":     p.get("away_team"),
+            "market":        p.get("market"),
+            "pick":          p.get("pick"),
+            "decimal":       p.get("decimal"),
+            "american":      p.get("american"),
+            "book":          p.get("book"),
+            "fair_prob":     p.get("fair_prob"),
+            "pricing_prob":  p.get("pricing_prob"),
+            "mc_prob":       p.get("mc_prob"),
+            "consensus_prob": p.get("consensus_prob"),
+            "ev_pct":        p.get("ev_pct"),
+            "strong":        bool(p.get("strong")),
+            "start_time":    p.get("start_time"),
             "snapshotted_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         })
+    payload = {"date": date_str, "picks": slim}
+    text = json.dumps(payload)
     try:
         with open(path, "w") as f:
-            json.dump({"date": date_str, "picks": slim}, f)
+            f.write(text)
     except OSError:
         return False
+    # Mirror to GitHub so the snapshot survives the next Render restart.
+    try:
+        log_persist.write_file(
+            f"{REMOTE_LOGS_PATH}/picks_{date_str}.json", text,
+            message=f"log: picks for {date_str} ({len(slim)} picks)",
+        )
+    except Exception:
+        pass
     return True
 
 
 def all_logged_dates(limit=120):
-    """Sorted list of YYYY-MM-DD dates we have snapshots for (newest first)."""
+    """Sorted list of YYYY-MM-DD dates we have snapshots for (newest first).
+
+    Merges local disk and the GitHub-backed store so we see every date we've
+    ever logged, even after a Render restart wiped the local copy.
+    """
     ensure_log_dir()
-    files = [f for f in os.listdir(LOG_DIR)
-             if f.startswith("picks_") and f.endswith(".json")]
-    dates = sorted((f[6:-5] for f in files), reverse=True)
+    local = {f[6:-5] for f in os.listdir(LOG_DIR)
+             if f.startswith("picks_") and f.endswith(".json")}
+    remote = set()
+    try:
+        for entry in log_persist.list_dir(REMOTE_LOGS_PATH):
+            name = entry.get("name", "") if isinstance(entry, dict) else ""
+            if name.startswith("picks_") and name.endswith(".json"):
+                remote.add(name[6:-5])
+    except Exception:
+        pass
+    dates = sorted(local | remote, reverse=True)
     return dates[:limit]
+
+
+def _hydrate_from_remote(remote_path, local_path):
+    """Download a file from GitHub into local cache (so subsequent reads
+    hit the fast path). Returns the text or None."""
+    try:
+        text, _ = log_persist.read_file(remote_path)
+    except Exception:
+        text = None
+    if not text:
+        return None
+    try:
+        ensure_log_dir()
+        with open(local_path, "w") as f:
+            f.write(text)
+    except OSError:
+        pass
+    return text
 
 
 def read_picks(date_str):
     path = picks_file(date_str)
-    if not os.path.exists(path):
+    text = None
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                text = f.read()
+        except OSError:
+            text = None
+    if text is None:
+        text = _hydrate_from_remote(f"{REMOTE_LOGS_PATH}/picks_{date_str}.json", path)
+    if not text:
         return None
     try:
-        with open(path) as f:
-            return json.load(f)
-    except (OSError, json.JSONDecodeError):
+        return json.loads(text)
+    except json.JSONDecodeError:
         return None
 
 
 def read_graded(date_str):
     path = graded_file(date_str)
-    if not os.path.exists(path):
+    text = None
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                text = f.read()
+        except OSError:
+            text = None
+    if text is None:
+        text = _hydrate_from_remote(f"{REMOTE_LOGS_PATH}/graded_{date_str}.json", path)
+    if not text:
         return None
     try:
-        with open(path) as f:
-            return json.load(f)
-    except (OSError, json.JSONDecodeError):
+        return json.loads(text)
+    except json.JSONDecodeError:
         return None
 
 
 def write_graded(date_str, graded):
+    text = json.dumps(graded)
     try:
         with open(graded_file(date_str), "w") as f:
-            json.dump(graded, f)
+            f.write(text)
     except OSError:
+        pass
+    # Mirror the graded file to GitHub so results persist across restarts.
+    try:
+        log_persist.write_file(
+            f"{REMOTE_LOGS_PATH}/graded_{date_str}.json", text,
+            message=f"log: grade {date_str}",
+        )
+    except Exception:
         pass
 
 
