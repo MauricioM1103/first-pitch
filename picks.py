@@ -423,13 +423,25 @@ def _apply_consensus(picks):
     """Attach sim probability + consensus_prob to each pick, drop divergent ones,
     and recompute EV and Kelly against the consensus number.
 
-    The consensus prob (average of pricing-model fair + Monte Carlo sim) is
-    what we actually believe will hit — so it's what should be compared to
+    The consensus prob (default: average of pricing-model fair + Monte Carlo
+    sim) is what we actually believe will hit — so it's what gets compared to
     the book price for edge. ev_pct and kelly_pct are rewritten here to
     reflect that; the original pricing-model number stays in `pricing_prob`
     for the bulletin.
+
+    If model_analytics.get_sport_weights() returns a non-default blend for a
+    sport (the daily deep analysis found a weight shift that beats 50/50 by
+    at least 5 Brier basis points over the last 90 days), that per-sport
+    weight is used instead of 50/50. Keeps the models self-tuning without a
+    code change on each shift.
     """
     _SIM_CACHE.clear()
+    try:
+        import model_analytics
+        sport_weights = model_analytics.get_sport_weights()
+    except Exception:
+        sport_weights = {}
+
     kept = []
     for p in picks:
         sim = _sim_for(p["sport_slug"], p.get("home_team"), p.get("away_team"))
@@ -446,7 +458,11 @@ def _apply_consensus(picks):
 
         p["mc_prob"] = sim_prob
         p["divergence"] = abs(sim_prob - fair)
-        consensus = (fair + sim_prob) / 2.0
+        # Blend with per-sport weights from the daily analyzer when available.
+        pw, mw = sport_weights.get(p.get("sport"), (0.5, 0.5))
+        consensus = pw * fair + mw * sim_prob
+        p["pricing_weight"] = pw
+        p["mc_weight"] = mw
         p["pricing_prob"] = fair      # keep the original for display
         p["consensus_prob"] = consensus
         # Overwrite fair_prob so every downstream reader (bulletin, filters,

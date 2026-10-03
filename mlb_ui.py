@@ -7279,6 +7279,23 @@ main.logged-page { max-width: 1040px; }
   font-size: 11px;
 }
 
+.section-sub {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted); margin: 20px 0 8px;
+}
+.insights { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 18px; }
+.insight {
+  padding: 10px 12px; border-radius: 6px;
+  font-family: "JetBrains Mono", monospace; font-size: 12px;
+  line-height: 1.45; border-left: 3px solid var(--rule-strong);
+  background: var(--card);
+}
+.insight.good  { border-left-color: var(--good); color: var(--ink); }
+.insight.bad   { border-left-color: #ef4444; color: var(--ink); }
+.insight.warn  { border-left-color: #f59e0b; color: var(--ink); }
+.insight.info  { border-left-color: var(--accent, #60a5fa); color: var(--muted); }
+
 .breakdown-grid {
   display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
 }
@@ -7425,6 +7442,83 @@ main.logged-page { max-width: 1040px; }
     </div>
   </section>
 
+  {% if analysis %}
+  <section class="records-section">
+    <h2>Daily Deep Analysis
+      <span style="color:var(--muted);font-size:14px">
+        {{ analysis.lookback_days or 90 }}-day lookback &middot;
+        {{ analysis.settled_picks or 0 }} settled picks
+      </span>
+    </h2>
+    <div class="sub">
+      Automated calibration + per-model-signal breakdown of logged picks.
+      Any time pricing-model and Monte Carlo disagree on which signal is
+      more honest for a sport, the analyzer suggests a weight shift and the
+      picks pipeline applies it on the next refresh — self-tuning without
+      a code change. Regenerates once per day; last run
+      {{ analysis.generated_at or '—' }}.
+    </div>
+
+    {% if not (analysis.insights or analysis.calibration or analysis.recommended_weights) %}
+    <div class="insight info">
+      No settled picks yet — the analyzer is live but has nothing to score
+      against. Once games finish and the logged plays grade in, this
+      section will populate with calibration bins, per-model Brier scores,
+      and recommended consensus weight shifts.
+    </div>
+    {% endif %}
+
+    {% if analysis.insights %}
+    <div class="insights">
+      {% for i in analysis.insights %}
+      <div class="insight {{ i.tone }}">{{ i.text }}</div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if analysis.calibration %}
+    <h3 class="section-sub">Consensus calibration</h3>
+    <table class="brk-table">
+      <thead><tr><th>Bin</th><th>N</th><th>Expected</th><th>Actual</th><th>Gap</th></tr></thead>
+      <tbody>
+      {% for b in analysis.calibration %}
+        <tr>
+          <td class="brk-key">{{ (b.bin_lo * 100)|int }}&ndash;{{ (b.bin_hi * 100)|int }}%</td>
+          <td>{{ b.n }}</td>
+          <td>{{ '%.1f' % b.expected }}%</td>
+          <td>{{ '%.1f' % b.actual }}%</td>
+          <td class="{{ 'good' if b.gap_pp >= 1 else ('bad' if b.gap_pp <= -1 else '') }}">
+            {{ '%+.1f' % b.gap_pp }}pp
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    {% if analysis.recommended_weights %}
+    <h3 class="section-sub" style="margin-top:16px">Recommended consensus weights</h3>
+    <table class="brk-table">
+      <thead><tr><th>Sport</th><th>N</th><th>Pricing w.</th><th>MC w.</th>
+                 <th>Default Brier</th><th>Rec. Brier</th><th>Δ bp</th></tr></thead>
+      <tbody>
+      {% for sport, w in analysis.recommended_weights.items() %}
+        <tr>
+          <td class="brk-key">{{ sport }}</td>
+          <td>{{ w.n }}</td>
+          <td>{{ (w.pricing_w * 100)|int }}%</td>
+          <td>{{ (w.mc_w * 100)|int }}%</td>
+          <td>{{ '%.4f' % w.brier_at_default }}</td>
+          <td>{{ '%.4f' % w.brier_at_rec }}</td>
+          <td class="{{ 'good' if w.improvement_bp >= 5 else '' }}">+{{ '%.1f' % w.improvement_bp }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </section>
+  {% endif %}
+
   {% if by_sport or by_market %}
   <section class="records-section">
     <h2>Model Health <span style="color:var(--muted);font-size:14px">last 90 days</span></h2>
@@ -7533,8 +7627,13 @@ main.logged-page { max-width: 1040px; }
 
 @app.route("/logged")
 def logged_plays():
-    """Dashboard of past picks with W/L records (7d / 30d / 90d, strong vs all)."""
-    import plays_log, log_persist
+    """Dashboard of past picks with W/L records (7d / 30d / 90d, strong vs all).
+
+    Also kicks off the daily deep analysis of logged picks (model_analytics)
+    the first time it's hit each day — insights appear in-page and the picks
+    pipeline reads back any recommended per-sport consensus weight shifts.
+    """
+    import plays_log, log_persist, model_analytics
     try:
         graded_by_date = plays_log.grade_all(limit_dates=120)
     except Exception:
@@ -7547,6 +7646,10 @@ def logged_plays():
         persist_status = log_persist.status_summary()
     except Exception as e:
         persist_status = {"enabled": False, "reason": f"status check failed: {e}"}
+    try:
+        analysis = model_analytics.ensure_today_analysis()
+    except Exception as e:
+        analysis = {"error": str(e), "insights": []}
     return render_template_string(
         LOGGED_TEMPLATE,
         fonts_link=FONTS_LINK,
@@ -7559,6 +7662,7 @@ def logged_plays():
         dates=dates,
         graded_by_date=graded_by_date,
         persist_status=persist_status,
+        analysis=analysis,
     )
 
 
