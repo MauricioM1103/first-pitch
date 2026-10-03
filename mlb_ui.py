@@ -226,15 +226,17 @@ def sp_stats_for_model(stat):
 # ============================================================================
 
 def get_model_state():
-    """Load fitted model state (Elo ratings + backtest results).
+    """Load fitted model state (final Elo only) for live predictions.
 
-    Uses the 12-season multi-season fit so live predictions get team Elo
-    informed by a decade of history rather than one season of noise.
+    Was previously loading the full 6MB multi-season cache (predictions +
+    per-season metrics + per-game histories) just to pluck out `final_elo`.
+    Switched to the slim side-file loader to keep the free-tier worker
+    well under its 512 MB memory ceiling.
     """
-    key = ("model_state",)
+    key = ("model_state_slim",)
     def _f():
         try:
-            return mlb_model.get_or_run_multi_season_backtest()
+            return mlb_model.get_final_state()
         except Exception as e:
             print(f"[warn] mlb model unavailable: {e}", flush=True)
             return None
@@ -3586,7 +3588,8 @@ def sport_schedule(slug):
     if slug == "nfl":
         try:
             import nfl_model
-            nfl_state = nfl_model.get_or_run_multi_season_backtest()
+            # Lightweight final_state (reads ~5KB side-file, not 770KB cache)
+            nfl_state = nfl_model.get_final_state()
             final_elo = nfl_state.get("final_elo", {}) if nfl_state else {}
             def _nfl_prob(g):
                 h = nfl_model.abbr_from_name(g.get("home_name", ""))
@@ -3603,8 +3606,8 @@ def sport_schedule(slug):
     elif slug in _SOCCER_BACKTEST_SLUGS:
         try:
             import soccer_model
-            soccer_state = soccer_model.get_or_run_backtest(slug)
-            final_elo = soccer_state.get("final_elo", {}) if soccer_state else {}
+            # Lightweight final_elo (reads ~700B side-file, not ~1.4MB cache)
+            final_elo = soccer_model.get_final_elo(slug) or {}
             def _soccer_prob(g):
                 h_name = g.get("home_name", "")
                 a_name = g.get("away_name", "")
@@ -3758,7 +3761,7 @@ def sport_edges(slug):
     if slug == "nfl":
         try:
             import nfl_model
-            nfl_state = nfl_model.get_or_run_multi_season_backtest()
+            nfl_state = nfl_model.get_final_state()
             final_elo = nfl_state.get("final_elo", {}) if nfl_state else {}
             final_qb_elo = nfl_state.get("final_qb_elo", {}) if nfl_state else {}
             def _nfl_prob(g):
@@ -6832,10 +6835,11 @@ def _ai_analyze_matchup(sport_slug, game_ctx):
         try:
             import soccer_model
             model_slug = sport_slug if sport_slug in {"epl","laliga","ligamx"} else "epl"
-            state = soccer_model.get_or_run_backtest(model_slug)
-            elo = state.get("final_elo", {}) if state else {}
+            elo = soccer_model.get_final_elo(model_slug) or {}
             h_name = game_ctx.get("home_name",""); a_name = game_ctx.get("away_name","")
-            sim = soccer_model.simulate_match(h_name, a_name, model_slug, n=5000)
+            # Smaller sim for the prompt context — the full MC page already
+            # offers 15k; the AI prompt doesn't need that many trials.
+            sim = soccer_model.simulate_match(h_name, a_name, model_slug, n=2000)
             ctx_lines.append(f"Soccer matchup: {a_name} at {h_name} · kickoff {game_ctx.get('start_time','?')}")
             ctx_lines.append(f"- Elo: home {round(elo.get(h_name,1500),1)}, away {round(elo.get(a_name,1500),1)}")
             ctx_lines.append(f"- Dixon-Coles MC: home {sim['home_win_pct']:.1f}% / draw {sim['draw_pct']:.1f}% / away {sim['away_win_pct']:.1f}%")

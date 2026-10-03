@@ -1009,6 +1009,59 @@ def run_multi_season_backtest(end_season, num_seasons=NUM_SEASONS,
     }
 
 
+ELO_ONLY_CACHE_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "mlb_final_elo.json",
+)
+
+
+def _write_elo_only_cache(result):
+    """Slim side-file with just the lookup tables, so get_final_state() can
+    serve live predictions without pulling the full 6 MB cache file."""
+    try:
+        with open(ELO_ONLY_CACHE_FILE, "w") as f:
+            json.dump({
+                "final_elo":   result.get("final_elo", {}),
+                "generated_at": result.get("generated_at"),
+            }, f)
+    except OSError:
+        pass
+
+
+def get_final_state():
+    """Lightweight {final_elo} loader. Reads the slim side-file; if missing,
+    derives it from the full backtest cache (and writes the side-file for
+    next time); if the full cache is missing too, falls back to running the
+    multi-season backtest.
+    """
+    if os.path.exists(ELO_ONLY_CACHE_FILE):
+        try:
+            with open(ELO_ONLY_CACHE_FILE) as f:
+                return json.load(f) or {}
+        except (OSError, json.JSONDecodeError):
+            pass
+    if os.path.exists(MULTI_CACHE_FILE):
+        try:
+            with open(MULTI_CACHE_FILE) as f:
+                data = json.load(f)
+            out = {
+                "final_elo":    data.get("final_elo", {}),
+                "generated_at": data.get("generated_at"),
+            }
+            _write_elo_only_cache(data)
+            import gc
+            del data
+            gc.collect()
+            return out
+        except (OSError, json.JSONDecodeError):
+            pass
+    state = get_or_run_multi_season_backtest()
+    return {
+        "final_elo":    (state or {}).get("final_elo", {}),
+        "generated_at": (state or {}).get("generated_at"),
+    }
+
+
 def get_or_run_multi_season_backtest(refresh=False, end_season=None, verbose=False):
     if not refresh and os.path.exists(MULTI_CACHE_FILE):
         try:
@@ -1025,6 +1078,7 @@ def get_or_run_multi_season_backtest(refresh=False, end_season=None, verbose=Fal
     result["metrics"] = compute_metrics(result["predictions"])
     with open(MULTI_CACHE_FILE, "w") as f:
         json.dump(result, f)
+    _write_elo_only_cache(result)
     return result
 
 
