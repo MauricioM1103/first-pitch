@@ -420,13 +420,22 @@ def _sim_prob_for_pick(sim, pick):
 
 
 def _apply_consensus(picks):
-    """Attach sim probability + consensus_prob to each pick, drop divergent ones."""
+    """Attach sim probability + consensus_prob to each pick, drop divergent ones,
+    and recompute EV and Kelly against the consensus number.
+
+    The consensus prob (average of pricing-model fair + Monte Carlo sim) is
+    what we actually believe will hit — so it's what should be compared to
+    the book price for edge. ev_pct and kelly_pct are rewritten here to
+    reflect that; the original pricing-model number stays in `pricing_prob`
+    for the bulletin.
+    """
     _SIM_CACHE.clear()
     kept = []
     for p in picks:
         sim = _sim_for(p["sport_slug"], p.get("home_team"), p.get("away_team"))
         sim_prob = _sim_prob_for_pick(sim, p)
         fair = p.get("fair_prob") or 0.0
+
         if sim_prob is None:
             # No MC coverage for this market — fall back to fair prob alone
             p["mc_prob"] = None
@@ -434,9 +443,26 @@ def _apply_consensus(picks):
             p["divergence"] = None
             kept.append(p)
             continue
+
         p["mc_prob"] = sim_prob
         p["divergence"] = abs(sim_prob - fair)
-        p["consensus_prob"] = (fair + sim_prob) / 2.0
+        consensus = (fair + sim_prob) / 2.0
+        p["pricing_prob"] = fair      # keep the original for display
+        p["consensus_prob"] = consensus
+        # Overwrite fair_prob so every downstream reader (bulletin, filters,
+        # strong tier, logged plays, edge table) uses the consensus number.
+        p["fair_prob"] = consensus
+
+        # Recompute EV and quarter-Kelly against consensus vs the book price.
+        dec = p.get("decimal") or 0.0
+        if dec > 1.0:
+            push = p.get("push_prob", 0) or 0
+            p["ev_pct"] = (consensus * dec - (1 - push)) * 100
+            b = dec - 1.0
+            q = 1.0 - consensus
+            kelly = ((consensus * b - q) / b) * 0.25 * 100.0 if b > 0 else 0.0
+            p["kelly_pct"] = max(0.0, kelly)
+
         if p["divergence"] > CONSENSUS_MAX_DIVERGENCE:
             continue  # the two signals disagree too much — don't recommend
         kept.append(p)
@@ -505,25 +531,30 @@ def generate_bulletin(pick):
     Leads with model probability (what MC would simulate), then supporting
     EV + Kelly, then sport-specific color line about the model source.
     """
-    fair_pct = (pick.get("fair_prob") or 0) * 100
-    mc_pct   = (pick.get("mc_prob") or 0) * 100 if pick.get("mc_prob") is not None else None
-    cons_pct = (pick.get("consensus_prob") or pick.get("fair_prob") or 0) * 100
+    # pricing_prob is the raw sport-model / Pinnacle-devig number; mc_prob is
+    # the Monte Carlo sim; cons_pct is their average and the one we actually
+    # bet into. For picks without MC coverage, pricing_prob is None and we
+    # fall back to showing only the one number.
+    pricing_pct = (pick.get("pricing_prob") or 0) * 100 if pick.get("pricing_prob") is not None else None
+    mc_pct      = (pick.get("mc_prob") or 0) * 100 if pick.get("mc_prob") is not None else None
+    cons_pct    = (pick.get("consensus_prob") or pick.get("fair_prob") or 0) * 100
     dec = pick.get("decimal") or 0
     market_implied = (1.0 / dec) * 100 if dec else 0
 
     conviction = "high-conviction" if cons_pct >= STRONG_PROB_TIER * 100 else "selective"
     ev = pick.get("ev_pct") or 0
     bits = []
-    if mc_pct is not None:
+    if mc_pct is not None and pricing_pct is not None:
         bits.append(
-            f"Consensus of pricing model ({fair_pct:.0f}%) and Monte Carlo "
+            f"Consensus of pricing model ({pricing_pct:.0f}%) and Monte Carlo "
             f"({mc_pct:.0f}%) lands at {cons_pct:.0f}% for {pick['pick']} "
-            f"({conviction}) vs market's implied {market_implied:.0f}% at "
-            f"{pick.get('american','?')}"
+            f"({conviction}); market price {pick.get('american','?')} "
+            f"implies {market_implied:.0f}% — we treat the {cons_pct:.0f}% as "
+            f"our fair when sizing EV."
         )
     else:
         bits.append(
-            f"Model simulates {pick['pick']} to hit {fair_pct:.0f}% of the time "
+            f"Model simulates {pick['pick']} to hit {cons_pct:.0f}% of the time "
             f"({conviction} pick) vs market's implied {market_implied:.0f}% at "
             f"{pick.get('american','?')}"
         )
