@@ -277,23 +277,56 @@ def odds_api_available():
     return bool(os.environ.get("ODDS_API_KEY"))
 
 
-def fetch_odds_api(sport_key):
+# Odds API billing: each (market × region) counts as 1 credit per sport call.
+# A 4-market, 1-region request = 4 credits per sport fetch. With a 10-min TTL
+# and 10 sports polled on each /picks + /montecarlo render we were torching
+# the monthly plan in days. Changes to stay under the cap:
+#   * TTL raised 10min -> 2hr. Odds don't move enough in a quarter hour to
+#     justify a fresh fetch.
+#   * Default markets dropped to h2h only (1 credit). Pinnacle already
+#     covers spreads/totals/BTTS devigged — the US-book shopping advantage
+#     is mostly on moneyline anyway. _enable_full_markets() can request
+#     more when the user actually needs them.
+#   * fetch_odds_api_optional() short-circuits to {} without a call when
+#     the caller just needs a game list (MC + AI dropdowns).
+#   * In-process call counter + monthly total surfaced on /logged so you
+#     can see burn rate without logging into The Odds API dashboard.
+_ODDS_API_TTL_S  = 2 * 60 * 60
+_ODDS_API_CALLS  = []  # list of (timestamp, sport_key, markets_count)
+_ODDS_API_MARKETS_DEFAULT = "h2h"  # down from "h2h,spreads,totals(,btts)"
+
+
+def fetch_odds_api(sport_key, markets=None, force=False):
+    """Fetch Odds API data for one sport. `markets` defaults to h2h only
+    (1 credit) — pass "h2h,spreads,totals" for the richer picks board when
+    you've confirmed the credit budget allows it."""
     if not odds_api_available() or not sport_key:
         return {}
-    return _cached(("oapi", sport_key), 600, lambda: _fetch_odds_api(sport_key))
+    mkts = markets or _ODDS_API_MARKETS_DEFAULT
+    key_tup = ("oapi", sport_key, mkts)
+    if not force:
+        return _cached(key_tup, _ODDS_API_TTL_S,
+                       lambda: _fetch_odds_api(sport_key, mkts))
+    _cache.pop(key_tup, None)
+    return _cached(key_tup, _ODDS_API_TTL_S,
+                   lambda: _fetch_odds_api(sport_key, mkts))
 
 
-def _fetch_odds_api(sport_key):
+def fetch_odds_api_optional(sport_key):
+    """For callers (MC / AI dropdowns) that don't actually need the US-book
+    comparison. Returns {} without a network call so we don't bill a credit
+    just to render a game list that Pinnacle already provides."""
+    return {}
+
+
+def _fetch_odds_api(sport_key, markets=None):
     key = os.environ["ODDS_API_KEY"]
-    # Soccer additionally supports btts (both teams to score). Odds API ignores
-    # unsupported markets per sport, so including it is cheap.
-    markets = "h2h,spreads,totals"
-    if sport_key.startswith("soccer_"):
-        markets += ",btts"
+    mkts = markets or _ODDS_API_MARKETS_DEFAULT
+    # Soccer-only BTTS is only pulled when explicitly requested in `markets`.
     params = urlencode({
         "apiKey": key,
         "regions": "us",
-        "markets": markets,
+        "markets": mkts,
         "oddsFormat": "decimal",
         "bookmakers": "draftkings,fanduel,betmgm,caesars",
     })
@@ -302,6 +335,12 @@ def _fetch_odds_api(sport_key):
         events = _fetch_json(url) or []
     except Exception:
         return {}
+    # Log the call so the UI can show monthly burn.
+    _ODDS_API_CALLS.append((time.time(), sport_key, len(mkts.split(","))))
+    # Keep only the last 30 days of entries
+    cutoff = time.time() - 30 * 86400
+    while _ODDS_API_CALLS and _ODDS_API_CALLS[0][0] < cutoff:
+        _ODDS_API_CALLS.pop(0)
     out = {}
     for ev in events:
         home = ev.get("home_team", "")
@@ -317,6 +356,22 @@ def _fetch_odds_api(sport_key):
             "books": books,
         }
     return out
+
+
+def odds_api_usage_summary():
+    """Return call + credit counts across common time windows."""
+    now = time.time()
+    def _window(sec):
+        total_calls = sum(1 for t, _, _ in _ODDS_API_CALLS if t > now - sec)
+        credits     = sum(mc for t, _, mc in _ODDS_API_CALLS if t > now - sec)
+        return {"calls": total_calls, "credits": credits}
+    return {
+        "key_set":    odds_api_available(),
+        "hour":       _window(3600),
+        "day":        _window(86400),
+        "week":       _window(7 * 86400),
+        "ttl_minutes": _ODDS_API_TTL_S // 60,
+    }
 
 
 # ============================================================================
@@ -375,7 +430,7 @@ def _best_book_price_for(side_key_fn, oapi_books, side_name_fn, side_key):
     return best_dec, best_book
 
 
-def build_sport_games(sport, model_prob_fn=None):
+def build_sport_games(sport, model_prob_fn=None, use_us_books=True):
     """For a non-MLB sport, return a list of game dicts with per-market odds
     and a bets list.
 
@@ -383,13 +438,17 @@ def build_sport_games(sport, model_prob_fn=None):
         {home, away, draw} of win probabilities. When provided, ML "fair"
         probabilities come from the model instead of Pinnacle devig.
         Totals/spreads continue to use Pinnacle devig regardless.
+    use_us_books: when False, skip the Odds API fetch entirely and build
+        the game list from Pinnacle alone (no US-book price shopping,
+        no BTTS market). MC + AI pages pass False so dropdown renders
+        don't burn Odds API credits.
     """
     games = parse_pinnacle_games(
         sport["pinnacle_league_id"],
         ml_outcomes=sport["ml_outcomes"],
         has_halves=sport.get("has_halves", False),
     )
-    oapi = fetch_odds_api(sport.get("odds_api_key"))
+    oapi = fetch_odds_api(sport.get("odds_api_key")) if use_us_books else {}
     is_3way = sport["ml_outcomes"] == 3
 
     out = []

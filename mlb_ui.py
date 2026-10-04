@@ -4808,7 +4808,8 @@ def soccer_montecarlo(slug):
 
     import soccer_model
     try:
-        games = generic_odds.build_sport_games(sport)
+        # MC page only needs the game list — skip Odds API fetch to save credits.
+        games = generic_odds.build_sport_games(sport, use_us_books=False)
     except Exception:
         games = []
 
@@ -5661,7 +5662,9 @@ def _mc_fetch_games(sport_slug, date_str):
             _MC_GAMES_CACHE[key] = (out, now)
             return out
         try:
-            games = generic_odds.build_sport_games(sport)
+            # MC/AI unified dropdown — skip Odds API; the Pinnacle game list
+            # is all we need to render the sport's games for the date.
+            games = generic_odds.build_sport_games(sport, use_us_books=False)
         except Exception:
             games = []
         for g in games:
@@ -7482,6 +7485,17 @@ main.logged-page { max-width: 1040px; }
     {% endif %}
   </div>
 
+  {% if odds_usage and odds_usage.key_set %}
+  <div class="persist-status ok">
+    <strong>Odds API usage:</strong>
+    {{ odds_usage.hour.credits or 0 }} credits in last hour &middot;
+    {{ odds_usage.day.credits or 0 }} in last 24h &middot;
+    {{ odds_usage.week.credits or 0 }} in last week &middot;
+    cache TTL {{ odds_usage.ttl_minutes }} min &middot; markets: h2h only.
+    MC + AI dropdowns do not hit the Odds API — Pinnacle covers them.
+  </div>
+  {% endif %}
+
   <section class="records-section">
     <h2>Overall Record</h2>
     <div class="sub">All graded picks across every sport. Pending = game not yet final (Odds API lags by a few minutes after games end).</div>
@@ -7737,6 +7751,11 @@ def logged_plays():
         grader_status = plays_log.grader_status()
     except Exception:
         grader_status = {"odds_api_enabled": False, "mlb_statsapi": True}
+    try:
+        import generic_odds
+        odds_usage = generic_odds.odds_api_usage_summary()
+    except Exception:
+        odds_usage = None
     # Trigger the daily analysis in a background thread (fire-and-forget) so
     # /logged never blocks on it. We still read the LATEST available analysis
     # synchronously — on first-ever visit this is None and the UI shows the
@@ -7769,6 +7788,7 @@ def logged_plays():
         analysis=analysis,
         active_adj=active_adj,
         grader_status=grader_status,
+        odds_usage=odds_usage,
     )
 
 
