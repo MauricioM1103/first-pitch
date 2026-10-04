@@ -6118,12 +6118,27 @@ def _mc_run_simulation(sport_slug, game_ctx, n_sims):
     if sport_slug in {"epl", "laliga", "ligamx", "ucl", "europa", "international"}:
         import soccer_model
         model_slug = sport_slug if sport_slug in {"epl","laliga","ligamx"} else "epl"
-        try:
-            sim = soccer_model.simulate_match(
-                game_ctx["home_name"], game_ctx["away_name"], model_slug, n=n_sims
-            )
-        except Exception:
-            sim = None
+        sim = None
+        used_national_elo = False
+        if sport_slug == "international":
+            try:
+                sim = soccer_model.predict_international_match(
+                    game_ctx["home_name"], game_ctx["away_name"],
+                    is_friendly=False,
+                )
+                if sim:
+                    sim["home_team"] = game_ctx["home_name"]
+                    sim["away_team"] = game_ctx["away_name"]
+                    used_national_elo = True
+            except Exception:
+                sim = None
+        if not sim:
+            try:
+                sim = soccer_model.simulate_match(
+                    game_ctx["home_name"], game_ctx["away_name"], model_slug, n=n_sims
+                )
+            except Exception:
+                sim = None
         if not sim:
             return None
         # Build a margin array from most-likely scores for histogram
@@ -6148,7 +6163,9 @@ def _mc_run_simulation(sport_slug, game_ctx, n_sims):
             "most_likely_scores": sim["most_likely_scores"],
             "margins": margins,
             "has_draw": True,
-            "notes": f"Dixon-Coles sampler (ρ = {soccer_model.DC_RHO_DEFAULT})",
+            "notes": (f"National-team Elo + Dixon-Coles (home {sim.get('home_elo'):.0f} vs away {sim.get('away_elo'):.0f}, HFA {sim.get('hfa_used'):.0f})"
+                      if used_national_elo
+                      else f"Dixon-Coles sampler (ρ = {soccer_model.DC_RHO_DEFAULT})"),
             "sport_name": sports.by_slug(sport_slug)["name"] if sports.by_slug(sport_slug) else sport_slug,
         }
     if sport_slug == "nfl":

@@ -70,6 +70,75 @@ def hfa_for(slug):
     return _PER_LEAGUE_HFA.get(slug, HFA)
 
 
+def predict_international_match(home_team, away_team, is_friendly=False,
+                                 draw_factor=None):
+    """Project an international match using national-team Elo + per-type HFA.
+
+    Falls back to league-prior Dixon-Coles (via simulate_match with slug=epl)
+    when either side isn't in the national Elo snapshot. Returns a dict
+    shaped like simulate_match's output so the picks consensus layer and
+    the MC page can read it with no branching.
+    """
+    try:
+        import national_team_elo
+    except Exception:
+        return None
+    h_elo = national_team_elo.get_national_elo(home_team)
+    a_elo = national_team_elo.get_national_elo(away_team)
+    if h_elo is None or a_elo is None:
+        return None  # unknown nation — caller should fall back
+
+    hfa = hfa_for("international_friendly" if is_friendly
+                  else "international_competitive")
+    p_h, p_d, p_a = predict_3way(h_elo, a_elo, hfa=hfa)
+    # Project goal totals from Elo diff: ~1.3 goals per team as a baseline
+    # for international competitive, nudged by the Elo diff (100 Elo ≈ 0.25 g).
+    base = 1.25
+    shift = ((h_elo + hfa) - a_elo) / 400.0  # 100 Elo → +0.25 goal
+    lam_h = max(0.3, base + shift / 2)
+    lam_a = max(0.3, base - shift / 2)
+    mat = dixon_coles_matrix(lam_h, lam_a)
+    btts_yes = sum(mat[hh][aa] for hh in range(1, DC_MAX_GOALS + 1)
+                                 for aa in range(1, DC_MAX_GOALS + 1))
+    home_wn  = sum(mat[hh][0] for hh in range(1, DC_MAX_GOALS + 1))
+    away_wn  = sum(mat[0][aa] for aa in range(1, DC_MAX_GOALS + 1))
+    marg_h = [sum(mat[hh][aa] for aa in range(DC_MAX_GOALS + 1))
+              for hh in range(DC_MAX_GOALS + 1)]
+    marg_a = [sum(mat[hh][aa] for hh in range(DC_MAX_GOALS + 1))
+              for aa in range(DC_MAX_GOALS + 1)]
+    def _tt_over(marg, line):
+        return sum(p for g, p in enumerate(marg) if g > line) * 100
+    return {
+        "home_win_pct": p_h * 100,
+        "draw_pct":     p_d * 100,
+        "away_win_pct": p_a * 100,
+        "btts_yes_pct": btts_yes * 100,
+        "btts_no_pct":  (1 - btts_yes) * 100,
+        "home_wn_pct":  home_wn * 100,
+        "away_wn_pct":  away_wn * 100,
+        "home_tt_over_1_5": _tt_over(marg_h, 1.5),
+        "home_tt_over_2_5": _tt_over(marg_h, 2.5),
+        "away_tt_over_1_5": _tt_over(marg_a, 1.5),
+        "away_tt_over_2_5": _tt_over(marg_a, 2.5),
+        "avg_home_goals": lam_h,
+        "avg_away_goals": lam_a,
+        "expected_total": lam_h + lam_a,
+        "most_likely_scores": _top_scores_from_mat(mat, 10),
+        "lam_home": lam_h, "lam_away": lam_a,
+        "home_elo": h_elo, "away_elo": a_elo, "hfa_used": hfa,
+        "engine":   "national-team Elo + DC",
+    }
+
+
+def _top_scores_from_mat(mat, n=10):
+    scores = []
+    for h in range(DC_MAX_GOALS + 1):
+        for a in range(DC_MAX_GOALS + 1):
+            scores.append((h, a, mat[h][a]))
+    scores.sort(key=lambda s: -s[2])
+    return [{"score": f"{h}-{a}", "pct": p * 100} for h, a, p in scores[:n]]
+
+
 # K-factor downweight for friendlies — the review flagged that we should
 # move national-team ratings LESS on a friendly than on a World Cup qualifier.
 # Picks pipeline will pass is_friendly=True for internationals.
@@ -632,14 +701,38 @@ def dixon_coles_matrix(lam_home, lam_away, rho=DC_RHO_DEFAULT, max_goals=DC_MAX_
 
 
 def _project_lambdas(home_team, away_team, league_slug):
-    """Compute (λ_home, λ_away) from team historical goal rates with HFA."""
+    """Compute (λ_home, λ_away) from team historical goal rates with HFA.
+
+    When xG per-match rates are available (soccer_xg snapshot), blend them
+    60/40 with the realized goals rate: xG is sharper (removes finishing
+    variance) but goals are the actual outcome and shouldn't be ignored.
+    """
     rates = get_team_goal_rates(league_slug)
     prior = _LEAGUE_GOAL_PRIORS.get(league_slug, 1.35)
     default = {"gs_per_match": prior, "ga_per_match": prior, "matches": 0}
     hr = rates.get(home_team, default)
     ar = rates.get(away_team, default)
-    lam_home = (hr["gs_per_match"] + ar["ga_per_match"]) / 2.0 * 1.15
-    lam_away = (ar["gs_per_match"] + hr["ga_per_match"]) / 2.0 * 0.90
+
+    # xG blend when snapshot has both teams
+    try:
+        import soccer_xg
+        h_xg = soccer_xg.get_team_xg_rates(home_team, league_slug)
+        a_xg = soccer_xg.get_team_xg_rates(away_team, league_slug)
+    except Exception:
+        h_xg = a_xg = None
+
+    def _blend(goals_rate, xg_rate, weight_xg=0.6):
+        if xg_rate is None:
+            return goals_rate
+        return weight_xg * xg_rate + (1 - weight_xg) * goals_rate
+
+    h_gs = _blend(hr["gs_per_match"], (h_xg or {}).get("xg_per_match"))
+    h_ga = _blend(hr["ga_per_match"], (h_xg or {}).get("xga_per_match"))
+    a_gs = _blend(ar["gs_per_match"], (a_xg or {}).get("xg_per_match"))
+    a_ga = _blend(ar["ga_per_match"], (a_xg or {}).get("xga_per_match"))
+
+    lam_home = (h_gs + a_ga) / 2.0 * 1.15
+    lam_away = (a_gs + h_ga) / 2.0 * 0.90
     return max(0.1, lam_home), max(0.1, lam_away)
 
 

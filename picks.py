@@ -359,8 +359,17 @@ def _sim_for(sport_slug, home, away, market_total=None):
     try:
         if sport_slug in ("epl", "laliga", "ligamx", "ucl", "europa", "international"):
             import soccer_model
-            model_slug = sport_slug if sport_slug in ("epl", "laliga", "ligamx") else "epl"
-            sim = soccer_model.simulate_match(home, away, model_slug, n=CONSENSUS_SIM_TRIALS)
+            # International games prefer the national-team Elo path when
+            # both sides are in the ratings snapshot — more honest than
+            # falling back to EPL goal priors for Spain-Namibia.
+            sim = None
+            if sport_slug == "international":
+                sim = soccer_model.predict_international_match(
+                    home, away, is_friendly=False,
+                )
+            if not sim:
+                model_slug = sport_slug if sport_slug in ("epl", "laliga", "ligamx") else "epl"
+                sim = soccer_model.simulate_match(home, away, model_slug, n=CONSENSUS_SIM_TRIALS)
         elif sport_slug == "nhl":
             import nhl_model
             sim = nhl_model.simulate_match(home, away, n=CONSENSUS_SIM_TRIALS)

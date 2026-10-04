@@ -1,0 +1,174 @@
+{
+  "generated_at": "2025-10-04",
+  "source": "understat + fbref snapshot (hand-curated)",
+  "leagues": {
+    "epl": {
+      "Arsenal": {
+        "xg": 2.12,
+        "xga": 1.03
+      },
+      "Man City": {
+        "xg": 2.05,
+        "xga": 1.14
+      },
+      "Liverpool": {
+        "xg": 2.08,
+        "xga": 1.09
+      },
+      "Chelsea": {
+        "xg": 1.78,
+        "xga": 1.22
+      },
+      "Tottenham": {
+        "xg": 1.72,
+        "xga": 1.35
+      },
+      "Newcastle": {
+        "xg": 1.55,
+        "xga": 1.18
+      },
+      "Aston Villa": {
+        "xg": 1.68,
+        "xga": 1.42
+      },
+      "Man United": {
+        "xg": 1.45,
+        "xga": 1.48
+      },
+      "Brighton": {
+        "xg": 1.52,
+        "xga": 1.32
+      },
+      "Brentford": {
+        "xg": 1.44,
+        "xga": 1.5
+      },
+      "West Ham": {
+        "xg": 1.38,
+        "xga": 1.55
+      },
+      "Crystal Palace": {
+        "xg": 1.28,
+        "xga": 1.42
+      },
+      "Fulham": {
+        "xg": 1.32,
+        "xga": 1.4
+      },
+      "Everton": {
+        "xg": 1.15,
+        "xga": 1.48
+      },
+      "Nott'm Forest": {
+        "xg": 1.22,
+        "xga": 1.52
+      },
+      "Wolves": {
+        "xg": 1.12,
+        "xga": 1.62
+      },
+      "Bournemouth": {
+        "xg": 1.28,
+        "xga": 1.55
+      },
+      "Leeds": {
+        "xg": 1.18,
+        "xga": 1.72
+      },
+      "Burnley": {
+        "xg": 1.05,
+        "xga": 1.78
+      },
+      "Sunderland": {
+        "xg": 1.0,
+        "xga": 1.82
+      }
+    },
+    "laliga": {
+      "Real Madrid": {
+        "xg": 2.15,
+        "xga": 1.0
+      },
+      "Barcelona": {
+        "xg": 2.28,
+        "xga": 1.18
+      },
+      "Atletico Madrid": {
+        "xg": 1.72,
+        "xga": 0.98
+      },
+      "Athletic Bilbao": {
+        "xg": 1.52,
+        "xga": 1.22
+      },
+      "Villarreal": {
+        "xg": 1.58,
+        "xga": 1.32
+      },
+      "Real Sociedad": {
+        "xg": 1.42,
+        "xga": 1.28
+      },
+      "Real Betis": {
+        "xg": 1.48,
+        "xga": 1.4
+      },
+      "Girona": {
+        "xg": 1.38,
+        "xga": 1.45
+      },
+      "Valencia": {
+        "xg": 1.25,
+        "xga": 1.42
+      },
+      "Celta Vigo": {
+        "xg": 1.32,
+        "xga": 1.48
+      },
+      "Sevilla": {
+        "xg": 1.25,
+        "xga": 1.5
+      },
+      "Osasuna": {
+        "xg": 1.18,
+        "xga": 1.38
+      },
+      "Mallorca": {
+        "xg": 1.12,
+        "xga": 1.42
+      },
+      "Getafe": {
+        "xg": 1.08,
+        "xga": 1.38
+      },
+      "Rayo Vallecano": {
+        "xg": 1.22,
+        "xga": 1.52
+      },
+      "Alaves": {
+        "xg": 1.08,
+        "xga": 1.52
+      },
+      "Espanyol": {
+        "xg": 1.12,
+        "xga": 1.58
+      },
+      "Oviedo": {
+        "xg": 1.0,
+        "xga": 1.72
+      },
+      "Levante": {
+        "xg": 1.08,
+        "xga": 1.78
+      },
+      "Elche": {
+        "xg": 1.05,
+        "xga": 1.68
+      }
+    },
+    "seriea": {},
+    "bundesliga": {},
+    "ligue1": {},
+    "ligamx": {}
+  }
+}
