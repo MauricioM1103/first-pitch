@@ -5874,8 +5874,14 @@ def _mc_team_stats(sport_slug, game_ctx):
         hs = stats.get(h_name) or {}
         as_ = stats.get(a_name) or {}
         try:
+            import nhl_goalies
+            goalie_adj = nhl_goalies.project_goalie_adjustments(h_name, a_name)
+        except Exception:
+            goalie_adj = {}
+        try:
             import nhl_model
-            lam_h, lam_a = nhl_model.project_lambdas(h_name, a_name, stats, elo)
+            lam_h, lam_a = nhl_model.project_lambdas(h_name, a_name, stats, elo,
+                                                      goalie_adj=goalie_adj)
         except Exception:
             lam_h = lam_a = 2.95
         h_elo = round(elo.get(h_name, 1500.0), 1) if elo else 1500.0
@@ -5910,6 +5916,15 @@ def _mc_team_stats(sport_slug, game_ctx):
                  "home": _f((hs.get('pk_pct') or 0) * 100, 1), "away": _f((as_.get('pk_pct') or 0) * 100, 1)},
                 {"group": "Special Tms","label": "Faceoff win %",
                  "home": _f((hs.get('faceoff_pct') or 0) * 100, 1), "away": _f((as_.get('faceoff_pct') or 0) * 100, 1)},
+                {"group": "Goalie",     "label": "Projected starter",
+                 "home": goalie_adj.get("home_goalie") or "—",
+                 "away": goalie_adj.get("away_goalie") or "—"},
+                {"group": "Goalie",     "label": "Save % (season)",
+                 "home": _f((goalie_adj.get("home_save_pct") or 0) * 100, 1) if goalie_adj.get("home_save_pct") else "—",
+                 "away": _f((goalie_adj.get("away_save_pct") or 0) * 100, 1) if goalie_adj.get("away_save_pct") else "—"},
+                {"group": "Goalie",     "label": "Opp λ scaling",
+                 "home": f"{(goalie_adj.get('home_factor') or 1.0):.2f}×",
+                 "away": f"{(goalie_adj.get('away_factor') or 1.0):.2f}×"},
                 {"group": "Projection", "label": "Projected goals (λ)",
                  "home": _f(lam_h), "away": _f(lam_a)},
                 {"group": "Market",     "label": "Pinnacle fair",

@@ -130,7 +130,8 @@ def get_or_fetch_team_stats():
     return out
 
 
-def project_lambdas(home_name, away_name, stats=None, elo=None):
+def project_lambdas(home_name, away_name, stats=None, elo=None,
+                     goalie_adj=None):
     """Return (λ_home_goals, λ_away_goals) blending team season averages
     with team Elo differential (so a hot team's recent form pushes the
     projection without needing a mid-season rate recompute).
@@ -154,6 +155,16 @@ def project_lambdas(home_name, away_name, stats=None, elo=None):
     shift = diff / 400.0  # 100 Elo → 0.25 goal
     lam_h = base_h + shift / 2
     lam_a = base_a - shift / 2
+    # Confirmed-goalie adjustment: scales opponent's expected goals by the
+    # defending team's projected starter save %. Elite goaltending (>0.925)
+    # suppresses opponent λ by ~15%; shaky goaltending (<0.890) raises it.
+    if goalie_adj:
+        home_factor = goalie_adj.get("home_factor", 1.0)
+        away_factor = goalie_adj.get("away_factor", 1.0)
+        # Home team's goalie quality scales what AWAY scores
+        lam_a *= home_factor
+        # Away team's goalie quality scales what HOME scores
+        lam_h *= away_factor
     return max(0.3, lam_h), max(0.3, lam_a)
 
 
@@ -349,10 +360,22 @@ def get_or_fit_final_elo(refresh=False):
     return result.get("final_elo", {})
 
 
-def simulate_match(home_name, away_name, n=10000, seed=None):
-    """Monte Carlo simulate N games with Poisson goals + OT/SO coin-flip."""
+def simulate_match(home_name, away_name, n=10000, seed=None, goalie_adj=None):
+    """Monte Carlo simulate N games with Poisson goals + OT/SO coin-flip.
+
+    goalie_adj: optional dict from nhl_goalies.project_goalie_adjustments(home, away)
+    with per-side scaling factors. When None, auto-fetches today's goalie
+    stats; pass {} to explicitly disable the adjustment.
+    """
     stats = get_or_fetch_team_stats()
-    lam_h, lam_a = project_lambdas(home_name, away_name, stats)
+    if goalie_adj is None:
+        try:
+            import nhl_goalies
+            goalie_adj = nhl_goalies.project_goalie_adjustments(home_name, away_name)
+        except Exception:
+            goalie_adj = {}
+    lam_h, lam_a = project_lambdas(home_name, away_name, stats,
+                                     goalie_adj=goalie_adj)
     rng = random.Random(seed) if seed is not None else random
 
     def _pois(lam):
@@ -438,6 +461,7 @@ def simulate_match(home_name, away_name, n=10000, seed=None):
         "margins": margins,
         "totals": totals,
         "most_likely_scores": top_scores,
+        "goalie_adj":         goalie_adj or {},
     }
 
 
