@@ -31,9 +31,9 @@ import plays_log
 import log_persist
 
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
-MIN_SAMPLES_FOR_RECO     = 30   # don't trust a weight shift under this n
-MIN_SAMPLES_FOR_CALIB    = 10   # per-bin threshold for calibration display
-MIN_SAMPLES_FOR_FILTER   = 20   # min settled picks before applying a filter tweak
+MIN_SAMPLES_FOR_RECO     = 200  # don't trust a weight shift under this n
+MIN_SAMPLES_FOR_CALIB    = 25   # per-bin threshold for calibration display
+MIN_SAMPLES_FOR_FILTER   = 100  # min settled picks before applying a filter tweak
 MAX_WEIGHT_SHIFT         = 0.15 # cap any single-sport blend adjustment
 DEFAULT_WEIGHT           = 0.5  # pricing_prob = 0.5, mc_prob = 0.5 by default
 LOOKBACK_DAYS            = 90

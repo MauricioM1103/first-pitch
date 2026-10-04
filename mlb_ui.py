@@ -2130,12 +2130,13 @@ PICKS_TEMPLATE = r"""<!doctype html>
   <div class="hero">
     <h1>Today's Picks &middot; {{ date_pretty }}</h1>
     <p class="sub">
-      Confidence-ranked picks across every sport. Hard filters applied: model/fair probability &ge; 46%,
-      decimal odds &ge; 1.70, soccer draws only when decimal &lt; 3.70. Ranked by <strong>model
-      probability</strong> (what Monte Carlo would simulate hit) rather than EV &mdash; the Blacksmith /
-      Syndicate style of taking a confident favorite over a longshot with headline EV.
-      Picks tagged <span style="color:var(--good);text-shadow:var(--ev-strong-glow);font-weight:600">&#9733; Strong</span>
-      clear the 60% model probability threshold. Click <strong>Expand with AI</strong> for a
+      EV-ranked picks across every sport. Each candidate is scored against a 40% model /
+      60% Pinnacle no-vig blend; the picks list is sorted by <strong>expected value</strong>
+      (consensus prob &times; book decimal &minus; 1), floor <strong>+2% EV</strong>. Hard
+      filters: fair probability &ge; 46%, decimal odds &ge; 1.60, one pick per game,
+      games already started are hidden, pricing-model vs Monte Carlo divergence &gt; 8pp
+      drops the pick. Picks tagged <span style="color:var(--good);text-shadow:var(--ev-strong-glow);font-weight:600">&#9733; Strong</span>
+      clear BOTH 60% consensus AND +4% EV. Click <strong>Expand with AI</strong> for a
       Claude-written structured take.
     </p>
   </div>
@@ -7504,8 +7505,13 @@ main.logged-page { max-width: 1040px; }
       {% set r = summary[key] %}
       <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
         <div class="lbl">{{ label }}</div>
+        {% if r.settled %}
         <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
         <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
+        {% else %}
+        <div class="wl" style="color:var(--muted)">&mdash;</div>
+        <span class="units" style="color:var(--muted)">&mdash;</span>
+        {% endif %}
         <div class="meta">{{ r.settled }} settled{% if r.pending %} &middot; {{ r.pending }} pending{% endif %}</div>
       </div>
       {% endfor %}
@@ -7514,14 +7520,19 @@ main.logged-page { max-width: 1040px; }
 
   <section class="records-section">
     <h2>Strong Picks Only <span style="color:var(--good);text-shadow:var(--ev-strong-glow);font-size:16px">★</span></h2>
-    <div class="sub">Model conviction &geq; 60%. Separated so you can tell if the strong tier is the real signal (the way the reference pickers package their best plays).</div>
+    <div class="sub">Both &ge; 60% consensus AND &ge; +4% EV. Separated so you can tell if the strong tier is the real signal (the way the reference pickers package their best plays).</div>
     <div class="records-grid">
       {% for key, label in [('strong_7d','Last 7 days'),('strong_30d','Last 30 days'),('strong_90d','Last 90 days')] %}
       {% set r = summary[key] %}
       <div class="rec-tile strong-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
         <div class="lbl">{{ label }}</div>
+        {% if r.settled %}
         <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
         <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
+        {% else %}
+        <div class="wl" style="color:var(--muted)">&mdash;</div>
+        <span class="units" style="color:var(--muted)">&mdash;</span>
+        {% endif %}
         <div class="meta">{{ r.settled }} settled{% if r.pending %} &middot; {{ r.pending }} pending{% endif %}</div>
       </div>
       {% endfor %}
@@ -7633,10 +7644,10 @@ main.logged-page { max-width: 1040px; }
           {% for r in by_sport %}
             <tr>
               <td class="brk-key">{{ r.key }}</td>
-              <td>{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}</td>
-              <td class="{{ 'good' if r.win_pct >= 55 else ('bad' if r.win_pct < 48 and r.settled >= 10 else '') }}">{{ '%.1f' % r.win_pct }}%</td>
-              <td class="{{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">{{ '%+.2f' % r.units }}u</td>
-              <td class="{{ 'good' if r.roi_pct > 0 else ('bad' if r.roi_pct < 0 else '') }}">{{ '%+.1f' % r.roi_pct }}%</td>
+              <td>{% if r.settled %}{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}{% else %}&mdash;{% endif %}</td>
+              <td class="{{ 'good' if r.win_pct >= 55 and r.settled else ('bad' if r.win_pct < 48 and r.settled >= 10 else '') }}">{% if r.settled %}{{ '%.1f' % r.win_pct }}%{% else %}&mdash;{% endif %}</td>
+              <td class="{{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">{% if r.settled %}{{ '%+.2f' % r.units }}u{% else %}&mdash;{% endif %}</td>
+              <td class="{{ 'good' if r.roi_pct > 0 else ('bad' if r.roi_pct < 0 else '') }}">{% if r.settled %}{{ '%+.1f' % r.roi_pct }}%{% else %}&mdash;{% endif %}</td>
             </tr>
           {% endfor %}
           </tbody>
@@ -7650,10 +7661,10 @@ main.logged-page { max-width: 1040px; }
           {% for r in by_market %}
             <tr>
               <td class="brk-key">{{ r.key }}</td>
-              <td>{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}</td>
-              <td class="{{ 'good' if r.win_pct >= 55 else ('bad' if r.win_pct < 48 and r.settled >= 10 else '') }}">{{ '%.1f' % r.win_pct }}%</td>
-              <td class="{{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">{{ '%+.2f' % r.units }}u</td>
-              <td class="{{ 'good' if r.roi_pct > 0 else ('bad' if r.roi_pct < 0 else '') }}">{{ '%+.1f' % r.roi_pct }}%</td>
+              <td>{% if r.settled %}{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}{% else %}&mdash;{% endif %}</td>
+              <td class="{{ 'good' if r.win_pct >= 55 and r.settled else ('bad' if r.win_pct < 48 and r.settled >= 10 else '') }}">{% if r.settled %}{{ '%.1f' % r.win_pct }}%{% else %}&mdash;{% endif %}</td>
+              <td class="{{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">{% if r.settled %}{{ '%+.2f' % r.units }}u{% else %}&mdash;{% endif %}</td>
+              <td class="{{ 'good' if r.roi_pct > 0 else ('bad' if r.roi_pct < 0 else '') }}">{% if r.settled %}{{ '%+.1f' % r.roi_pct }}%{% else %}&mdash;{% endif %}</td>
             </tr>
           {% endfor %}
           </tbody>
