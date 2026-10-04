@@ -380,6 +380,33 @@ def simulate_match(home_name, away_name, n=10000, seed=None):
                 hg += 1
             else:
                 ag += 1
+        else:
+            # EMPTY-NET GOALS. The trailing team pulls their goalie in the
+            # last ~90 sec of a 1-goal game, 2-3 min of a 2-goal game. The
+            # leader converts the empty net at ~35% in 1-goal games (goalie
+            # pulled → open net for a shift), ~15% in 2-goal games.
+            # Empirical rates from Natural Stat Trick (recent 5 seasons):
+            #   1-goal games → 0.42 ENG expected per game (so ~35% of them
+            #     get at least one; a few get two)
+            #   2-goal games → ~0.18 ENG expected per game
+            # This is the piece that was mispricing ±1.5 puck lines — the
+            # pre-fix sim had trailing-team +1.5 at e.g. 76.9% when market
+            # was 69.9%, because 1-goal regulation finals became 1.5 covers
+            # that in reality often become 2-goal losses after the ENG.
+            margin = abs(hg - ag)
+            if margin == 1:
+                # 42% chance of one ENG, 8% chance of two
+                r = rng.random()
+                extra = 2 if r < 0.08 else (1 if r < 0.50 else 0)
+            elif margin == 2:
+                extra = 1 if rng.random() < 0.18 else 0
+            else:
+                extra = 0
+            if extra:
+                if hg > ag:
+                    hg += extra
+                else:
+                    ag += extra
         if hg > ag:
             home_wins += 1
         else:

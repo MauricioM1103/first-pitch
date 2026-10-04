@@ -29,8 +29,14 @@ CACHE_MAX_AGE_H = 24
 INITIAL_ELO = 1500.0
 HFA_ELO = 65.0            # CFB HFA ~ 3 pts ≈ 65 Elo
 K_FACTOR = 20.0
-PPG_BASE = 28.0           # CFB avg scoring per team ~ 28
-SIGMA_POINTS = 15.0       # team scoring stddev — larger than NFL
+# CFB total avg ≈ 54 across FBS last 3 seasons, so each team averages ~27.
+# Review feedback showed our sim was running Overs at 62-64% across every
+# game, which is textbook over-pacing — lowering per-team baseline to 25.5
+# brings projected totals from ~56 to ~51 and lets market anchoring do the
+# rest.
+PPG_BASE = 25.5
+SIGMA_POINTS = 14.0       # tightened from 15 — Over bias also had sigma too high
+MARKET_ANCHOR_WEIGHT = 0.40  # when a Pinnacle total is known, blend 40% toward it
 NUM_SEASONS = 5           # keep CFBD call volume reasonable
 
 
@@ -126,23 +132,38 @@ def get_or_fit_team_elo():
     return elo
 
 
-def project_points(home_name, away_name):
-    """Return (proj_home_pts, proj_away_pts) from team Elo + HFA."""
+def project_points(home_name, away_name, market_total=None):
+    """Return (proj_home_pts, proj_away_pts) from team Elo + HFA.
+
+    market_total: when a Pinnacle total line is available, blend our raw
+    projection partway toward it. Pinnacle is sharp on NCAAF totals and
+    this stops the sim from running away with Overs when our baseline is
+    off for a specific pace matchup.
+    """
     elo = get_or_fit_team_elo()
     h_elo = elo.get(home_name, INITIAL_ELO)
     a_elo = elo.get(away_name, INITIAL_ELO)
     diff = (h_elo + HFA_ELO) - a_elo
-    # Scale: 100 Elo ≈ 5 CFB points
-    edge = diff / 20.0
+    edge = diff / 20.0  # 100 Elo ≈ 5 CFB points
     proj_h = PPG_BASE + edge / 2
     proj_a = PPG_BASE - edge / 2
+
+    if market_total is not None and market_total > 0:
+        our_total = proj_h + proj_a
+        blended_total = ((1 - MARKET_ANCHOR_WEIGHT) * our_total
+                         + MARKET_ANCHOR_WEIGHT * market_total)
+        # Preserve our margin split while anchoring the total
+        if our_total > 0:
+            scale = blended_total / our_total
+            proj_h *= scale
+            proj_a *= scale
     return proj_h, proj_a
 
 
-def simulate_match(home_name, away_name, n=10000, seed=None):
+def simulate_match(home_name, away_name, n=10000, seed=None, market_total=None):
     """Normal-distribution scoring simulator."""
     rng = random.Random(seed) if seed is not None else random
-    proj_h, proj_a = project_points(home_name, away_name)
+    proj_h, proj_a = project_points(home_name, away_name, market_total=market_total)
 
     home_wins = away_wins = ties = 0
     margins = []

@@ -341,9 +341,14 @@ MODEL_WEIGHT             = 0.40
 _SIM_CACHE = {}
 
 
-def _sim_for(sport_slug, home, away):
-    """Run (or fetch cached) MC sim for this game. Returns dict or None."""
-    key = (sport_slug, home or "", away or "")
+def _sim_for(sport_slug, home, away, market_total=None):
+    """Run (or fetch cached) MC sim for this game. Returns dict or None.
+
+    market_total: Pinnacle's main total line, if available. Only used by
+    the NCAAF sim to anchor its scoring projection against the market
+    (prevents the Over bias flagged in the review).
+    """
+    key = (sport_slug, home or "", away or "", market_total)
     if key in _SIM_CACHE:
         return _SIM_CACHE[key]
     sim = None
@@ -357,7 +362,8 @@ def _sim_for(sport_slug, home, away):
             sim = nhl_model.simulate_match(home, away, n=CONSENSUS_SIM_TRIALS)
         elif sport_slug == "ncaaf":
             import cfb_model
-            sim = cfb_model.simulate_match(home, away, n=CONSENSUS_SIM_TRIALS)
+            sim = cfb_model.simulate_match(home, away, n=CONSENSUS_SIM_TRIALS,
+                                           market_total=market_total)
         elif sport_slug == "nfl":
             sim = _nfl_quick_sim(home, away, CONSENSUS_SIM_TRIALS)
         elif sport_slug == "mlb":
@@ -496,7 +502,17 @@ def _apply_consensus(picks):
         # Drop market types the analyzer flagged as deeply unprofitable.
         if p.get("market") in market_blacklist:
             continue
-        sim = _sim_for(p["sport_slug"], p.get("home_team"), p.get("away_team"))
+        # For NCAAF totals, extract the line from the pick text and pass to
+        # the sim so it can anchor its scoring projection against the market
+        # (fixes the Over bias where every total was 62-64%).
+        market_total = None
+        if p.get("sport_slug") == "ncaaf" and "Total" in (p.get("market") or ""):
+            m = _re.search(r"(?i)(?:over|under)\s+([\d.]+)", p.get("pick") or "")
+            if m:
+                try: market_total = float(m.group(1))
+                except ValueError: pass
+        sim = _sim_for(p["sport_slug"], p.get("home_team"), p.get("away_team"),
+                       market_total=market_total)
         sim_prob = _sim_prob_for_pick(sim, p)
         fair = p.get("fair_prob") or 0.0
 
