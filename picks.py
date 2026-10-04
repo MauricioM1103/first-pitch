@@ -700,14 +700,15 @@ def _expand_alt_line_picks(picks):
             else:
                 fair = nfl_margin_dist.p_margin_le(proj_margin_home, alt_line - 0.001, sport=slug)
 
-            if fair < 0.46 or fair > 0.90:
-                continue  # outside useful band
-
-            # Alt lines are shown INFORMATIONALLY: we can't price them
-            # accurately without live DK alt-line odds, so we surface the
-            # empirical fair prob and leave EV blank. User looks up the
-            # actual DK price and decides.
-            if fair < 0.60:  # only show meaningfully-confident alts
+            # Keep only the ACTIONABLE alts:
+            #   * ≥ 55% fair: confident enough to be worth considering
+            #   * ≤ 66% fair: not already a near-lock; DK juice beyond
+            #     ~66% implied prob eats the edge (prices like -200+)
+            #   * also skip alts whose fair is within 3pp of the main
+            #     pick's own fair — not an informative shift
+            if fair < 0.55 or fair > 0.66:
+                continue
+            if abs(fair - pricing) < 0.03:
                 continue
 
             # Direction label from the bettor's perspective: +X means the
