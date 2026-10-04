@@ -691,6 +691,11 @@ def _expand_alt_line_picks(picks):
             alt_line = base_line + alt_shift
             if alt_line == base_line:
                 continue
+            # Skip ±0 spreads — they're draw-no-bet markets that don't
+            # exist on US books, and even on exchanges they create pushes
+            # whenever the game lands on 0 margin.
+            if abs(alt_line) < 0.01:
+                continue
             # Fair prob at this alt line:
             #   home covers -alt_line  ⇔  margin > -alt_line
             #   away covers +alt_line  ⇔  margin <  alt_line
