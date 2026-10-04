@@ -6153,7 +6153,7 @@ def _mc_run_simulation(sport_slug, game_ctx, n_sims):
         }
     if sport_slug == "nfl":
         try:
-            import nfl_model
+            import nfl_model, nfl_margin_dist
             state = nfl_model.get_final_state()
             final_elo = state.get("final_elo", {}) if state else {}
             h_name = game_ctx.get("home_name", "")
@@ -6164,23 +6164,25 @@ def _mc_run_simulation(sport_slug, game_ctx, n_sims):
             a_elo = final_elo.get(a, nfl_model.INITIAL_ELO)
             diff = (h_elo + 65) - a_elo
             edge = diff / 25.0
-            proj_h = 22.5 + edge / 2
-            proj_a = 22.5 - edge / 2
+            proj_margin = edge  # expected margin, home − away
+            # Totals stay Gaussian for V1 — the empirical margin distribution
+            # is the piece that mattered for key-number pricing on spreads.
+            proj_total = 45.0
             import random
             rng = random.Random()
             margins = []
             h_wins = a_wins = ties = 0
             for _ in range(n_sims):
-                hs = max(0.0, rng.gauss(proj_h, 13.0))
-                asc = max(0.0, rng.gauss(proj_a, 13.0))
-                m = hs - asc
+                m = nfl_margin_dist.sample_margin(proj_margin, rng, sport="nfl")
                 margins.append(m)
-                if abs(m) < 0.5:
+                if m == 0:
                     ties += 1
-                elif hs > asc:
+                elif m > 0:
                     h_wins += 1
                 else:
                     a_wins += 1
+            proj_h = (proj_total + proj_margin) / 2
+            proj_a = (proj_total - proj_margin) / 2
             return {
                 "n_sims": n_sims,
                 "home_team": h_name,
@@ -6190,10 +6192,10 @@ def _mc_run_simulation(sport_slug, game_ctx, n_sims):
                 "p_draw": ties / n_sims * 100,
                 "proj_home": round(proj_h, 1),
                 "proj_away": round(proj_a, 1),
-                "mean_total": round(proj_h + proj_a, 1),
+                "mean_total": round(proj_total, 1),
                 "margins": margins,
                 "has_draw": False,
-                "notes": "Normal-distribution scoring from Elo (σ ≈ 13 pts)",
+                "notes": "Empirical margin distribution (2600+ historical NFL games) shifted by Elo-projected margin",
                 "sport_name": "NFL",
             }
         except Exception:

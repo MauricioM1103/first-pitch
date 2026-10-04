@@ -257,10 +257,14 @@ def _passes_filter(p):
 
 def _passes_ev_filter(p):
     """Final EV check — only run after consensus has blended with the market.
-    A pick with 55% fair at -118 (implied 54%) is +1pp of edge, not a bet."""
+    A pick with 55% fair at -118 (implied 54%) is +1pp of edge, not a bet.
+    Alt-line picks (alt_line_flag) are informational and bypass the EV
+    gate; they get surfaced for their fair probability only."""
+    if p.get("alt_line_flag"):
+        return True
     ev = p.get("ev_pct")
     if ev is None:
-        return True  # don't lose picks when we can't compute (shouldn't happen)
+        return True
     return ev >= MIN_EV_PCT
 
 
@@ -378,9 +382,9 @@ def _sim_for(sport_slug, home, away, market_total=None):
 
 
 def _nfl_quick_sim(home_name, away_name, n):
-    """Normal-dist NFL scoring sim for picks consensus. Mirrors _mc_run_simulation NFL branch."""
+    """Empirical-margin NFL sim for picks consensus. Mirrors _mc_run_simulation NFL branch."""
     try:
-        import nfl_model, random
+        import nfl_model, nfl_margin_dist, random
         state = nfl_model.get_final_state()
         final_elo = state.get("final_elo", {}) if state else {}
         h = nfl_model.abbr_from_name(home_name) or home_name
@@ -389,19 +393,27 @@ def _nfl_quick_sim(home_name, away_name, n):
         a_elo = final_elo.get(a, nfl_model.INITIAL_ELO)
         diff = (h_elo + 65) - a_elo
         edge = diff / 25.0
-        proj_h = 22.5 + edge / 2
-        proj_a = 22.5 - edge / 2
+        proj_margin = edge
+        proj_total  = 45.0  # NFL avg total; we draw it independently of margin for V1
         rng = random.Random()
         h_wins = a_wins = 0
+        margins = []
         for _ in range(n):
-            hs = max(0.0, rng.gauss(proj_h, 13.0))
-            asc = max(0.0, rng.gauss(proj_a, 13.0))
-            if hs > asc: h_wins += 1
-            else: a_wins += 1
+            m = nfl_margin_dist.sample_margin(proj_margin, rng, sport="nfl")
+            margins.append(m)
+            if m > 0: h_wins += 1
+            elif m < 0: a_wins += 1
+            else:
+                # Rare 0 — coin flip for OT
+                if rng.random() < 0.52: h_wins += 1
+                else: a_wins += 1
+        proj_h = (proj_total + proj_margin) / 2
+        proj_a = (proj_total - proj_margin) / 2
         return {"home_win_pct": h_wins / n * 100,
                 "away_win_pct": a_wins / n * 100,
                 "draw_pct": 0.0,
-                "expected_total": proj_h + proj_a,
+                "expected_total": proj_total,
+                "margins": margins,
                 "proj_home_pts": proj_h,
                 "proj_away_pts": proj_a}
     except Exception:
@@ -591,6 +603,142 @@ def _apply_consensus(picks):
     return kept
 
 
+def _expand_alt_line_picks(picks):
+    """For each NFL/NCAAF spread pick, add alt-line variants at ±3 and ±6
+    points off the main line. Fair prob is read off the empirical margin
+    distribution; EV is scored against the base pick's book price adjusted
+    for a per-point juice shift (approximate DK alt-line pricing).
+
+    Each generated alt pick carries alt_line_flag=True so the UI badges it
+    as 'ALT' and reminds the user to confirm the actual DK price before
+    locking it in.
+    """
+    try:
+        import nfl_margin_dist
+    except Exception:
+        return picks
+
+    out = list(picks)
+    for p in picks:
+        slug = p.get("sport_slug")
+        if slug not in ("nfl", "ncaaf"):
+            continue
+        if "Spread" not in (p.get("market") or ""):
+            continue
+        # Parse the current line and side from the pick text
+        import re as _re
+        m = _re.search(r"([+-]\d+(?:\.\d+)?)", p.get("pick") or "")
+        if not m:
+            continue
+        try:
+            base_line = float(m.group(1))
+        except ValueError:
+            continue
+        base_dec = p.get("decimal") or 0.0
+        if base_dec <= 1.0:
+            continue
+        side_name = p.get("home_team") if (p.get("home_team") or "").lower() in (p.get("pick") or "").lower() else p.get("away_team")
+        is_home = side_name == p.get("home_team")
+
+        # Projected margin: for the FAVORITE's side, main line implied prob is
+        # roughly fair_prob; we back out projected margin by solving
+        # p_margin_ge(x, −base_line) = pricing_prob for the home side. Easier:
+        # use the pricing_prob as a starting point and solve numerically.
+        pricing = p.get("pricing_prob") or p.get("consensus_prob") or 0.5
+        proj_margin_home = _solve_margin_for_prob(pricing, base_line, is_home, slug)
+        if proj_margin_home is None:
+            continue
+
+        for alt_shift in (-3.0, -6.0, 3.0, 6.0):
+            alt_line = base_line + alt_shift
+            if alt_line == base_line:
+                continue
+            # Fair prob at this alt line:
+            #   home covers -alt_line  ⇔  margin > -alt_line
+            #   away covers +alt_line  ⇔  margin <  alt_line
+            # (Note: alt_line here is the SIDE's spread — negative = favored.)
+            if is_home:
+                fair = nfl_margin_dist.p_margin_ge(proj_margin_home, -alt_line + 0.001, sport=slug)
+            else:
+                fair = nfl_margin_dist.p_margin_le(proj_margin_home, alt_line - 0.001, sport=slug)
+
+            if fair < 0.46 or fair > 0.90:
+                continue  # outside useful band
+
+            # Alt lines are shown INFORMATIONALLY: we can't price them
+            # accurately without live DK alt-line odds, so we surface the
+            # empirical fair prob and leave EV blank. User looks up the
+            # actual DK price and decides.
+            if fair < 0.60:  # only show meaningfully-confident alts
+                continue
+
+            # Direction label from the bettor's perspective: +X means the
+            # bettor gets X MORE points of cushion vs the main line.
+            if is_home:
+                bettor_delta = base_line - alt_line  # home moving to shorter spread = easier
+            else:
+                bettor_delta = alt_line - base_line  # away moving to bigger +line = easier
+            delta_tag = f"+{bettor_delta:.1f} pts easier" if bettor_delta > 0 else f"{bettor_delta:.1f} pts harder"
+            new_line_label = f"{side_name} {'+' if alt_line >= 0 else ''}{alt_line}"
+            new_pick = dict(p)
+            new_pick.update({
+                "id":         f"{p.get('id','')}_alt{alt_shift:+.0f}",
+                "pick":       f"{new_line_label} (ALT · {delta_tag} vs main)",
+                "fair_prob":  fair,
+                "consensus_prob": fair,
+                "pricing_prob":  fair,
+                "mc_prob":    fair,
+                "decimal":    None,     # no model price for alt
+                "american":   None,
+                "ev_pct":     None,     # bypass EV filter — informational
+                "kelly_pct":  None,
+                "alt_line_flag": True,
+                "alt_shift":  alt_shift,
+                "alt_delta":  bettor_delta,
+                "base_line":  base_line,
+                "book":       "verify at DK/FD",
+                "strong":     False,
+                "bulletin":   (f"Alt-line candidate from the empirical NFL/NCAAF "
+                               f"margin distribution. Fair prob {fair*100:.1f}% "
+                               f"at {new_line_label} ({delta_tag} vs main line "
+                               f"{side_name} {'+' if base_line>=0 else ''}{base_line}). "
+                               f"Not auto-priced — compare live DK alt odds to "
+                               f"decide if the price beats the fair."),
+            })
+            out.append(new_pick)
+    return out
+
+
+def _solve_margin_for_prob(target_prob, base_line, is_home, slug):
+    """Numerically back out the projected margin that produces target_prob at base_line.
+    Returns the home-side projected margin (positive = home favored)."""
+    try:
+        import nfl_margin_dist
+    except Exception:
+        return None
+    # Grid search: projected home margins from -21 to +21
+    best = None
+    best_err = 1e9
+    for pm in range(-21, 22):
+        if is_home:
+            fair = nfl_margin_dist.p_margin_ge(pm, -base_line + 0.001, sport=slug)
+        else:
+            fair = nfl_margin_dist.p_margin_le(pm, base_line - 0.001, sport=slug)
+        err = abs(fair - target_prob)
+        if err < best_err:
+            best_err = err
+            best = pm
+    return best
+
+
+def _dec_to_american(dec):
+    if dec is None or dec <= 1.0:
+        return "—"
+    if dec >= 2.0:
+        return f"+{int(round((dec - 1) * 100))}"
+    return str(int(round(-100 / (dec - 1))))
+
+
 def collect_picks(date_str, today_only=True):
     """Return filtered picks ranked by model probability (not EV).
 
@@ -624,26 +772,38 @@ def collect_picks(date_str, today_only=True):
     # Rewrites ev_pct against the blended consensus.
     filtered = _apply_consensus(filtered)
 
+    # Alt-line expansion: for NFL/NCAAF spreads, add alt-line variants at
+    # ±3 and ±6 points off the main line, priced from the empirical margin
+    # distribution. Each alt pick is marked with alt_line_flag so the UI
+    # can show "ALT" and remind the user to compare to the live DK price.
+    filtered = _expand_alt_line_picks(filtered)
+
     # Final EV gate — a pick must beat the market by at least MIN_EV_PCT after
     # the 40/60 blend. Zero or negative EV picks don't belong on the board.
     filtered = [p for p in filtered if _passes_ev_filter(p)]
 
-    # ONE PICK PER GAME. Picking both the ML and the Over for the same game is
-    # just double-dipping the same read; keep the highest-EV pick for each game.
+    # ONE PICK PER GAME for the MAIN board — picking both ML and Over on
+    # the same game is double-dipping. Alt-line picks are exempt from this
+    # rule because they're informational companions, not primary bets.
+    main_picks = [p for p in filtered if not p.get("alt_line_flag")]
+    alt_picks  = [p for p in filtered if p.get("alt_line_flag")]
     best_per_game = {}
-    for p in filtered:
+    for p in main_picks:
         key = (p["sport_slug"], p.get("game", ""))
         current = best_per_game.get(key)
         if not current or (p.get("ev_pct") or 0) > (current.get("ev_pct") or 0):
             best_per_game[key] = p
-    deduped = list(best_per_game.values())
+    deduped = list(best_per_game.values()) + alt_picks
 
-    # Rank by EV (desc) with consensus prob as a tiebreaker. EV is the real
-    # ordering signal — a +4% EV pick beats a +1% EV pick even if the second
-    # has a higher raw probability. Probability still gates via MIN_FAIR_PROB.
-    deduped.sort(key=lambda x: (-(x.get("ev_pct") or 0.0),
-                                 -(x.get("consensus_prob") or 0.0)))
-    deduped = deduped[:MAX_PICKS]
+    # Rank: main picks first by EV desc; alt-line picks appended at the end
+    # ordered by fair prob desc. Alts carry no EV so they shouldn't crowd
+    # out real +EV plays, but they're useful once you've locked a side.
+    main_sorted = [p for p in deduped if not p.get("alt_line_flag")]
+    alt_sorted  = [p for p in deduped if p.get("alt_line_flag")]
+    main_sorted.sort(key=lambda x: (-(x.get("ev_pct") or 0.0),
+                                     -(x.get("consensus_prob") or 0.0)))
+    alt_sorted.sort(key=lambda x: -(x.get("fair_prob") or 0.0))
+    deduped = main_sorted[:MAX_PICKS] + alt_sorted[:12]
 
     # Tag strong tier: both ≥ 60% consensus AND ≥ 4% EV to earn the star.
     for p in deduped:
