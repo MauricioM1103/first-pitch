@@ -380,6 +380,9 @@ def get_games(date_str):
                 "ops": hitting.get("ops", ""),
                 "hr": hitting.get("homeRuns"),
                 "runs": hitting.get("runs"),
+                # Keep the raw hitting dict so the plate-appearance simulator
+                # can derive K% / BB% / 1B / 2B / 3B / HR per-PA rates.
+                "hitting_raw": hitting,
                 "team_era": pitching.get("era", ""),
                 "team_whip": pitching.get("whip", ""),
                 "team_k9": pitching.get("strikeoutsPer9Inn", ""),
@@ -6078,11 +6081,23 @@ def _mc_edge_table(sport_slug, game_ctx, sim):
 def _mc_run_simulation(sport_slug, game_ctx, n_sims):
     """Run the per-sport simulator and return a normalized result dict."""
     if sport_slug == "mlb":
+        # Prefer the new plate-appearance Markov sim; fall back to the old
+        # Poisson engine if the PA path errors (e.g. missing hitting_raw).
+        sim = None
+        engine_label = ""
         try:
-            import mlb_model
-            sim = mlb_model.simulate_from_game_ctx(game_ctx, n_sims=n_sims)
+            import mlb_pa_model
+            sim = mlb_pa_model.simulate_from_game_ctx(game_ctx, n=n_sims)
+            engine_label = sim.get("notes") or "PA Markov sim"
         except Exception:
             sim = None
+        if sim is None:
+            try:
+                import mlb_model
+                sim = mlb_model.simulate_from_game_ctx(game_ctx, n_sims=n_sims)
+                engine_label = f"Poisson scoring (extras {sim['extras_pct']*100:.0f}%)"
+            except Exception:
+                return None
         if not sim:
             return None
         return {
@@ -6097,7 +6112,7 @@ def _mc_run_simulation(sport_slug, game_ctx, n_sims):
             "mean_total": round(sim["mean_total"], 1),
             "margins": sim["margins"],
             "has_draw": False,
-            "notes": f"Poisson scoring, extras resolved coin-flip ({sim['extras_pct']*100:.0f}% extras rate)",
+            "notes": engine_label,
             "sport_name": "MLB",
         }
     if sport_slug in {"epl", "laliga", "ligamx", "ucl", "europa", "international"}:
