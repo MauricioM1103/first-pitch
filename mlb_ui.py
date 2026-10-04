@@ -5932,6 +5932,43 @@ def _mc_team_stats(sport_slug, game_ctx):
                  "away": f"{round((fair.get('away') or 0) * 100, 1)}%" if fair.get('away') else "—"},
             ],
         }
+    if sport_slug == "ufc":
+        import ufc_model
+        h_name = game_ctx.get("home_name", "")
+        a_name = game_ctx.get("away_name", "")
+        a = ufc_model.get_fighter(h_name)
+        b = ufc_model.get_fighter(a_name)
+        p_a = ufc_model.win_prob_glicko(a, b) * 100
+        return {
+            "home_name": a.get("canonical_name", h_name),
+            "away_name": b.get("canonical_name", a_name),
+            "rows": [
+                {"group": "Rating", "label": "Glicko rating",
+                 "home": round(a.get("rating", 1500), 0),
+                 "away": round(b.get("rating", 1500), 0)},
+                {"group": "Rating", "label": "Rating deviation",
+                 "home": f"±{a.get('rd', 350):.0f}",
+                 "away": f"±{b.get('rd', 350):.0f}"},
+                {"group": "Rating", "label": "Glicko win-prob",
+                 "home": f"{p_a:.1f}%",
+                 "away": f"{100 - p_a:.1f}%"},
+                {"group": "Record", "label": "Pro record",
+                 "home": f"{a.get('wins', 0)}-{a.get('losses', 0)}",
+                 "away": f"{b.get('wins', 0)}-{b.get('losses', 0)}"},
+                {"group": "Striking", "label": "Strikes landed / min",
+                 "home": a.get("slpm", "—"), "away": b.get("slpm", "—")},
+                {"group": "Striking", "label": "Strikes absorbed / min",
+                 "home": a.get("sapm", "—"), "away": b.get("sapm", "—")},
+                {"group": "Grappling", "label": "Takedown accuracy",
+                 "home": f"{a.get('td_acc', 0)*100:.0f}%",
+                 "away": f"{b.get('td_acc', 0)*100:.0f}%"},
+                {"group": "Grappling", "label": "Takedown defense",
+                 "home": f"{a.get('td_def', 0)*100:.0f}%",
+                 "away": f"{b.get('td_def', 0)*100:.0f}%"},
+                {"group": "Grappling", "label": "Submissions / 15 min",
+                 "home": a.get("sub_avg", "—"), "away": b.get("sub_avg", "—")},
+            ],
+        }
     return {
         "home_name": game_ctx.get("home_name", game_ctx.get("home", "Home")),
         "away_name": game_ctx.get("away_name", game_ctx.get("away", "Away")),
@@ -6313,6 +6350,35 @@ def _mc_run_simulation(sport_slug, game_ctx, n_sims):
                       f"(home λ={sim['lam_home']:.2f}, away λ={sim['lam_away']:.2f}, "
                       f"OT/SO rate {sim['ot_pct']:.0f}%)"),
             "sport_name": "NHL",
+        }
+    if sport_slug == "ufc":
+        try:
+            import ufc_model
+            # UFC games use "home_name" / "away_name" for the fighters
+            h_name = game_ctx.get("home_name", "")
+            a_name = game_ctx.get("away_name", "")
+            ufc_sim = ufc_model.simulate_fight(h_name, a_name, n=n_sims)
+        except Exception:
+            return None
+        if not ufc_sim:
+            return None
+        return {
+            "n_sims":     n_sims,
+            "home_team":  ufc_sim["fighter_a"],
+            "away_team":  ufc_sim["fighter_b"],
+            "p_home":     ufc_sim["p_a_wins"] * 100,
+            "p_away":     ufc_sim["p_b_wins"] * 100,
+            "p_draw":     0.0,
+            "proj_home":  "—",   # fights don't have points
+            "proj_away":  "—",
+            "mean_total": "—",
+            "margins":    [],
+            "has_draw":   False,
+            "method_breakdown": {k: v * 100 for k, v in ufc_sim["method"].items()},
+            "notes": (f"Glicko ratings (A {ufc_sim['a_stats'].get('rating',1500):.0f}±{ufc_sim['a_stats'].get('rd',350):.0f}, "
+                      f"B {ufc_sim['b_stats'].get('rating',1500):.0f}±{ufc_sim['b_stats'].get('rd',350):.0f}) "
+                      f"with striking/grappling blend (style adj {ufc_sim['style_adj']*100:+.1f}pp)"),
+            "sport_name": "UFC",
         }
     return None
 

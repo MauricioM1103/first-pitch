@@ -119,7 +119,7 @@ def _model_source(slug):
         "ucl":    "Dixon-Coles sim with EPL-prior goal rates",
         "europa": "Dixon-Coles sim with EPL-prior goal rates",
         "international": "Dixon-Coles sim with league-average goal rates",
-        "ufc":    "Pinnacle devig only (fighter-level model TBD)",
+        "ufc":    "Glicko fighter ratings + striking/grappling blend",
     }
     return labels.get(slug, "Pinnacle devig")
 
@@ -379,6 +379,15 @@ def _sim_for(sport_slug, home, away, market_total=None):
                                            market_total=market_total)
         elif sport_slug == "nfl":
             sim = _nfl_quick_sim(home, away, CONSENSUS_SIM_TRIALS)
+        elif sport_slug == "ufc":
+            import ufc_model
+            # For UFC the "home" / "away" fields carry the fighter names
+            ufc_sim = ufc_model.simulate_fight(home, away, n=CONSENSUS_SIM_TRIALS // 2)
+            sim = {
+                "home_win_pct": ufc_sim["p_a_wins"] * 100,
+                "away_win_pct": ufc_sim["p_b_wins"] * 100,
+                "draw_pct":     0.0,
+            }
         elif sport_slug == "mlb":
             # MLB's full sim needs the game context; we don't carry it on the
             # pick dict. The MLB model is already used for the pick's fair_prob
@@ -937,7 +946,7 @@ def generate_bulletin(pick):
                   "Blended 40% model + 60% Pinnacle devig before EV.",
         "international": "International: Dixon-Coles sim with league-prior rates "
                          "(fallback). Blended 40% model + 60% Pinnacle devig before EV.",
-        "ufc":    "UFC: Pinnacle devig only. Dedicated fighter model is a known gap.",
+        "ufc":    "UFC model: Glicko fighter ratings (snapshot from UFCStats) blended with striking (SLpM/SApM) and grappling (TD acc/def, sub avg). Blended 40% model + 60% Pinnacle devig before EV.",
     }
     base += " " + model_labels.get(slug, "Model: Pinnacle devig.")
     if pick.get("divergent_flag"):
