@@ -478,6 +478,35 @@ def _sim_prob_for_pick(sim, pick):
             return (sim.get("btts_no_pct") or 1 - (sim.get("btts_yes_pct") or 0) / 100.0) / 100.0 if sim.get("btts_no_pct") else (1 - (sim.get("btts_yes_pct") or 0) / 100.0)
         return None
 
+    # Win-to-nil (team wins AND clean sheet). Pinnacle lists these as
+    # "Win-to-Nil - Home" / "Win-to-Nil - Away" when they're posted.
+    if "Win-to-Nil" in market or "WTN" in market:
+        if home_norm and home_norm in pick_norm:
+            return (sim.get("home_wn_pct") or 0) / 100.0
+        if away_norm and away_norm in pick_norm:
+            return (sim.get("away_wn_pct") or 0) / 100.0
+        return None
+
+    # Team totals (e.g. "Arsenal Over 1.5" or "Chelsea Under 2.5")
+    if "Team Total" in market or "TT" in market:
+        import re as _re
+        m = _re.search(r"(?i)(over|under)\s*([\d.]+)", text)
+        if not m:
+            return None
+        side_dir = m.group(1).lower()
+        try:
+            line = float(m.group(2))
+        except ValueError:
+            return None
+        is_home_side = home_norm and home_norm in pick_norm
+        if abs(line - 1.5) < 0.01:
+            over_pct = (sim.get("home_tt_over_1_5" if is_home_side else "away_tt_over_1_5") or 0) / 100.0
+        elif abs(line - 2.5) < 0.01:
+            over_pct = (sim.get("home_tt_over_2_5" if is_home_side else "away_tt_over_2_5") or 0) / 100.0
+        else:
+            return None
+        return over_pct if side_dir == "over" else (1 - over_pct)
+
     # Spread / Puck Line / Run Line / 1H / 1P Spread — need per-sim margins
     # (which simulate_match doesn't surface in its summary). Skip the consensus
     # check for spreads; the line-shape filter already removes the worst noise.
