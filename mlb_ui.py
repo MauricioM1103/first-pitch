@@ -2054,6 +2054,21 @@ PICKS_TEMPLATE = r"""<!doctype html>
 .pick-stats .label { color: var(--muted-2); margin-right: 4px; letter-spacing: 0.06em; text-transform: uppercase; font-size: 9.5px; }
 .pick-stats b { color: var(--ink); font-weight: 500; }
 
+.poly-signal {
+  margin: 8px 0 0;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  border-left: 3px solid var(--rule-strong);
+  background: var(--surface);
+  color: var(--ink);
+}
+.poly-signal.poly-good { border-left-color: var(--good); background: color-mix(in oklab, var(--good) 10%, var(--card)); }
+.poly-signal.poly-bad  { border-left-color: #ef4444;    background: color-mix(in oklab, #ef4444 10%, var(--card)); }
+.poly-signal.poly-info { border-left-color: var(--accent, #60a5fa); color: var(--muted); }
+
 .bulletin {
   color: var(--muted); font-size: 13px; line-height: 1.55;
   padding: 10px 12px; border-left: 2px solid var(--accent);
@@ -2191,19 +2206,29 @@ PICKS_TEMPLATE = r"""<!doctype html>
         <div class="pick-headline">
           {{ p.pick }}
           {% if p.strong %}<span style="color:var(--good);font-size:13px;margin-left:6px;text-shadow:var(--ev-strong-glow)" title="Model probability >= 60%">&#9733; Strong</span>{% endif %}
+          {% if p.american is not none and p.decimal is not none %}
           <span class="price">{{ ('+' if p.american > 0 else '') ~ p.american }} ({{ '%.2f'|format(p.decimal) }})</span>
+          {% else %}
+          <span class="price" style="color:var(--muted-2)">price &mdash; verify</span>
+          {% endif %}
           <span class="book">@ {{ p.book }}</span>
         </div>
         <div class="pick-stats">
           <span><span class="label">Model</span><b>{{ (p.fair_prob * 100)|round|int }}%</b></span>
-          <span><span class="label">Market</span><b>{{ (100 / p.decimal)|round|int }}%</b></span>
+          {% if p.decimal %}<span><span class="label">Market</span><b>{{ (100 / p.decimal)|round|int }}%</b></span>{% endif %}
           <span>
-            {% if p.ev_pct > 0.1 %}<span class="ev">EV +{{ '%.1f'|format(p.ev_pct) }}%</span>
+            {% if p.ev_pct is none %}<span style="color:var(--muted-2)">EV &mdash;</span>
+            {% elif p.ev_pct > 0.1 %}<span class="ev">EV +{{ '%.1f'|format(p.ev_pct) }}%</span>
             {% else %}<span style="color:var(--muted-2)">EV {{ '%+.1f'|format(p.ev_pct) }}%</span>{% endif %}
           </span>
-          {% if p.kelly_pct > 0 %}<span><span class="label">Stake (1/4 K)</span><b>{{ '%.1f'|format(p.kelly_pct) }}%</b></span>{% endif %}
+          {% if p.kelly_pct and p.kelly_pct > 0 %}<span><span class="label">Stake (1/4 K)</span><b>{{ '%.1f'|format(p.kelly_pct) }}%</b></span>{% endif %}
         </div>
         <div class="bulletin">{{ p.bulletin }}</div>
+        {% if p.polymarket_signal %}
+        <div class="poly-signal poly-{{ p.polymarket_signal.tone }}">
+          {{ p.polymarket_signal.label }}
+        </div>
+        {% endif %}
         <div class="pick-actions">
           <button class="btn-ai" onclick="analyzePick('{{ p.id }}', this)">Expand with AI</button>
           <span class="model-src">{{ p.model_source }}</span>
@@ -7573,6 +7598,59 @@ main.logged-page { max-width: 1040px; }
     </div>
   </section>
 
+  {% if poly_summary and poly_summary.total_trades %}
+  <section class="records-section">
+    <h2>Polymarket History
+      <span style="color:var(--muted);font-size:14px">
+        {{ poly_summary.total_trades }} trades &middot;
+        {{ poly_summary.wins }}-{{ poly_summary.losses }}
+        ({{ '%.1f' % poly_summary.win_pct }}% hit) &middot;
+        <span class="{{ 'good' if poly_summary.pnl > 0 else ('bad' if poly_summary.pnl < 0 else '') }}">${{ '%+.2f' % poly_summary.pnl }}</span>
+      </span>
+    </h2>
+    <div class="sub">
+      Your settled Polymarket trades, bucketed by sport + market + side.
+      Daily picks that match a strong winning bucket get a green "Pattern
+      match" badge; picks matching a chronically losing bucket get a red
+      warning. Signals need ≥ 3 settled trades in the bucket to fire.
+    </div>
+    <div class="breakdown-grid">
+      <div class="breakdown-col">
+        <h3>Winning patterns</h3>
+        <table class="brk-table">
+          <thead><tr><th>Pattern</th><th>Record</th><th>Win %</th><th>PnL</th></tr></thead>
+          <tbody>
+          {% for r in poly_summary.top_winning %}
+            <tr>
+              <td class="brk-key">{{ r.key }}</td>
+              <td>{{ r.wins }}-{{ r.losses }}</td>
+              <td class="{{ 'good' if r.win_pct >= 55 else '' }}">{{ '%.0f' % r.win_pct }}%</td>
+              <td class="good">+${{ '%.2f' % r.pnl }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="breakdown-col">
+        <h3>Losing patterns</h3>
+        <table class="brk-table">
+          <thead><tr><th>Pattern</th><th>Record</th><th>Win %</th><th>PnL</th></tr></thead>
+          <tbody>
+          {% for r in poly_summary.top_losing %}
+            <tr>
+              <td class="brk-key">{{ r.key }}</td>
+              <td>{{ r.wins }}-{{ r.losses }}</td>
+              <td class="{{ 'bad' if r.win_pct < 35 else '' }}">{{ '%.0f' % r.win_pct }}%</td>
+              <td class="bad">${{ '%.2f' % r.pnl }}</td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+  {% endif %}
+
   {% if active_adj and active_adj.any %}
   <div class="active-adj">
     <strong>Analyzer-driven adjustments applied to today's board:</strong>
@@ -7801,6 +7879,11 @@ def logged_plays():
         odds_usage = generic_odds.odds_api_usage_summary()
     except Exception:
         odds_usage = None
+    try:
+        import polymarket_history
+        poly_summary = polymarket_history.summary()
+    except Exception:
+        poly_summary = None
     # Trigger the daily analysis in a background thread (fire-and-forget) so
     # /logged never blocks on it. We still read the LATEST available analysis
     # synchronously — on first-ever visit this is None and the UI shows the
@@ -7834,6 +7917,7 @@ def logged_plays():
         active_adj=active_adj,
         grader_status=grader_status,
         odds_usage=odds_usage,
+        poly_summary=poly_summary,
     )
 
 

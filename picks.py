@@ -843,6 +843,19 @@ def collect_picks(date_str, today_only=True):
     alt_sorted.sort(key=lambda x: -(x.get("fair_prob") or 0.0))
     deduped = main_sorted[:MAX_PICKS] + alt_sorted[:12]
 
+    # Attach the Polymarket pattern signal — matches each pick against the
+    # user's own betting history. Picks that align with their historically
+    # winning patterns get a green badge; ones matching losing patterns
+    # get a red warning. Signal is None when there's no CSV or no match
+    # with enough samples.
+    try:
+        import polymarket_history as _pmh
+        for p in deduped:
+            p["polymarket_signal"] = _pmh.score_pick(p)
+    except Exception:
+        for p in deduped:
+            p["polymarket_signal"] = None
+
     # Tag strong tier: both ≥ 60% consensus AND ≥ 4% EV to earn the star.
     for p in deduped:
         base = p.get("consensus_prob") or p.get("fair_prob") or 0.0
