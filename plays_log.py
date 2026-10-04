@@ -220,7 +220,9 @@ def _fetch_json(url, timeout=15):
 
 
 def fetch_scores(sport_key, days_from=3):
-    """Pull final scores from The Odds API. Returns list of event dicts."""
+    """Pull final scores from The Odds API. Returns list of event dicts.
+    Returns [] when ODDS_API_KEY isn't set — the grader then uses sport-
+    specific fallbacks (fetch_scores_mlb for MLB)."""
     if not sport_key:
         return []
     key = os.environ.get("ODDS_API_KEY")
@@ -240,6 +242,65 @@ def fetch_scores(sport_key, days_from=3):
     return events
 
 
+def fetch_scores_mlb(date_str):
+    """Fallback MLB grader via statsapi.mlb.com (public, no key required).
+
+    Returns the same shape as the Odds API scores endpoint so grade_pick
+    can grade MLB without ODDS_API_KEY. We only need completed games with
+    final scores.
+    """
+    now = time.time()
+    cache_key = ("mlb_statsapi", date_str)
+    hit = _RESULTS_CACHE.get(cache_key)
+    if hit and now - hit[1] < _RESULTS_TTL_S:
+        return hit[0]
+    # statsapi schedule endpoint — includes linescore for finished games
+    url = (f"https://statsapi.mlb.com/api/v1/schedule"
+           f"?sportId=1&date={date_str}"
+           f"&hydrate=linescore,team")
+    try:
+        data = _fetch_json(url) or {}
+    except (URLError, ValueError, TimeoutError, ConnectionError, OSError):
+        _RESULTS_CACHE[cache_key] = ([], now)
+        return []
+    events = []
+    for day in (data.get("dates") or []):
+        for g in day.get("games") or []:
+            status = (g.get("status") or {}).get("abstractGameState") or ""
+            if status != "Final":
+                continue
+            teams = g.get("teams") or {}
+            home = (teams.get("home") or {}).get("team") or {}
+            away = (teams.get("away") or {}).get("team") or {}
+            home_score = (teams.get("home") or {}).get("score")
+            away_score = (teams.get("away") or {}).get("score")
+            if home_score is None or away_score is None:
+                continue
+            events.append({
+                "id":            str(g.get("gamePk")),
+                "home_team":     home.get("name") or home.get("teamName") or "",
+                "away_team":     away.get("name") or away.get("teamName") or "",
+                "home_team_short": home.get("teamName") or home.get("shortName") or "",
+                "away_team_short": away.get("teamName") or away.get("shortName") or "",
+                "completed":     True,
+                "scores": [
+                    {"name": home.get("name") or home.get("teamName"), "score": str(home_score)},
+                    {"name": away.get("name") or away.get("teamName"), "score": str(away_score)},
+                ],
+                "commence_time": g.get("gameDate"),
+            })
+    _RESULTS_CACHE[cache_key] = (events, now)
+    return events
+
+
+def grader_status():
+    """Diagnostic for /logged: which graders are available right now?"""
+    return {
+        "odds_api_enabled": bool(os.environ.get("ODDS_API_KEY")),
+        "mlb_statsapi":     True,  # always available, no key needed
+    }
+
+
 # ---------------------------------------------------------------------------
 # Grading
 # ---------------------------------------------------------------------------
@@ -249,26 +310,43 @@ def _norm(s):
 
 
 def find_result_event(pick, events):
-    """Match a pick to a scored event (same home/away teams)."""
+    """Match a pick to a scored event — handles short vs full team names
+    (e.g. pick carries "White Sox", event has "Chicago White Sox"). Also
+    checks statsapi's short-name field when present.
+    """
     home = _norm(pick.get("home_team"))
     away = _norm(pick.get("away_team"))
+    if not home or not away:
+        return None
+
+    def _candidate_names(ev, side):
+        full  = _norm(ev.get(f"{side}_team"))
+        short = _norm(ev.get(f"{side}_team_short"))
+        return [n for n in (full, short) if n]
+
+    # Pass 1: exact or substring match on either direction
     for ev in events:
         if not ev.get("completed"):
             continue
-        eh = _norm(ev.get("home_team"))
-        ea = _norm(ev.get("away_team"))
-        if (eh == home and ea == away) or (home and home in eh) or (home and eh in home):
-            # Try fuzzy match if exact fails
-            if eh == home and ea == away:
-                return ev
-    # Fallback: fuzzy — any event where both team-name substrings line up
-    for ev in events:
-        if not ev.get("completed"):
-            continue
-        eh = _norm(ev.get("home_team"))
-        ea = _norm(ev.get("away_team"))
-        if home and away and ((home in eh or eh in home) and (away in ea or ea in away)):
+        home_cands = _candidate_names(ev, "home")
+        away_cands = _candidate_names(ev, "away")
+        home_hit = any(home == c or home in c or c in home for c in home_cands)
+        away_hit = any(away == c or away in c or c in away for c in away_cands)
+        if home_hit and away_hit:
             return ev
+
+    # Pass 2: last-word match (team mascot) — "white sox" ↔ "white sox",
+    # "guardians" ↔ "guardians" even if full names differ
+    pick_home_last = home.rsplit(" ", 1)[-1] if " " in home else home
+    pick_away_last = away.rsplit(" ", 1)[-1] if " " in away else away
+    for ev in events:
+        if not ev.get("completed"):
+            continue
+        for ec in _candidate_names(ev, "home"):
+            if pick_home_last in ec:
+                for ec2 in _candidate_names(ev, "away"):
+                    if pick_away_last in ec2:
+                        return ev
     return None
 
 
@@ -392,8 +470,14 @@ def grade_date(date_str, sport_key_by_slug, force=False):
     events_by_sport = {}
     for slug in need_sports:
         key = sport_key_by_slug.get(slug)
-        if key:
-            events_by_sport[slug] = fetch_scores(key)
+        events = fetch_scores(key) if key else []
+        # MLB fallback: statsapi.mlb.com works without any API key, so even
+        # if ODDS_API_KEY isn't configured on this host, MLB picks still
+        # grade. Merge both sources — MLB first (richer team-name coverage).
+        if slug == "mlb":
+            mlb_events = fetch_scores_mlb(date_str)
+            events = mlb_events + events
+        events_by_sport[slug] = events
 
     graded_picks = []
     for p in raw["picks"]:
@@ -406,6 +490,8 @@ def grade_date(date_str, sport_key_by_slug, force=False):
             # Keep prior settled result (Odds API window drops after 3 days)
             graded_picks.append(prior)
             continue
+        # Prior was pending — fall through and try to grade again. If we still
+        # can't find the game, pending stays pending.
         res = grade_pick(p, ev)
         home_s, away_s = _extract_scores(ev) if ev else (None, None)
         graded_picks.append({

@@ -7472,6 +7472,16 @@ main.logged-page { max-width: 1040px; }
     {% endif %}
   </div>
 
+  <div class="persist-status {{ 'ok' if grader_status.odds_api_enabled else 'warn' }}">
+    {% if grader_status.odds_api_enabled %}
+      <strong>Grading:</strong> enabled &middot; Odds API scores (all sports) + MLB statsapi (free fallback).
+    {% else %}
+      <strong>Grading:</strong> MLB only (statsapi fallback is live).
+      <code>ODDS_API_KEY</code> is not set, so NFL / NCAAF / NHL / soccer / UFC picks will stay pending
+      until the key is added on Render.
+    {% endif %}
+  </div>
+
   <section class="records-section">
     <h2>Overall Record</h2>
     <div class="sub">All graded picks across every sport. Pending = game not yet final (Odds API lags by a few minutes after games end).</div>
@@ -7723,6 +7733,10 @@ def logged_plays():
         persist_status = log_persist.status_summary()
     except Exception as e:
         persist_status = {"enabled": False, "reason": f"status check failed: {e}"}
+    try:
+        grader_status = plays_log.grader_status()
+    except Exception:
+        grader_status = {"odds_api_enabled": False, "mlb_statsapi": True}
     # Trigger the daily analysis in a background thread (fire-and-forget) so
     # /logged never blocks on it. We still read the LATEST available analysis
     # synchronously — on first-ever visit this is None and the UI shows the
@@ -7754,6 +7768,7 @@ def logged_plays():
         persist_status=persist_status,
         analysis=analysis,
         active_adj=active_adj,
+        grader_status=grader_status,
     )
 
 
