@@ -2756,13 +2756,16 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
         if max(h_pct, a_pct, d_pct) > 0:
             if h_pct >= max(a_pct, d_pct):
                 out.append({"category": "ML", "market": "ML",
-                            "pick": home, "fair_prob": h_pct})
+                            "pick": home, "fair_prob": h_pct,
+                            "american": (pin_ml or {}).get("home_am")})
             elif a_pct >= d_pct:
                 out.append({"category": "ML", "market": "ML",
-                            "pick": away, "fair_prob": a_pct})
+                            "pick": away, "fair_prob": a_pct,
+                            "american": (pin_ml or {}).get("away_am")})
             else:
                 out.append({"category": "ML", "market": "ML",
-                            "pick": "Draw", "fair_prob": d_pct})
+                            "pick": "Draw", "fair_prob": d_pct,
+                            "american": (pin_ml or {}).get("draw_am")})
 
     # ---- Spread (snapped to half-point to match Polymarket / DK / FD) ----
     line_h = None
@@ -2784,11 +2787,13 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
             if p_home_cover >= 0.5:
                 label = f"{home} {line_h:+g}"
                 prob = p_home_cover
+                am = (pin_spread or {}).get("home_am")
             else:
                 label = f"{away} {-line_h:+g}"
                 prob = 1 - p_home_cover
+                am = (pin_spread or {}).get("away_am")
             out.append({"category": "Spread", "market": "Spread",
-                        "pick": label, "fair_prob": prob})
+                        "pick": label, "fair_prob": prob, "american": am})
 
     # ---- Total (snapped to half-point to match Polymarket / DK / FD) ----
     if "Total" not in existing_cats and pin_total and pin_total.get("line") is not None:
@@ -2816,11 +2821,13 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 if p_over >= 0.5:
                     label = f"Over {line:g}"
                     prob = p_over
+                    am = (pin_total or {}).get("over_am")
                 else:
                     label = f"Under {line:g}"
                     prob = 1 - p_over
+                    am = (pin_total or {}).get("under_am")
                 out.append({"category": "Total", "market": "Total",
-                            "pick": label, "fair_prob": prob})
+                            "pick": label, "fair_prob": prob, "american": am})
 
     # ---- Soccer-only extras: Double Chance (ML No) + Both Teams To Score ----
     is_soccer = sport_slug in ("epl", "laliga", "ligamx", "ucl", "europa", "international")
@@ -2968,6 +2975,8 @@ def _build_board_rows(date_str, today_date, sport_filter):
         for mp in fill:
             icon, icon_cls = _pick_icon(mp["market"])
             key = generic_odds._team_key(row["home"]) + "-" + generic_odds._team_key(row["away"])
+            am = mp.get("american")
+            dec = mlb_odds.american_to_decimal(am) if am is not None else None
             row["picks"].append({
                 "id":            f"model-{row['sport_slug']}-{key}-{mp['category'].lower()}",
                 "sport":         row["sport_name"],
@@ -2978,16 +2987,17 @@ def _build_board_rows(date_str, today_date, sport_filter):
                 "consensus_prob": mp["fair_prob"],  # same for model-only (no market blend)
                 "pinnacle_prob": None,
                 "ev_pct":        None,
-                "decimal":       None,
-                "american":      None,
+                "decimal":       dec,
+                "american":      am,
                 "kelly_pct":     None,
-                "book":          None,
+                "book":          "pinnacle" if am is not None else None,
                 "strong":        False,
                 "bulletin":      "Model-only pick — our simulator's preferred side at the posted line, no price filter applied.",
                 "model_source":  "model only (no EV filter)",
                 "model_only":    True,
                 "home_team":     row["home"],
                 "away_team":     row["away"],
+                "start_time":    row["start_time"],
                 "icon":          icon,
                 "icon_cls":      icon_cls,
                 "pick_short":    mp["pick"],
@@ -3049,11 +3059,38 @@ def picks_landing():
         board_rows, all_picks = [], []
     scan_time_ms = int((time.time() - t0) * 1000)
 
-    # Snapshot the picks for /logged (and GitHub mirror for Render spin-downs)
+    # Snapshot picks for /logged (+ GitHub mirror). Persist EVERY pick that
+    # earned a 4/5 or 5/5 confidence badge today — EV-verified AND model-only
+    # — so we can later look back at how high-conviction model opinions
+    # actually fared, not just the ones that cleared the price filter. The
+    # EV picks keep their id (collect_picks) so prior CLV snapshots survive;
+    # model-only picks carry their own `model-{sport}-{home}-{away}-{cat}`
+    # id, flagged with `model_only: True`.
     try:
         import plays_log
-        if all_picks:
-            plays_log.save_daily_picks(date_str, all_picks)
+        confident = []
+        seen_ids = set()
+        # EV picks first — they'd always qualify (consensus >= 60% → 4/5+),
+        # but keep the explicit filter for defensiveness.
+        for p in all_picks:
+            conf = _conf_tier(p.get("consensus_prob") or p.get("fair_prob"))
+            if conf >= 4 and p.get("id") not in seen_ids:
+                p = {**p, "model_only": False}
+                confident.append(p)
+                seen_ids.add(p.get("id"))
+        # Model-only fill picks that scored 4/5+ (new).
+        for row in board_rows:
+            for p in row["picks"]:
+                if not p.get("model_only"):
+                    continue
+                if p.get("conf", 0) < 4:
+                    continue
+                if p.get("id") in seen_ids:
+                    continue
+                confident.append(p)
+                seen_ids.add(p.get("id"))
+        if confident:
+            plays_log.save_daily_picks(date_str, confident)
     except Exception:
         pass
 
@@ -8411,6 +8448,71 @@ main.logged-page { max-width: 1040px; }
     </div>
   </section>
 
+  <section class="records-section">
+    <h2>Model Picks Record <span style="color:var(--muted);font-size:13px">4/5 &amp; 5/5 confidence</span></h2>
+    <div class="sub">
+      Every ML / spread / total pick that scored a 4/5 or 5/5 confidence badge
+      on the board, graded at the Pinnacle price we captured when the pick posted.
+      This includes model-only picks that didn't clear the EV filter — so you can
+      see whether high-conviction model opinions alone beat the market without the
+      EV guardrail.
+    </div>
+    <div class="records-grid">
+      {% for key, label in [('model_7d','Last 7 days'),('model_30d','Last 30 days'),('model_90d','Last 90 days')] %}
+      {% set r = summary[key] %}
+      <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
+        <div class="lbl">{{ label }}</div>
+        {% if r.settled %}
+        <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
+        <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
+        {% else %}
+        <div class="wl" style="color:var(--muted)">&mdash;</div>
+        <span class="units" style="color:var(--muted)">&mdash;</span>
+        {% endif %}
+        <div class="meta">{{ r.settled }} settled{% if r.pending %} &middot; {{ r.pending }} pending{% endif %}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="records-section">
+    <h2>Your DraftKings History
+      {% if summary.dk_90d.settled %}
+      <span style="color:var(--muted);font-size:13px">imported from CSV</span>
+      {% else %}
+      <span style="color:var(--muted);font-size:13px">not imported yet</span>
+      {% endif %}
+    </h2>
+    <div class="sub">
+      Your actual DraftKings bet history, graded at the price you took. Keep both
+      records (our model vs. your real book plays) side by side to see which is
+      beating the market.
+      <a href="/logged/dk/upload" style="color:var(--accent);text-decoration:underline;margin-left:6px">Upload CSV &rsaquo;</a>
+    </div>
+    {% if summary.dk_90d.settled or summary.dk_90d.pending %}
+    <div class="records-grid">
+      {% for key, label in [('dk_7d','Last 7 days'),('dk_30d','Last 30 days'),('dk_90d','Last 90 days')] %}
+      {% set r = summary[key] %}
+      <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
+        <div class="lbl">{{ label }}</div>
+        {% if r.settled %}
+        <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
+        <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
+        {% else %}
+        <div class="wl" style="color:var(--muted)">&mdash;</div>
+        <span class="units" style="color:var(--muted)">&mdash;</span>
+        {% endif %}
+        <div class="meta">{{ r.settled }} settled{% if r.pending %} &middot; {{ r.pending }} pending{% endif %}</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div style="color:var(--muted-2);font-size:12.5px;font-style:italic;padding:12px 2px">
+      Upload a DK bet-history CSV once and we'll grade it alongside our picks on every /logged visit.
+    </div>
+    {% endif %}
+  </section>
+
   {% if summary.all_30d.clv_n or summary.all_90d.clv_n %}
   <section class="records-section">
     <h2>Closing-Line Value (CLV)</h2>
@@ -8705,6 +8807,206 @@ main.logged-page { max-width: 1040px; }
 </body>
 </html>
 """
+
+
+@app.route("/logged/dk/upload", methods=["GET", "POST"])
+def logged_dk_upload():
+    """DraftKings bet-history import. Accepts a CSV from DK's "Account →
+    Transaction History → Download" export and slots each row into the
+    per-date picks_YYYY-MM-DD.json log with source="book_dk" so the
+    existing grading / summary pipeline aggregates it alongside our picks.
+
+    The CSV parser is intentionally generic — it looks for the common DK
+    column names (Date Placed / Event / Market / Selection / Odds / Stake /
+    Status / Profit) and skips rows it can't interpret. See _parse_dk_csv.
+    """
+    import plays_log, log_persist
+    from flask import redirect
+    message = None
+    error = None
+    added = 0
+    skipped = 0
+    if request.method == "POST":
+        f = request.files.get("csv")
+        if not f or not f.filename:
+            error = "No file uploaded."
+        else:
+            try:
+                text = f.read().decode("utf-8", errors="replace")
+                bets, bad = _parse_dk_csv(text)
+                for ds, picks_for_date in bets.items():
+                    existing = plays_log.read_picks(ds) or {"date": ds, "picks": []}
+                    by_id = {p.get("id"): p for p in existing.get("picks", [])}
+                    for b in picks_for_date:
+                        by_id[b["id"]] = b
+                    merged = list(by_id.values())
+                    plays_log.save_daily_picks(ds, merged, overwrite_today=True)
+                    added += len(picks_for_date)
+                skipped = bad
+                message = f"Imported {added} DraftKings bets" + (
+                    f" ({skipped} rows skipped — see page below for details)" if skipped else "."
+                )
+            except Exception as e:
+                error = f"Could not parse CSV: {e}"
+
+    return render_template_string(
+        DK_UPLOAD_TEMPLATE,
+        fonts_link=FONTS_LINK, shared_style=SHARED_STYLE,
+        sport_strip=render_sport_strip("logged"),
+        message=message, error=error,
+        added=added, skipped=skipped,
+    )
+
+
+DK_UPLOAD_TEMPLATE = r"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Betting Tools &mdash; Import DraftKings History</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+{{ fonts_link|safe }}
+<style>{{ shared_style|safe }}
+.dk-wrap { max-width: 680px; margin: 0 auto; padding: 32px 0; }
+.dk-wrap h1 { font-family: "Fraunces", Georgia, serif; font-style: italic; font-size: 28px; margin: 0 0 10px; }
+.dk-wrap p.sub { color: var(--muted); font-size: 13px; line-height: 1.6; margin: 0 0 18px; }
+.dk-wrap form { background: var(--card); border: 1px solid var(--rule); border-radius: 10px; padding: 20px; margin-bottom: 18px; }
+.dk-wrap input[type=file] { color: var(--ink); margin-right: 10px; }
+.dk-wrap button { padding: 8px 18px; border-radius: 6px; border: 1px solid var(--accent); background: color-mix(in oklab, var(--accent) 15%, transparent); color: var(--ink); cursor: pointer; font-weight: 500; }
+.dk-wrap .ok { color: var(--good); padding: 10px 14px; background: color-mix(in oklab, var(--good) 10%, transparent); border-radius: 6px; margin-bottom: 14px; }
+.dk-wrap .err { color: var(--accent); padding: 10px 14px; background: color-mix(in oklab, var(--accent) 10%, transparent); border-radius: 6px; margin-bottom: 14px; }
+.dk-wrap .fmt { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 14px 16px; font-size: 12px; color: var(--muted); line-height: 1.6; }
+.dk-wrap .fmt code { color: var(--ink); font-family: "JetBrains Mono", monospace; font-size: 11px; background: var(--card); padding: 1px 5px; border-radius: 3px; }
+</style></head><body>
+{{ sport_strip|safe }}
+<main class="wrap">
+  <div class="dk-wrap">
+    <h1>Import DraftKings bet history</h1>
+    <p class="sub">
+      Export your bet history from DraftKings (Account menu &rarr; My Statements &rarr;
+      Download transactions as CSV), then upload the file here. Each row that
+      references a settled or pending straight bet lands in the same log as our
+      model picks, tagged <code>source: book_dk</code>, so the /logged dashboard
+      can grade both side by side.
+    </p>
+    {% if message %}<div class="ok">{{ message }}</div>{% endif %}
+    {% if error %}<div class="err">{{ error }}</div>{% endif %}
+    <form method="post" enctype="multipart/form-data">
+      <input type="file" name="csv" accept=".csv,text/csv" required>
+      <button type="submit">Import</button>
+    </form>
+    <div class="fmt">
+      <strong>Expected columns</strong> (the parser is flexible on name casing and ordering):<br>
+      <code>Date Placed</code>, <code>Event</code>, <code>Market</code>,
+      <code>Selection</code>, <code>Odds</code> (American), <code>Stake</code>,
+      <code>Status</code> (Won / Lost / Push / Open), optional <code>Profit</code>.<br><br>
+      Parlays and other multi-leg bets are skipped (grading them against our
+      per-game result lookup isn't meaningful). Pending bets are logged and
+      re-graded on each /logged visit once they settle.
+    </div>
+    <p style="margin-top:18px;font-size:12.5px"><a href="/logged" style="color:var(--accent)">&lsaquo; Back to Logged Plays</a></p>
+  </div>
+</main>
+</body></html>
+"""
+
+
+def _parse_dk_csv(text):
+    """Parse a DK bet-history CSV. Returns ({date_str: [pick_dicts]}, skipped_count).
+    Keeps only straight bets with a parseable event, market, selection, odds and status.
+    """
+    import csv as _csv
+    import io as _io
+    import re as _re
+    reader = _csv.DictReader(_io.StringIO(text))
+    def _k(name):
+        return (name or "").strip().lower().replace("_", " ").replace("-", " ")
+    picks_by_date = {}
+    skipped = 0
+    for row in reader:
+        norm = {_k(k): (v.strip() if isinstance(v, str) else v) for k, v in row.items()}
+        date_raw = norm.get("date placed") or norm.get("date") or norm.get("placed")
+        event    = norm.get("event") or norm.get("match") or norm.get("game")
+        market   = norm.get("market") or norm.get("bet type") or norm.get("market name")
+        selection = norm.get("selection") or norm.get("pick") or norm.get("outcome")
+        odds_raw  = norm.get("odds") or norm.get("american odds") or norm.get("price")
+        stake_raw = norm.get("stake") or norm.get("wager") or norm.get("risk")
+        status   = (norm.get("status") or norm.get("result") or "").lower()
+        profit_raw = norm.get("profit") or norm.get("profit/loss") or norm.get("p/l")
+
+        if not (date_raw and event and selection and odds_raw):
+            skipped += 1
+            continue
+        # DK parlay rows typically say "Parlay" or "Multi" somewhere
+        if "parlay" in (market or "").lower() or "multi" in (market or "").lower():
+            skipped += 1
+            continue
+        try:
+            m = _re.search(r"[+-]?\d+", odds_raw.replace(",", ""))
+            if not m:
+                raise ValueError("no odds")
+            american = int(m.group(0))
+            stake = float(_re.search(r"-?\d+(?:\.\d+)?", (stake_raw or "0").replace("$","").replace(",","")).group(0))
+        except Exception:
+            skipped += 1
+            continue
+        try:
+            ds = _normalize_date(date_raw)
+        except Exception:
+            skipped += 1
+            continue
+        decimal = mlb_odds.american_to_decimal(american)
+        if "won" in status:
+            result = "W"; profit_u = (decimal - 1.0)
+        elif "lost" in status or "lose" in status:
+            result = "L"; profit_u = -1.0
+        elif "push" in status or "void" in status or "canc" in status:
+            result = "P"; profit_u = 0.0
+        else:
+            result = None; profit_u = 0.0
+
+        teams = _re.split(r"\s+(?:vs\.?|at|@|-)\s+", event, maxsplit=1)
+        away = teams[0].strip() if len(teams) == 2 else event
+        home = teams[1].strip() if len(teams) == 2 else ""
+
+        bet_id = f"dk-{ds}-{abs(hash((event, market, selection, american, stake))) & 0xffffffff:08x}"
+        pick = {
+            "id":            bet_id,
+            "sport":         "DK",
+            "sport_slug":    "dk",
+            "home_team":     home,
+            "away_team":     away,
+            "market":        market or "ML",
+            "pick":          selection,
+            "decimal":       decimal,
+            "american":      american,
+            "book":          "draftkings",
+            "source":        "book_dk",
+            "model_only":    False,
+            "strong":        False,
+            "stake":         stake,
+            "result":        result,
+            "profit_u":      profit_u,
+        }
+        picks_by_date.setdefault(ds, []).append(pick)
+    return picks_by_date, skipped
+
+
+def _normalize_date(raw):
+    """Parse a DK date string ('10/5/2026 1:23 PM EDT' or '2026-10-05') into YYYY-MM-DD."""
+    from datetime import datetime as _dt
+    raw = (raw or "").strip()
+    # Trim trailing tz if present
+    for sep in (" EDT", " EST", " CDT", " CST", " PDT", " PST", " UTC"):
+        if raw.endswith(sep):
+            raw = raw[: -len(sep)]
+            break
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d",
+                "%m/%d/%Y %I:%M %p", "%m/%d/%Y %H:%M", "%m/%d/%Y",
+                "%m/%d/%y %I:%M %p", "%m/%d/%y", "%b %d, %Y %I:%M %p",
+                "%b %d, %Y"):
+        try:
+            return _dt.strptime(raw, fmt).date().isoformat()
+        except ValueError:
+            continue
+    raise ValueError(f"unparseable date: {raw!r}")
 
 
 @app.route("/logged")

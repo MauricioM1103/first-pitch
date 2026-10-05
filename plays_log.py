@@ -119,6 +119,10 @@ def save_daily_picks(date_str, picks, overwrite_today=True):
             "pinnacle_prob": p.get("pinnacle_prob"),
             "ev_pct":        p.get("ev_pct"),
             "strong":        bool(p.get("strong")),
+            "model_only":    bool(p.get("model_only")),
+            "source":        p.get("source") or ("book_dk" if p.get("book") == "draftkings"
+                                                   else "model" if p.get("model_only")
+                                                   else "ev"),
             "start_time":    p.get("start_time"),
             "snapshotted_at": now_iso,
             # CLV capture — first-save snapshot locked in across the day
@@ -519,6 +523,18 @@ def grade_date(date_str, sport_key_by_slug, force=False):
 
     graded_picks = []
     for p in raw["picks"]:
+        # DraftKings-imported bets arrive pre-graded in the CSV (Won / Lost /
+        # Push / Open) — we never try to re-grade them against our event feed
+        # because DK has markets we don't ingest (props, parlays, player
+        # points, etc). Pass them through, keeping the user's bookkeeping.
+        if (p.get("source") == "book_dk") and p.get("result") in ("W", "L", "P"):
+            graded_picks.append({
+                **p,
+                "profit_u": p.get("profit_u", profit_at_1u(p.get("result"), p.get("decimal"))),
+                "graded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            })
+            continue
+
         events = events_by_sport.get(p["sport_slug"], [])
         ev = find_result_event(p, events)
         prior = None
@@ -582,7 +598,13 @@ def grade_all(limit_dates=90):
 # Record aggregation
 # ---------------------------------------------------------------------------
 
-def record_in_window(graded_by_date, days_back, strong_only=False, today=None):
+def record_in_window(graded_by_date, days_back, strong_only=False, today=None,
+                     source=None):
+    """Aggregate W/L/P/pending + units + ROI for picks that match `source`.
+    source=None → all picks (back-compat).
+    source="ev"    → only EV-verified consensus picks.
+    source="model" → only model-only picks that scored 4/5 or 5/5.
+    source="book_dk" → only picks imported from the user's DK history."""
     today = today or date.today()
     cutoff = today - timedelta(days=days_back - 1)
     w = l = p = pending = 0
@@ -600,6 +622,10 @@ def record_in_window(graded_by_date, days_back, strong_only=False, today=None):
         for pk in picks:
             if strong_only and not pk.get("strong"):
                 continue
+            if source is not None:
+                pk_source = pk.get("source") or ("model" if pk.get("model_only") else "ev")
+                if pk_source != source:
+                    continue
             r = pk.get("result")
             if r == "W":
                 w += 1
@@ -644,11 +670,20 @@ def record_in_window(graded_by_date, days_back, strong_only=False, today=None):
 
 
 def summary(graded_by_date, today=None):
-    """Return dict of 7D / 30D / 90D records for all + strong-only."""
+    """Return dict of 7D / 30D / 90D records sliced by subset:
+      all_*     → every settled pick (back-compat)
+      strong_*  → the ★ strong EV picks
+      ev_*      → only consensus/EV-verified picks (source == "ev")
+      model_*   → only 4/5-5/5 model-only picks (source == "model")
+      dk_*      → only user's imported DraftKings bets (source == "book_dk")
+    """
     out = {}
     for label, days in (("7d", 7), ("30d", 30), ("90d", 90)):
         out[f"all_{label}"]    = record_in_window(graded_by_date, days, False, today)
         out[f"strong_{label}"] = record_in_window(graded_by_date, days, True,  today)
+        out[f"ev_{label}"]     = record_in_window(graded_by_date, days, False, today, source="ev")
+        out[f"model_{label}"]  = record_in_window(graded_by_date, days, False, today, source="model")
+        out[f"dk_{label}"]     = record_in_window(graded_by_date, days, False, today, source="book_dk")
     return out
 
 
