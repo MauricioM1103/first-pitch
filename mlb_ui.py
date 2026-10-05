@@ -2176,6 +2176,9 @@ PICKS_TEMPLATE = r"""<!doctype html>
 .pick-badge-row .pick-res.L { color: #ef4444; }
 .pick-badge-row .pick-res.P { color: var(--muted-2); }
 .pick-badge-row .strong-star { color: var(--good); font-size: 11px; margin-left: 2px; text-shadow: var(--ev-strong-glow); }
+.pick-badge-row.model-only { opacity: 0.75; }
+.pick-badge-row.model-only .pick-lbl { font-weight: 400; color: var(--muted); }
+.pick-badge-row.model-only .pick-lbl b { color: var(--ink); font-weight: 500; }
 
 .btn-view {
   padding: 5px 12px; border-radius: 6px;
@@ -2319,9 +2322,11 @@ PICKS_TEMPLATE = r"""<!doctype html>
     <h1>{{ date_pretty }}</h1>
     <p class="sub">
       <b>{{ total_games }}</b> games across <b>{{ sports_with_games }}</b> sports &middot;
-      <b>{{ picks_count }}</b> picks ({{ strong_count }} strong) &middot;
-      all times Central. Picks are blends of our model and Pinnacle devig; N/5 badges =
-      confidence tier derived from consensus probability.
+      <b>{{ picks_count }}</b> picks ({{ ev_count }} EV-verified, {{ strong_count }} strong) &middot;
+      all times Central. Every game shows our model's preferred ML / spread / total
+      side; EV-verified picks (model + Pinnacle devig consensus clears a +EV bar)
+      are bolded, model-only picks are muted. N/5 = confidence tier from consensus
+      probability.
     </p>
   </div>
 
@@ -2407,7 +2412,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
           <td class="col-picks">
             {% if row.picks %}
               {% for p in row.picks %}
-                <div class="pick-badge-row">
+                <div class="pick-badge-row {{ 'model-only' if p.model_only else '' }}" title="{{ 'Model-only preference (no EV filter)' if p.model_only else 'EV-verified pick' }}">
                   <span class="pick-ico {{ p.icon_cls }}">{{ p.icon }}</span>
                   <span class="pick-lbl">{{ p.pick_short }}</span>
                   <span class="pick-conf c{{ p.conf }}">{{ p.conf }}/5</span>
@@ -2646,6 +2651,130 @@ def _format_total_line(total):
     return f"O/U {total['line']:g}"
 
 
+_PICK_MARKET_ORDER = {"ML": 0, "Spread": 1, "Total": 2}
+
+
+def _market_category(market):
+    """Reduce a full market string ('1H Spread', 'Total (BTTS)') to its base
+    category — 'ML', 'Spread', 'Total', or the raw string if nothing matches."""
+    m = (market or "").upper()
+    if "SPREAD" in m or "RUNLINE" in m or "RL" in m or "PUCK LINE" in m: return "Spread"
+    if "TOTAL" in m or "O/U" in m or "OVER" in m or "UNDER" in m: return "Total"
+    if "ML" in m or "MONEYLINE" in m: return "ML"
+    return (market or "").title()
+
+
+def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
+                       ml_outcomes, existing_cats):
+    """Produce up to 3 model-opinion picks per game (ML + Spread + Total),
+    skipping markets we already have an EV pick for. These are purely
+    'which side does our model prefer' — no EV / price filtering, matched
+    to bettingtools.ai's "always 3 picks per game" style.
+
+    Returns a list of pick dicts (not saved to plays_log — tracking stays
+    gated to the EV-filtered picks that have genuine edge).
+    """
+    import picks as picks_mod
+
+    total_line = (pin_total or {}).get("line")
+    sim = picks_mod._sim_for(sport_slug, home, away, market_total=total_line)
+    out = []
+
+    # ---- ML ----
+    if "ML" not in existing_cats:
+        h_pct = a_pct = d_pct = 0.0
+        if sim and sim.get("home_win_pct") is not None:
+            h_pct = (sim.get("home_win_pct") or 0) / 100.0
+            a_pct = (sim.get("away_win_pct") or 0) / 100.0
+            d_pct = (sim.get("draw_pct") or 0) / 100.0
+        elif pin_ml and pin_ml.get("home_am") is not None and pin_ml.get("away_am") is not None:
+            # Fallback: Pinnacle devig (not our model, but still a sharp signal)
+            p_h = generic_odds.american_to_prob(pin_ml["home_am"])
+            p_a = generic_odds.american_to_prob(pin_ml["away_am"])
+            d_am = pin_ml.get("draw_am")
+            if d_am is not None and ml_outcomes == 3:
+                p_d = generic_odds.american_to_prob(d_am)
+                h_pct, d_pct, a_pct = generic_odds.devig_three_way(p_h, p_d, p_a)
+            else:
+                h_pct, a_pct = generic_odds.devig_two_sided(p_h, p_a)
+        if max(h_pct, a_pct, d_pct) > 0:
+            if h_pct >= max(a_pct, d_pct):
+                out.append({"category": "ML", "market": "ML",
+                            "pick": home, "fair_prob": h_pct})
+            elif a_pct >= d_pct:
+                out.append({"category": "ML", "market": "ML",
+                            "pick": away, "fair_prob": a_pct})
+            else:
+                out.append({"category": "ML", "market": "ML",
+                            "pick": "Draw", "fair_prob": d_pct})
+
+    # ---- Spread ----
+    if "Spread" not in existing_cats and pin_spread and pin_spread.get("line_home") is not None:
+        try:
+            line_h = float(pin_spread["line_home"])
+        except (TypeError, ValueError):
+            line_h = None
+    else:
+        line_h = None
+    if line_h is not None:
+        margins_arr = (sim or {}).get("margins") or []
+        numeric_margins = [float(m) for m in margins_arr if isinstance(m, (int, float))] \
+            if isinstance(margins_arr, list) else []
+        p_home_cover = None
+        if numeric_margins:
+            p_home_cover = sum(1 for m in numeric_margins if m > -line_h) / len(numeric_margins)
+        elif pin_spread.get("home_am") is not None and pin_spread.get("away_am") is not None:
+            p_h = generic_odds.american_to_prob(pin_spread["home_am"])
+            p_a = generic_odds.american_to_prob(pin_spread["away_am"])
+            p_home_cover, _ = generic_odds.devig_two_sided(p_h, p_a)
+        if p_home_cover is not None:
+            if p_home_cover >= 0.5:
+                label = f"{home} {line_h:+g}"
+                prob = p_home_cover
+            else:
+                label = f"{away} {-line_h:+g}"
+                prob = 1 - p_home_cover
+            out.append({"category": "Spread", "market": "Spread",
+                        "pick": label, "fair_prob": prob})
+
+    # ---- Total ----
+    if "Total" not in existing_cats and pin_total and pin_total.get("line") is not None:
+        try:
+            line = float(pin_total["line"])
+        except (TypeError, ValueError):
+            line = None
+        if line is not None:
+            # Only trust `totals` when it's a plain numeric list (NHL path);
+            # soccer returns {market_key: pct} which isn't iterable the same way.
+            totals_arr = (sim or {}).get("totals") or []
+            numeric_totals = []
+            if isinstance(totals_arr, list):
+                for t in totals_arr:
+                    if isinstance(t, (int, float)):
+                        numeric_totals.append(float(t))
+            p_over = None
+            if numeric_totals:
+                p_over = sum(1 for t in numeric_totals if t > line) / len(numeric_totals)
+            elif sim and isinstance(sim.get("expected_total"), (int, float)):
+                # No distribution — directional only, flat ~55% confidence
+                p_over = 0.55 if float(sim["expected_total"]) >= line else 0.45
+            elif pin_total.get("over_am") is not None and pin_total.get("under_am") is not None:
+                p_o = generic_odds.american_to_prob(pin_total["over_am"])
+                p_u = generic_odds.american_to_prob(pin_total["under_am"])
+                p_over, _ = generic_odds.devig_two_sided(p_o, p_u)
+            if p_over is not None:
+                if p_over >= 0.5:
+                    label = f"Over {line:g}"
+                    prob = p_over
+                else:
+                    label = f"Under {line:g}"
+                    prob = 1 - p_over
+                out.append({"category": "Total", "market": "Total",
+                            "pick": label, "fair_prob": prob})
+
+    return out
+
+
 def _build_board_rows(date_str, today_date, sport_filter):
     """Return the unified board: one row per game with picks nested.
 
@@ -2742,7 +2871,54 @@ def _build_board_rows(date_str, today_date, sport_filter):
             row["score_home"] = gp.get("home_score")
             row["score_away"] = gp.get("away_score")
 
-    # 5) Finalize each row — status, countdown, line/close text, sort key.
+    # 5) Fill in missing markets with pure-model picks so every game shows the
+    #    full ML + Spread + Total triplet (bettingtools.ai-style). These are
+    #    opinion-only — not EV-filtered and not persisted to plays_log.
+    for row in rows_by_key.values():
+        existing_cats = {_market_category(p.get("market")) for p in row["picks"]}
+        fill = _model_fill_picks(
+            row["sport_slug"], row["home"], row["away"],
+            row["_ml"], row["_spread"], row["_total"],
+            row["ml_outcomes"], existing_cats,
+        )
+        for mp in fill:
+            icon, icon_cls = _pick_icon(mp["market"])
+            key = generic_odds._team_key(row["home"]) + "-" + generic_odds._team_key(row["away"])
+            row["picks"].append({
+                "id":            f"model-{row['sport_slug']}-{key}-{mp['category'].lower()}",
+                "sport":         row["sport_name"],
+                "sport_slug":    row["sport_slug"],
+                "market":        mp["market"],
+                "pick":          mp["pick"],
+                "fair_prob":     mp["fair_prob"],
+                "consensus_prob": mp["fair_prob"],  # same for model-only (no market blend)
+                "pinnacle_prob": None,
+                "ev_pct":        None,
+                "decimal":       None,
+                "american":      None,
+                "kelly_pct":     None,
+                "book":          None,
+                "strong":        False,
+                "bulletin":      "Model-only pick — our simulator's preferred side at the posted line, no price filter applied.",
+                "model_source":  "model only (no EV filter)",
+                "model_only":    True,
+                "home_team":     row["home"],
+                "away_team":     row["away"],
+                "icon":          icon,
+                "icon_cls":      icon_cls,
+                "pick_short":    mp["pick"],
+                "conf":          _conf_tier(mp["fair_prob"]),
+                "result":        None,
+            })
+
+        # Order picks within a game: ML → Spread → Total → anything else,
+        # EV picks before model-only picks within the same category.
+        row["picks"].sort(key=lambda p: (
+            _PICK_MARKET_ORDER.get(_market_category(p.get("market")), 9),
+            1 if p.get("model_only") else 0,
+        ))
+
+    # 6) Finalize each row — status, countdown, line/close text, sort key.
     rows = []
     for row in rows_by_key.values():
         has_score = row["score_home"] is not None
@@ -2815,6 +2991,7 @@ def picks_landing():
     )
 
     picks_count   = sum(len(r["picks"]) for r in board_rows)
+    ev_count      = sum(1 for r in board_rows for p in r["picks"] if not p.get("model_only"))
     strong_count  = sum(1 for r in board_rows for p in r["picks"] if p.get("strong"))
     total_games   = len(board_rows)
     sports_with_games = len({r["sport_slug"] for r in board_rows})
@@ -2829,6 +3006,7 @@ def picks_landing():
         sport_counts=sport_counts,
         sport_filter=sport_filter,
         picks_count=picks_count,
+        ev_count=ev_count,
         strong_count=strong_count,
         total_games=total_games,
         sports_with_games=sports_with_games,
