@@ -8,4 +8,10 @@ services:
     #   memory for backtest caches and tends to tip us over the limit.
     # --max-requests: recycle worker to release leaked / cached allocations
     #   that build up as users browse multiple sports.
-    startCommand: gunicorn mlb_ui:app --workers 1 --threads 4 --timeout 120 --max-requests 80 --max-requests-jitter 20 --bind 0.0.0.0:$PORT
+    # --preload: load the app in the master BEFORE binding so any import-time
+    #   error surfaces immediately in the deploy log instead of making the
+    #   worker respawn silently (which looks like "no open ports detected").
+    # --log-level info + --access-logfile - --error-logfile -: force gunicorn
+    #   to print its usual "Listening at:" line and worker boot messages to
+    #   stdout/stderr so Render's deploy log captures them.
+    startCommand: gunicorn mlb_ui:app --workers 1 --threads 4 --timeout 120 --max-requests 80 --max-requests-jitter 20 --bind 0.0.0.0:$PORT --preload --log-level info --access-logfile - --error-logfile -
