@@ -651,14 +651,20 @@ def _apply_consensus(picks):
 
 
 def _expand_alt_line_picks(picks):
-    """For each NFL/NCAAF spread pick, add alt-line variants at ±3 and ±6
-    points off the main line. Fair prob is read off the empirical margin
-    distribution; EV is scored against the base pick's book price adjusted
-    for a per-point juice shift (approximate DK alt-line pricing).
+    """For each NFL/NCAAF spread pick, add ONE alt-line variant per side
+    (the best one — highest fair prob in the 55-66% range). Fair prob is
+    read off the empirical margin distribution; the pick doesn't carry a
+    price because we don't fetch alt-line odds from DK/FD. The user has to
+    verify the live book price before taking it.
 
-    Each generated alt pick carries alt_line_flag=True so the UI badges it
-    as 'ALT' and reminds the user to confirm the actual DK price before
-    locking it in.
+    Only one alt per (game, side) survives the final dedup — showing both
+    "Falcons +4.5" and "Falcons +7.5" double-stakes a single outcome
+    (Falcons underperform cover) and reads like two independent bets.
+
+    Each generated alt pick carries source="alt" + alt_line_flag=True so
+    the UI tags it ALT (not EV, since we never scored it against a real
+    alt price) and the plays_log pipeline keeps it separate from the EV
+    tracking record.
     """
     try:
         import nfl_margin_dist
@@ -666,6 +672,7 @@ def _expand_alt_line_picks(picks):
         return picks
 
     out = list(picks)
+    alts_per_side = {}  # (sport_slug, game, side_name) -> best alt pick dict
     for p in picks:
         slug = p.get("sport_slug")
         if slug not in ("nfl", "ncaaf"):
@@ -736,7 +743,8 @@ def _expand_alt_line_picks(picks):
             new_pick = dict(p)
             new_pick.update({
                 "id":         f"{p.get('id','')}_alt{alt_shift:+.0f}",
-                "pick":       f"{new_line_label} (ALT · {delta_tag} vs main)",
+                "pick":       f"{new_line_label} (ALT &middot; {delta_tag} vs main {side_name} "
+                               f"{'+' if base_line>=0 else ''}{base_line})",
                 "fair_prob":  fair,
                 "consensus_prob": fair,
                 "pricing_prob":  fair,
@@ -745,12 +753,14 @@ def _expand_alt_line_picks(picks):
                 "american":   None,
                 "ev_pct":     None,     # bypass EV filter — informational
                 "kelly_pct":  None,
+                "source":     "alt",    # distinct src-tag in the UI
                 "alt_line_flag": True,
                 "alt_shift":  alt_shift,
                 "alt_delta":  bettor_delta,
                 "base_line":  base_line,
                 "book":       "verify at DK/FD",
                 "strong":     False,
+                "model_only": False,
                 "bulletin":   (f"Alt-line candidate from the empirical NFL/NCAAF "
                                f"margin distribution. Fair prob {fair*100:.1f}% "
                                f"at {new_line_label} ({delta_tag} vs main line "
@@ -758,7 +768,16 @@ def _expand_alt_line_picks(picks):
                                f"Not auto-priced — compare live DK alt odds to "
                                f"decide if the price beats the fair."),
             })
-            out.append(new_pick)
+            # Keep only the best alt per (sport, game, side). If two shifts
+            # both qualify (e.g. Falcons +4.5 AND Falcons +7.5), the ±6pt
+            # shift generally has a bigger safety cushion so prefers higher
+            # fair prob — pick that one. This stops the board from doubling
+            # up on the same underlying outcome.
+            side_key = (p.get("sport_slug"), p.get("game", ""), side_name)
+            prior = alts_per_side.get(side_key)
+            if (prior is None) or (fair > prior["fair_prob"]):
+                alts_per_side[side_key] = new_pick
+    out.extend(alts_per_side.values())
     return out
 
 

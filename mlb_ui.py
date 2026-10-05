@@ -2163,6 +2163,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
 }
 .pick-badge-row .src-tag.ev    { color: var(--good);   background: color-mix(in oklab, var(--good) 14%, transparent); border: 1px solid color-mix(in oklab, var(--good) 50%, transparent); }
 .pick-badge-row .src-tag.model { color: var(--muted);  background: var(--surface); border: 1px solid var(--rule); }
+.pick-badge-row .src-tag.alt   { color: #f59e0b; background: color-mix(in oklab, #f59e0b 12%, transparent); border: 1px solid color-mix(in oklab, #f59e0b 45%, transparent); }
 
 .btn-view {
   padding: 5px 12px; border-radius: 6px;
@@ -2307,11 +2308,13 @@ PICKS_TEMPLATE = r"""<!doctype html>
     <p class="sub">
       <b>{{ total_games }}</b> games across <b>{{ sports_with_games }}</b> sports &middot;
       <b>{{ picks_count }}</b> picks ({{ ev_count }} EV-verified, {{ strong_count }} strong) &middot;
-      all times Central. Every pick on the right shows its source as a chip:
+      all times Central. Every pick's chip on the right shows its source:
       <span class="src-tag ev" style="display:inline-block;margin:0 2px">EV</span>
-      (cleared our expected-value bar) or
+      cleared our expected-value bar,
       <span class="src-tag model" style="display:inline-block;margin:0 2px">MODEL</span>
-      (model's preferred side, no price filter).
+      is our simulator's preferred side with no price filter, and
+      <span class="src-tag alt" style="display:inline-block;margin:0 2px">ALT</span>
+      is an alt-line candidate we don't have the book price for &mdash; verify at DK/FD.
     </p>
     <div class="ev-callout">
       <strong>What's EV?</strong> <em>Expected value</em> &mdash; the long-run profit per
@@ -2322,6 +2325,9 @@ PICKS_TEMPLATE = r"""<!doctype html>
       <span class="src-tag ev" style="display:inline-block;margin:0 2px">EV</span>
       only when it clears <b>+2% EV</b>, <b>&ge; 46% fair prob</b>, and odds <b>&ge; 1.60</b>.
       Hitting both <b>60% consensus AND +4% EV</b> earns a &#9733; <b>Strong</b> badge.
+      <span class="src-tag alt" style="display:inline-block;margin:0 2px">ALT</span>
+      picks don't carry EV because we don't fetch alt-line prices &mdash; the fair prob
+      is still ours, but the stake is on you to size against the live DK number.
     </div>
     <details class="model-explain">
       <summary>How each sport's model works &rsaquo;</summary>
@@ -2440,7 +2446,9 @@ PICKS_TEMPLATE = r"""<!doctype html>
                   <span class="pick-ico {{ p.icon_cls }}">{{ p.icon }}</span>
                   <span class="pick-lbl">{{ p.pick_short }}</span>
                   <span class="pick-conf c{{ p.conf }}">{{ p.conf }}/5</span>
-                  {% if p.model_only %}
+                  {% if p.source == 'alt' or p.alt_line_flag %}
+                    <span class="src-tag alt" title="Alt-line candidate — fair prob from our model, but we don't fetch alt-line odds; verify the price at DK/FD before taking it.">ALT</span>
+                  {% elif p.model_only %}
                     <span class="src-tag model" title="Model-only pick — our simulator's preferred side, no price filter applied">MODEL</span>
                   {% else %}
                     <span class="src-tag ev" title="EV-verified: cleared the +2% expected-value bar after model + Pinnacle devig consensus">EV{% if p.ev_pct and p.ev_pct > 0 %} +{{ '%.0f'|format(p.ev_pct) }}%{% endif %}</span>
@@ -2997,10 +3005,30 @@ def _build_board_rows(date_str, today_date, sport_filter):
             row["score_home"] = gp.get("home_score")
             row["score_away"] = gp.get("away_score")
 
+    # 4b) Drop any pre-game pick (EV or model) from games that have already
+    #     kicked off and haven't graded yet. Showing "Guardians ML 5/5" on a
+    #     LIVE game looks like a live recommendation, which it isn't. Picks
+    #     that already graded (W/L/P) stay visible so the board doubles as a
+    #     scoreboard for the day's calls.
+    for row in rows_by_key.values():
+        status_now = _derive_status(row["start_time"], now_dt,
+                                    row["score_home"] is not None)
+        if status_now in ("live", "final"):
+            row["picks"] = [p for p in row["picks"]
+                            if p.get("result") in ("W", "L", "P")]
+
     # 5) Fill in missing markets with pure-model picks so every game shows the
     #    full ML + Spread + Total triplet (bettingtools.ai-style). These are
     #    opinion-only — not EV-filtered and not persisted to plays_log.
     for row in rows_by_key.values():
+        # Don't offer picks on a game that already kicked off. Pre-kickoff
+        # the Pinnacle prices are what you'd actually bet; once live, the
+        # price is a different market (in-play) and surfacing "Model: X 5/5"
+        # misleads the reader into thinking we're recommending it now.
+        _status_now = _derive_status(row["start_time"], now_dt,
+                                     row["score_home"] is not None)
+        if _status_now in ("live", "final"):
+            continue
         existing_cats = {_market_category(p.get("market")) for p in row["picks"]}
         fill = _model_fill_picks(
             row["sport_slug"], row["home"], row["away"],
@@ -6771,47 +6799,59 @@ def _mc_team_stats(sport_slug, game_ctx):
 
 
 def _mc_edge_table(sport_slug, game_ctx, sim):
-    """Build the edge-detection rows: sim prob vs book prob per market.
+    """Build the edge-detection rows: CONSENSUS prob vs book prob per market.
+
+    "Consensus" here is the same 40% model / 60% Pinnacle devig blend the main
+    picks board uses — the MC page previously bet off raw sim probability,
+    which disagreed with the board whenever Pinnacle disagreed with the sim.
+    Rows share the main board's EV discipline so staking advice from the two
+    pages lines up (fixes the "+4.5% edge, 2.4% Kelly here / 1-of-5 rating
+    on the board" split).
 
     Returns [{market, sim_prob, book_prob, decimal, american, book, edge_pct, kelly_pct}].
-    Uses the best US book price available (via game_ctx['bets']) and falls back
-    to Pinnacle. Kelly is quartered to match the rest of the site. Shares the
-    same Asian-line filter the picks board uses so we don't recommend edges on
-    lines that don't exist on US books (+0.0, 0.25-step, 1.75 totals, etc.).
+    Shares the main board's Asian-line filter so edges on lines US books don't
+    offer (+0.0, 0.25-step Asians, 1.75/2.25 totals) don't surface.
     """
-    from mlb_odds import decimal_to_american
+    from mlb_odds import decimal_to_american, american_to_prob
     import picks as _picks_mod
 
     rows = []
+    MODEL_W, MARKET_W = 0.40, 0.60   # mirror picks.MODEL_WEIGHT / MARKET_WEIGHT
 
     def _add(label, sim_prob_pct, decimal, book_name, book_prob_pct=None,
-             market_type="ML", pick_label=None):
-        """Add an edge-table row. `label` is what's displayed (e.g.
-        "Finland -0.25"); `market_type` is the market family used by the
-        line-validity filter (e.g. "Spread", "Total", "ML", "BTTS").
+             market_type="ML", pick_label=None, pinnacle_prob_pct=None):
+        """Add an edge-table row.
+        * sim_prob_pct       — raw Monte Carlo win %
+        * pinnacle_prob_pct  — Pinnacle devigged fair %; if present, blend
+                               40/60 with sim and bet the blend. If None,
+                               use sim directly (so sports without a
+                               Pinnacle devig for the market still render).
         """
         if decimal is None or decimal <= 1.0 or sim_prob_pct is None:
             return
-        # Reject lines the picks board also skips (+0.0, 0.25-step Asians,
-        # 1.75/2.25 totals, etc.) so the edge table only shows plays that
-        # exist at DK/FD/BetMGM.
         if not _picks_mod._is_valid_pick_line({
             "market": market_type,
             "pick": pick_label or label,
             "sport_slug": sport_slug,
         }):
             return
-        p = sim_prob_pct / 100.0
-        edge_pts = sim_prob_pct - (book_prob_pct if book_prob_pct is not None
-                                   else (100.0 / decimal))
+        if pinnacle_prob_pct is not None:
+            consensus_pct = MODEL_W * sim_prob_pct + MARKET_W * pinnacle_prob_pct
+        else:
+            consensus_pct = sim_prob_pct
+        p = consensus_pct / 100.0
+        implied = book_prob_pct if book_prob_pct is not None else (100.0 / decimal)
+        edge_pts = consensus_pct - implied
         b = decimal - 1.0
         q = 1.0 - p
         kelly = ((p * b - q) / b) * 0.25 * 100.0 if b > 0 else 0.0
         kelly = max(0.0, kelly)
         rows.append({
             "market": label,
-            "sim_prob": sim_prob_pct,
-            "book_prob": book_prob_pct if book_prob_pct is not None else (100.0 / decimal),
+            "sim_prob": consensus_pct,                       # legacy field name, now carries consensus
+            "sim_only_prob": sim_prob_pct,                   # raw sim for debug / tooltip
+            "pinnacle_prob": pinnacle_prob_pct,
+            "book_prob": implied,
             "decimal": decimal,
             "american": (lambda am: f"+{am}" if am and am > 0 else str(am) if am else "—")(decimal_to_american(decimal)),
             "book": book_name or "pinnacle",
@@ -6821,42 +6861,101 @@ def _mc_edge_table(sport_slug, game_ctx, sim):
 
     sport = sports.by_slug(sport_slug)
 
-    # MLB uses its own odds structure
+    # ===== MLB =====
     if sport_slug == "mlb":
         o = game_ctx.get("odds") or {}
         bets = o.get("bets") or []
-        best_dec = o.get("best_decimal") or {}
-        best_book = o.get("best_book") or {}
+        pin = o.get("pinnacle") or {}
         home_name = game_ctx["home"]["team"]
         away_name = game_ctx["away"]["team"]
-        # ML
-        for b in bets:
-            if b.get("market") == "ML":
-                side = b["side"]
-                sim_prob = sim["p_home"] if side == "home" else sim["p_away"]
-                dec = best_dec.get(side) or b.get("decimal")
-                bk = best_book.get(side) or "pinnacle"
-                label = f"{home_name if side == 'home' else away_name} ML"
-                _add(label, sim_prob, dec, bk, market_type="ML",
-                     pick_label=b.get("pick") or label)
-        # Total — need to count sims over book line
-        for b in bets:
-            if b.get("market") == "Total":
-                dec = best_dec.get(b["side"]) or b.get("decimal")
-                bk = best_book.get(b["side"]) or "pinnacle"
-                # Find a totals line
-                tot = (o.get("pinnacle") or {}).get("total") or {}
-                line = tot.get("line")
-                if line is None: continue
-                over_pct = sum(1 for m, g in zip(sim.get("margins") or [], sim.get("margins") or [])
-                               for _ in [None]) if False else None
-                # Compute over pct from margins + mean_total heuristic
-                # simpler: use "p_over_fn" if provided, else approximate
-                margins = sim.get("margins") or []
-                if not margins:
+
+        # ----- ML (one row per side, each priced off its OWN Pinnacle number) -----
+        pin_ml = pin.get("moneyline") or {}
+        pin_home_am = pin_ml.get("home_am")
+        pin_away_am = pin_ml.get("away_am")
+        # Devig to get Pinnacle's fair prob per side
+        pin_home_fair = pin_away_fair = None
+        if pin_home_am is not None and pin_away_am is not None:
+            from mlb_odds import devig_two_sided
+            p_h_raw = american_to_prob(pin_home_am)
+            p_a_raw = american_to_prob(pin_away_am)
+            pin_home_fair, pin_away_fair = devig_two_sided(p_h_raw, p_a_raw)
+
+        # Walk the sides explicitly so each row gets its own distinct Pinnacle
+        # price. The previous loop grabbed `best_dec.get(side)` which, when
+        # the Odds API returned mismatched outcome names, could leak the away
+        # price into both rows and leave both labeled with the same (+109)
+        # price even though home was -117.
+        for side_key, side_name, sim_prob, pin_am, pin_fair in [
+            ("home", home_name, sim["p_home"], pin_home_am, pin_home_fair),
+            ("away", away_name, sim["p_away"], pin_away_am, pin_away_fair),
+        ]:
+            if pin_am is None:
+                continue
+            dec = mlb_odds.american_to_decimal(pin_am)
+            pin_pct = pin_fair * 100.0 if pin_fair is not None else None
+            _add(f"{side_name} ML", sim_prob, dec, "pinnacle",
+                 market_type="ML", pick_label=f"{side_name}",
+                 pinnacle_prob_pct=pin_pct)
+
+        # ----- Run Line (±1.5) — compute cover prob from the sim's margin list -----
+        pin_sp = pin.get("spread") or pin.get("runline") or {}
+        line_h = pin_sp.get("line_home")
+        if line_h is not None and sim.get("margins"):
+            margins = sim["margins"]
+            n = len(margins) or 1
+            home_cover_pct = sum(1 for m in margins if m + line_h > 0) / n * 100.0
+            away_cover_pct = 100.0 - home_cover_pct
+            for side_key, name, cover_pct, am in [
+                ("home", home_name, home_cover_pct, pin_sp.get("home_am")),
+                ("away", away_name, away_cover_pct, pin_sp.get("away_am")),
+            ]:
+                if am is None:
                     continue
-                # Reconstruct totals from margins is incorrect. We used mean_total.
-                # Use the raw totals list stored elsewhere if available.
+                dec = mlb_odds.american_to_decimal(am)
+                # Pinnacle devig fair prob for this spread side
+                p_h_raw = american_to_prob(pin_sp.get("home_am"))
+                p_a_raw = american_to_prob(pin_sp.get("away_am"))
+                if p_h_raw and p_a_raw:
+                    from mlb_odds import devig_two_sided
+                    fh, fa = devig_two_sided(p_h_raw, p_a_raw)
+                    pin_fair_pct = (fh if side_key == "home" else fa) * 100.0
+                else:
+                    pin_fair_pct = None
+                shown_line = line_h if side_key == "home" else -line_h
+                label = f"{name} {shown_line:+g}"
+                _add(label, cover_pct, dec, "pinnacle",
+                     market_type="Spread", pick_label=label,
+                     pinnacle_prob_pct=pin_fair_pct)
+
+        # ----- Total — need the sim's actual totals, not margins -----
+        pin_tot = pin.get("total") or {}
+        line = pin_tot.get("line")
+        totals_list = sim.get("totals")
+        if line is not None and isinstance(totals_list, list) and totals_list:
+            n = len(totals_list)
+            over_pct = sum(1 for t in totals_list if t > line) / n * 100.0
+            under_pct = 100.0 - over_pct
+            for direction, prob_pct, am in [
+                ("Over",  over_pct,  pin_tot.get("over_am")),
+                ("Under", under_pct, pin_tot.get("under_am")),
+            ]:
+                if am is None:
+                    continue
+                dec = mlb_odds.american_to_decimal(am)
+                p_o_raw = american_to_prob(pin_tot.get("over_am"))
+                p_u_raw = american_to_prob(pin_tot.get("under_am"))
+                if p_o_raw and p_u_raw:
+                    from mlb_odds import devig_two_sided
+                    fo, fu = devig_two_sided(p_o_raw, p_u_raw)
+                    pin_fair_pct = (fo if direction == "Over" else fu) * 100.0
+                else:
+                    pin_fair_pct = None
+                label = f"{direction} {line:g}"
+                _add(label, prob_pct, dec, "pinnacle",
+                     market_type="Total", pick_label=label,
+                     pinnacle_prob_pct=pin_fair_pct)
+
         return rows
 
     # Soccer / NFL: Pinnacle lines live under game_ctx keys (ml/spread/total)
@@ -6879,8 +6978,11 @@ def _mc_edge_table(sport_slug, game_ctx, sim):
                 continue
             dec = b.get("book_decimal") or b.get("pin_decimal")
             bk  = b.get("book") or "pinnacle"
+            # b["fair_prob"] is Pinnacle's devigged fair for this side (0-1)
+            pin_pct = (b.get("fair_prob") * 100.0) if b.get("fair_prob") else None
             _add(label, sim_prob, dec, bk, market_type="ML",
-                 pick_label=b.get("pick") or label)
+                 pick_label=b.get("pick") or label,
+                 pinnacle_prob_pct=pin_pct)
 
     # Spread / Run Line / Puck Line — estimate cover probability from the sim's margin list.
     sp = game_ctx.get("spread") or {}
@@ -6902,8 +7004,10 @@ def _mc_edge_table(sport_slug, game_ctx, sim):
                     sign = "+" if pt >= 0 else ""
                     name = home_name if side == "home" else away_name
                     label_text = f"{name} {sign}{pt}"
+                    pin_pct = (b.get("fair_prob") * 100.0) if b.get("fair_prob") else None
                     _add(label_text, sim_prob, dec, bk, market_type=mkt,
-                         pick_label=b.get("pick") or label_text)
+                         pick_label=b.get("pick") or label_text,
+                         pinnacle_prob_pct=pin_pct)
 
     # Total — need totals; derive from projected mean + margin distribution
     tot = game_ctx.get("total") or {}
@@ -6931,8 +7035,10 @@ def _mc_edge_table(sport_slug, game_ctx, sim):
                 dec = b.get("book_decimal") or b.get("pin_decimal")
                 bk  = b.get("book") or "pinnacle"
                 label_text = f"{'Over' if side == 'over' else 'Under'} {line}"
+                pin_pct = (b.get("fair_prob") * 100.0) if b.get("fair_prob") else None
                 _add(label_text, sim_prob, dec, bk, market_type="Total",
-                     pick_label=b.get("pick") or label_text)
+                     pick_label=b.get("pick") or label_text,
+                     pinnacle_prob_pct=pin_pct)
 
     # BTTS (soccer)
     if sim.get("btts_yes_pct") is not None:
@@ -6943,8 +7049,10 @@ def _mc_edge_table(sport_slug, game_ctx, sim):
                 dec = b.get("book_decimal")
                 bk  = b.get("book") or "pinnacle"
                 label_text = f"BTTS {'Yes' if side == 'yes' else 'No'}"
+                pin_pct = (b.get("fair_prob") * 100.0) if b.get("fair_prob") else None
                 _add(label_text, sim_prob, dec, bk, market_type="BTTS",
-                     pick_label=b.get("pick") or label_text)
+                     pick_label=b.get("pick") or label_text,
+                     pinnacle_prob_pct=pin_pct)
 
     return rows
 
