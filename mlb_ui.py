@@ -1972,6 +1972,62 @@ PICKS_TEMPLATE = r"""<!doctype html>
 .hero .sub { color: var(--muted); font-size: 12.5px; margin: 0; }
 .hero .sub b { color: var(--ink); font-weight: 500; }
 
+.model-explain {
+  margin-top: 10px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+.model-explain summary {
+  cursor: pointer; color: var(--muted);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase;
+  font-weight: 500; list-style: none; padding: 2px 0;
+}
+.model-explain summary::-webkit-details-marker { display: none; }
+.model-explain summary:hover { color: var(--ink); }
+.model-explain[open] summary { color: var(--ink); margin-bottom: 10px; border-bottom: 1px solid var(--rule); padding-bottom: 8px; }
+.model-explain-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 8px 18px; margin-bottom: 10px;
+}
+.model-explain-grid > div {
+  color: var(--muted); line-height: 1.5; font-size: 12px;
+}
+.model-explain-grid b { color: var(--ink); font-weight: 500; margin-right: 4px; }
+.model-explain-conf {
+  padding: 8px 0; border-top: 1px dashed var(--rule);
+  margin-bottom: 2px;
+}
+.model-explain-conf-head {
+  color: var(--muted); font-size: 10.5px;
+  font-family: "JetBrains Mono", monospace;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  margin-bottom: 6px;
+}
+.model-explain-conf-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px; align-items: center;
+  font-size: 11.5px; line-height: 1.4;
+}
+.model-explain-conf-row .pick-conf {
+  justify-self: start;
+  font-family: "JetBrains Mono", monospace; font-size: 10.5px;
+  padding: 1px 7px; border-radius: 4px; background: var(--surface);
+  border: 1px solid var(--rule); color: var(--muted);
+}
+.model-explain-conf-row .pick-conf.c5 { color: var(--good); border-color: var(--good); background: color-mix(in oklab, var(--good) 12%, transparent); }
+.model-explain-conf-row .pick-conf.c4 { color: var(--good); }
+.model-explain-conf-row .muted { color: var(--muted); }
+.model-explain-foot {
+  padding-top: 8px; border-top: 1px dashed var(--rule);
+  color: var(--muted-2); font-size: 11.5px; line-height: 1.5;
+}
+.model-explain-foot b { color: var(--ink); font-weight: 500; }
+
 .summary-strip { display: flex; flex-wrap: wrap; gap: 18px; margin: 10px 0 14px; }
 .summary-strip .stat {
   font-family: "JetBrains Mono", monospace; font-size: 11.5px;
@@ -2237,6 +2293,35 @@ PICKS_TEMPLATE = r"""<!doctype html>
       are bolded, model-only picks are muted. N/5 = confidence tier from consensus
       probability.
     </p>
+    <details class="model-explain">
+      <summary>How each sport's model works &rsaquo;</summary>
+      <div class="model-explain-grid">
+        <div><b>MLB</b> &mdash; Elo + starting-pitcher ratings fit on 12 seasons; plate-appearance Markov chain drives the Monte Carlo (run/HR rates by base-out state).</div>
+        <div><b>NFL</b> &mdash; Elo + QB-adjustment fit on 12 seasons; empirical margin distribution preserves key-number mass at 3 / 7 / 10 / 14.</div>
+        <div><b>NCAAF</b> &mdash; CFBD-fit team Elo + normal-dist scoring (PPG baseline 25.5, &sigma; 14); totals anchor 40% to the market to curb Over bias.</div>
+        <div><b>NHL</b> &mdash; Poisson goals + Elo fit on 5 seasons; confirmed-starter save % scales each team's &lambda;; 1-goal games get an empty-net correction (42% +1 ENG, 8% +2).</div>
+        <div><b>UFC</b> &mdash; Glicko-1 fighter ratings (RD-aware g-factor); a striking &times; grappling style match adjusts win prob &plusmn;5pp; short-notice fighters get a penalty.</div>
+        <div><b>EPL / La Liga / Liga MX</b> &mdash; Dixon-Coles joint pmf with low-score &rho; correction, 3-way Elo + xG blended attack/defense, per-league HFA, 12-season fit.</div>
+        <div><b>UCL / Europa</b> &mdash; Dixon-Coles sim with EPL-prior goal rates for teams not in the historical fit; league-average HFA.</div>
+        <div><b>International</b> &mdash; National-team Elo (eloratings-style) fed into Dixon-Coles; friendlies downweighted 0.4&times; vs competitive matches.</div>
+      </div>
+      <div class="model-explain-conf">
+        <div class="model-explain-conf-head">Confidence badges &mdash; tier from consensus probability</div>
+        <div class="model-explain-conf-row">
+          <span class="pick-conf c5">5/5</span><span class="muted">&ge; 68% &mdash; model strongly favors; strong-pick territory</span>
+          <span class="pick-conf c4">4/5</span><span class="muted">62&ndash;68% &mdash; clear lean, moderate conviction</span>
+          <span class="pick-conf c3">3/5</span><span class="muted">57&ndash;62% &mdash; mild edge, coin-flippy</span>
+          <span class="pick-conf c2">2/5</span><span class="muted">52&ndash;57% &mdash; barely over 50%, likely noise</span>
+          <span class="pick-conf c1">1/5</span><span class="muted">&lt; 52% &mdash; essentially a toss-up</span>
+        </div>
+      </div>
+      <div class="model-explain-foot">
+        Each candidate is scored against a <b>40% model / 60% Pinnacle devig</b> consensus.
+        EV-verified picks must clear <b>+2% EV</b>, fair prob &ge; 46%, odds &ge; 1.60.
+        Strong (&starf;) picks clear <b>60% consensus AND +4% EV</b>. Model-only picks fill
+        the remaining ML / spread / total slots regardless of price.
+      </div>
+    </details>
   </div>
 
   {% if active_adj and active_adj.any %}
