@@ -1972,6 +1972,17 @@ PICKS_TEMPLATE = r"""<!doctype html>
 .hero .sub { color: var(--muted); font-size: 12.5px; margin: 0; }
 .hero .sub b { color: var(--ink); font-weight: 500; }
 
+.ev-callout {
+  margin-top: 10px; padding: 10px 14px; border-radius: 8px;
+  background: color-mix(in oklab, var(--good) 7%, var(--card));
+  border-left: 3px solid var(--good);
+  color: var(--muted); font-size: 12.5px; line-height: 1.55;
+}
+.ev-callout strong { color: var(--good); font-weight: 600; }
+.ev-callout b { color: var(--ink); font-weight: 500; }
+.ev-callout code { font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: var(--ink); background: var(--surface); padding: 1px 5px; border-radius: 3px; }
+.ev-callout em { font-style: italic; color: var(--ink); }
+
 .model-explain {
   margin-top: 10px;
   background: var(--surface);
@@ -2141,9 +2152,17 @@ PICKS_TEMPLATE = r"""<!doctype html>
 .pick-badge-row .pick-res.L { color: #ef4444; }
 .pick-badge-row .pick-res.P { color: var(--muted-2); }
 .pick-badge-row .strong-star { color: var(--good); font-size: 11px; margin-left: 2px; text-shadow: var(--ev-strong-glow); }
-.pick-badge-row.model-only { opacity: 0.75; }
+.pick-badge-row.model-only { opacity: 0.78; }
 .pick-badge-row.model-only .pick-lbl { font-weight: 400; color: var(--muted); }
 .pick-badge-row.model-only .pick-lbl b { color: var(--ink); font-weight: 500; }
+.pick-badge-row .src-tag {
+  font-family: "JetBrains Mono", monospace; font-size: 9px;
+  letter-spacing: 0.1em; font-weight: 600;
+  padding: 2px 6px; border-radius: 3px;
+  margin-left: 2px; white-space: nowrap;
+}
+.pick-badge-row .src-tag.ev    { color: var(--good);   background: color-mix(in oklab, var(--good) 14%, transparent); border: 1px solid color-mix(in oklab, var(--good) 50%, transparent); }
+.pick-badge-row .src-tag.model { color: var(--muted);  background: var(--surface); border: 1px solid var(--rule); }
 
 .btn-view {
   padding: 5px 12px; border-radius: 6px;
@@ -2288,11 +2307,22 @@ PICKS_TEMPLATE = r"""<!doctype html>
     <p class="sub">
       <b>{{ total_games }}</b> games across <b>{{ sports_with_games }}</b> sports &middot;
       <b>{{ picks_count }}</b> picks ({{ ev_count }} EV-verified, {{ strong_count }} strong) &middot;
-      all times Central. Every game shows our model's preferred ML / spread / total
-      side; EV-verified picks (model + Pinnacle devig consensus clears a +EV bar)
-      are bolded, model-only picks are muted. N/5 = confidence tier from consensus
-      probability.
+      all times Central. Every pick on the right shows its source as a chip:
+      <span class="src-tag ev" style="display:inline-block;margin:0 2px">EV</span>
+      (cleared our expected-value bar) or
+      <span class="src-tag model" style="display:inline-block;margin:0 2px">MODEL</span>
+      (model's preferred side, no price filter).
     </p>
+    <div class="ev-callout">
+      <strong>What's EV?</strong> <em>Expected value</em> &mdash; the long-run profit per
+      $1 risked if you repeated the same bet forever. We compute it as
+      <code>consensus_prob &times; book_decimal &minus; 1</code> where the consensus
+      probability is a 40% model / 60% Pinnacle devig blend. <b>EV +3%</b> means
+      the model expects a 3-cent profit per dollar bet, long-run. A pick is tagged
+      <span class="src-tag ev" style="display:inline-block;margin:0 2px">EV</span>
+      only when it clears <b>+2% EV</b>, <b>&ge; 46% fair prob</b>, and odds <b>&ge; 1.60</b>.
+      Hitting both <b>60% consensus AND +4% EV</b> earns a &#9733; <b>Strong</b> badge.
+    </div>
     <details class="model-explain">
       <summary>How each sport's model works &rsaquo;</summary>
       <div class="model-explain-grid">
@@ -2410,6 +2440,11 @@ PICKS_TEMPLATE = r"""<!doctype html>
                   <span class="pick-ico {{ p.icon_cls }}">{{ p.icon }}</span>
                   <span class="pick-lbl">{{ p.pick_short }}</span>
                   <span class="pick-conf c{{ p.conf }}">{{ p.conf }}/5</span>
+                  {% if p.model_only %}
+                    <span class="src-tag model" title="Model-only pick — our simulator's preferred side, no price filter applied">MODEL</span>
+                  {% else %}
+                    <span class="src-tag ev" title="EV-verified: cleared the +2% expected-value bar after model + Pinnacle devig consensus">EV{% if p.ev_pct and p.ev_pct > 0 %} +{{ '%.0f'|format(p.ev_pct) }}%{% endif %}</span>
+                  {% endif %}
                   {% if p.strong %}<span class="strong-star" title="Model &ge; 60% AND EV &ge; +4%">&#9733;</span>{% endif %}
                   {% if p.result %}<span class="pick-res {{ p.result }}" title="{{ p.result }}">{{ '✓' if p.result == 'W' else ('✗' if p.result == 'L' else '—') }}</span>{% endif %}
                 </div>
