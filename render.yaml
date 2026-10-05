@@ -4,6 +4,18 @@ services:
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
+    # buildFilter: Skip Render auto-deploys when ONLY data files changed.
+    # Without this, every pick snapshot the running app writes back to the
+    # repo (via log_persist) triggers a fresh build + deploy, which on free
+    # tier burns pipeline minutes until the workspace runs out. Logs now
+    # live on the `data` branch by default — this is the belt-and-suspenders
+    # case in case anything lands on main.
+    buildFilter:
+      ignoredPaths:
+        - "logs/**"
+        - "*.json"
+        - "*_cache.json"
+        - "*_elo.json"
     # --workers 1: free tier is 512MB; a second worker doubles the resident
     #   memory for backtest caches and tends to tip us over the limit.
     # --max-requests: recycle worker to release leaked / cached allocations

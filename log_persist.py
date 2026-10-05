@@ -27,8 +27,14 @@ from urllib.request import Request, urlopen
 
 GITHUB_API = "https://api.github.com"
 DEFAULT_REPO = "MauricioM1103/first-pitch"
-DEFAULT_BRANCH = "main"
+# Pick snapshots used to land on `main`, which caused every save (sometimes
+# every few minutes while the app was being viewed) to trigger a fresh Render
+# auto-deploy and burn pipeline minutes. The data branch is code-free, so
+# commits here never trigger a build. Override with LOGS_BRANCH if you want
+# the old behavior.
+DEFAULT_BRANCH = "data"
 DEFAULT_LOGS_PATH = "logs"
+_BRANCH_CREATION_CHECKED = False
 
 # Per-process in-memory cache for file SHAs so a save doesn't need an extra
 # GET before each PUT. Cleared on process restart (which is fine).
@@ -96,11 +102,46 @@ def read_file(path):
     return text, sha
 
 
+def _ensure_branch_exists():
+    """Create the target branch if it doesn't exist yet. Idempotent — the
+    GitHub API call checks once per process. First call does one GET + one
+    POST, every subsequent call is a cached no-op."""
+    global _BRANCH_CREATION_CHECKED
+    if _BRANCH_CREATION_CHECKED or not is_configured():
+        return
+    _BRANCH_CREATION_CHECKED = True
+    branch = _branch()
+    repo = _repo_slug()
+    # Does the branch already exist?
+    try:
+        _api(f"{GITHUB_API}/repos/{repo}/git/refs/heads/{branch}")
+        return  # exists
+    except HTTPError as e:
+        if e.code != 404:
+            return  # some other error — don't try to create
+    except Exception:
+        return
+    # Branch doesn't exist — fork from main's current head.
+    try:
+        main_ref = _api(f"{GITHUB_API}/repos/{repo}/git/refs/heads/main")
+        main_sha = (main_ref or {}).get("object", {}).get("sha")
+        if not main_sha:
+            return
+        _api(
+            f"{GITHUB_API}/repos/{repo}/git/refs",
+            method="POST",
+            data={"ref": f"refs/heads/{branch}", "sha": main_sha},
+        )
+    except Exception:
+        pass
+
+
 def write_file(path, text, message=None):
     """Write (create or update) a UTF-8 text file in the repo.
     Returns True on success, False otherwise (silently — never raises)."""
     if not is_configured():
         return False
+    _ensure_branch_exists()
     url = f"{GITHUB_API}/repos/{_repo_slug()}/contents/{path}"
     # Need the current sha to update an existing file. Try cache, then GET.
     sha = _SHA_CACHE.get(path)
