@@ -2162,6 +2162,8 @@ PICKS_TEMPLATE = r"""<!doctype html>
 .pick-badge-row .pick-ico.ml   { background: color-mix(in oklab, var(--good) 20%, var(--card)); color: var(--good); border-color: color-mix(in oklab, var(--good) 40%, var(--rule)); }
 .pick-badge-row .pick-ico.spr  { background: color-mix(in oklab, var(--accent) 20%, var(--card)); color: var(--accent); border-color: color-mix(in oklab, var(--accent) 40%, var(--rule)); }
 .pick-badge-row .pick-ico.tot  { background: color-mix(in oklab, #f59e0b 20%, var(--card)); color: #f59e0b; border-color: color-mix(in oklab, #f59e0b 40%, var(--rule)); }
+.pick-badge-row .pick-ico.dc   { background: color-mix(in oklab, #a78bfa 20%, var(--card)); color: #a78bfa; border-color: color-mix(in oklab, #a78bfa 40%, var(--rule)); font-size: 8px; }
+.pick-badge-row .pick-ico.btts { background: color-mix(in oklab, #ec4899 20%, var(--card)); color: #ec4899; border-color: color-mix(in oklab, #ec4899 40%, var(--rule)); }
 .pick-badge-row .pick-lbl { color: var(--ink); font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .pick-badge-row .pick-conf {
   font-family: "JetBrains Mono", monospace; font-size: 10.5px;
@@ -2563,9 +2565,46 @@ def _conf_tier(prob):
 def _pick_icon(market):
     """Return (glyph, css class) for a pick based on its market."""
     m = (market or "").lower()
+    if "btts" in m or "both teams" in m: return ("B", "btts")
+    if "double" in m or "dc" in m or "or draw" in m: return ("2x", "dc")
     if "spread" in m or "line" in m: return ("±", "spr")
     if "total" in m or "over" in m or "under" in m: return ("T", "tot")
     return ("ML", "ml")
+
+
+def _snap_to_half(line):
+    """Snap a spread/total line to a .5 multiple (0.5, 1.5, 2.5, 3.5, ...)
+    to match how Polymarket / DK / FD display lines. Pinnacle serves Asian
+    quarter-point splits (-0.25, -0.75, ...) and integer "key number" lines
+    (-3, -7) that aren't shown on half-point books, so we snap for display
+    consistency.
+
+    Policy: for quarter-point lines (.25 / .75), bias DOWN toward zero so
+    both halves of the Asian split pick the easier side (home -0.75 → -0.5,
+    "home wins outright" at Polymarket), matching how Polymarket labels its
+    low-end handicap. Integer lines bump UP to the next half-point so a
+    push-prone -3 becomes -3.5.
+    """
+    if line is None:
+        return None
+    try:
+        v = float(line)
+    except (TypeError, ValueError):
+        return None
+    sign = -1.0 if v < 0 else 1.0
+    av = abs(v)
+    frac = av - int(av)
+    if abs(frac - 0.5) < 1e-9:
+        snapped = av                      # already .5
+    elif frac < 0.5:
+        snapped = int(av) + 0.5           # 0.25 → 0.5, 2.25 → 2.5
+    else:
+        snapped = int(av) + 0.5           # 0.75 → 0.5, 2.75 → 2.5 (bias toward .5)
+    if frac == 0.0 and av > 0:
+        snapped = int(av) + 0.5           # integer → next half (push protection)
+    if av == 0:
+        snapped = 0.5
+    return sign * snapped
 
 
 def _pick_short_label(p):
@@ -2628,11 +2667,12 @@ def _format_ml_line(ml, ml_outcomes):
 
 
 def _format_spread_line(spread, away, home):
-    """Compact spread: 'KC -2.5 (-110)'."""
+    """Compact spread: 'KC -3.5 (-110)' — snapped to half-point."""
     if not spread or spread.get("line_home") is None:
         return None
-    line_h = spread["line_home"]
-    # Prefer the favored side label (the side with the negative number)
+    line_h = _snap_to_half(spread["line_home"])
+    if line_h is None:
+        return None
     if line_h < 0:
         label = f"{home.split()[-1] if home else 'HM'} {line_h:g}"
         am = spread.get("home_am")
@@ -2645,19 +2685,24 @@ def _format_spread_line(spread, away, home):
 
 
 def _format_total_line(total):
-    """Compact total: 'O/U 47.5'."""
+    """Compact total: 'O/U 47.5' — snapped to half-point."""
     if not total or total.get("line") is None:
         return None
-    return f"O/U {total['line']:g}"
+    line = _snap_to_half(total["line"])
+    if line is None:
+        return None
+    return f"O/U {line:g}"
 
 
-_PICK_MARKET_ORDER = {"ML": 0, "Spread": 1, "Total": 2}
+_PICK_MARKET_ORDER = {"ML": 0, "DC": 1, "Spread": 2, "Total": 3, "BTTS": 4}
 
 
 def _market_category(market):
     """Reduce a full market string ('1H Spread', 'Total (BTTS)') to its base
-    category — 'ML', 'Spread', 'Total', or the raw string if nothing matches."""
+    category — 'ML', 'DC', 'Spread', 'Total', 'BTTS', or raw if no match."""
     m = (market or "").upper()
+    if "BTTS" in m or "BOTH TEAMS" in m: return "BTTS"
+    if "DOUBLE CHANCE" in m or " OR DRAW" in m or m == "DC": return "DC"
     if "SPREAD" in m or "RUNLINE" in m or "RL" in m or "PUCK LINE" in m: return "Spread"
     if "TOTAL" in m or "O/U" in m or "OVER" in m or "UNDER" in m: return "Total"
     if "ML" in m or "MONEYLINE" in m: return "ML"
@@ -2716,20 +2761,17 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 out.append({"category": "ML", "market": "ML",
                             "pick": "Draw", "fair_prob": d_pct})
 
-    # ---- Spread ----
+    # ---- Spread (snapped to half-point to match Polymarket / DK / FD) ----
+    line_h = None
     if "Spread" not in existing_cats and pin_spread and pin_spread.get("line_home") is not None:
-        try:
-            line_h = float(pin_spread["line_home"])
-        except (TypeError, ValueError):
-            line_h = None
-    else:
-        line_h = None
+        line_h = _snap_to_half(pin_spread["line_home"])
     if line_h is not None:
         margins_arr = (sim or {}).get("margins") or []
         numeric_margins = [float(m) for m in margins_arr if isinstance(m, (int, float))] \
             if isinstance(margins_arr, list) else []
         p_home_cover = None
         if numeric_margins:
+            # Re-evaluate cover prob at the SNAPPED line (not Pinnacle's raw)
             p_home_cover = sum(1 for m in numeric_margins if m > -line_h) / len(numeric_margins)
         elif pin_spread.get("home_am") is not None and pin_spread.get("away_am") is not None:
             p_h = generic_odds.american_to_prob(pin_spread["home_am"])
@@ -2745,12 +2787,9 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
             out.append({"category": "Spread", "market": "Spread",
                         "pick": label, "fair_prob": prob})
 
-    # ---- Total ----
+    # ---- Total (snapped to half-point to match Polymarket / DK / FD) ----
     if "Total" not in existing_cats and pin_total and pin_total.get("line") is not None:
-        try:
-            line = float(pin_total["line"])
-        except (TypeError, ValueError):
-            line = None
+        line = _snap_to_half(pin_total["line"])
         if line is not None:
             # Only trust `totals` when it's a plain numeric list (NHL path);
             # soccer returns {market_key: pct} which isn't iterable the same way.
@@ -2779,6 +2818,40 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     prob = 1 - p_over
                 out.append({"category": "Total", "market": "Total",
                             "pick": label, "fair_prob": prob})
+
+    # ---- Soccer-only extras: Double Chance (ML No) + Both Teams To Score ----
+    is_soccer = sport_slug in ("epl", "laliga", "ligamx", "ucl", "europa", "international")
+    if is_soccer and sim:
+        # Double Chance: safer ML variant that also wins on a draw. Only
+        # surface it when the straight ML favorite's draw-risk is material
+        # (draw_pct >= 20%) AND the DC prob is meaningfully higher than the
+        # straight ML (+8pp), otherwise it's just a weaker-priced duplicate.
+        h_pct = (sim.get("home_win_pct") or 0) / 100.0
+        a_pct = (sim.get("away_win_pct") or 0) / 100.0
+        d_pct = (sim.get("draw_pct") or 0) / 100.0
+        if "DC" not in existing_cats and d_pct >= 0.20:
+            if h_pct >= a_pct:
+                dc_label  = f"{home} or Draw (1X)"
+                dc_prob   = h_pct + d_pct
+                ml_prob   = h_pct
+            else:
+                dc_label  = f"{away} or Draw (X2)"
+                dc_prob   = a_pct + d_pct
+                ml_prob   = a_pct
+            if dc_prob - ml_prob >= 0.08:
+                out.append({"category": "DC", "market": "Double Chance",
+                            "pick": dc_label, "fair_prob": dc_prob})
+
+        # Both Teams To Score — pulled straight from the Dixon-Coles sim's
+        # btts_yes_pct, which it computes from the joint-goal pmf.
+        if "BTTS" not in existing_cats and sim.get("btts_yes_pct") is not None:
+            byes = float(sim["btts_yes_pct"]) / 100.0
+            if byes >= 0.5:
+                out.append({"category": "BTTS", "market": "BTTS",
+                            "pick": "BTTS: Yes", "fair_prob": byes})
+            else:
+                out.append({"category": "BTTS", "market": "BTTS",
+                            "pick": "BTTS: No", "fair_prob": 1 - byes})
 
     return out
 
