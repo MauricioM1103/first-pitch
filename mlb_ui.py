@@ -8704,15 +8704,22 @@ def logged_plays():
 
 
 if __name__ == "__main__":
+    import os as _os
     import socket
+    # Honor $PORT when it's set (Render, Heroku, Fly, Railway all inject it);
+    # fall back to 5000 for local dev. Without this, a Render service that
+    # uses `python mlb_ui.py` as its start command would bind to 5000 while
+    # Render's port scanner probes $PORT (usually 10000+), producing the
+    # "Port scan timeout, no open ports detected" deploy failure.
+    port = int(_os.environ.get("PORT") or 5000)
     hostname = socket.gethostname()
     try:
         lan_ip = socket.gethostbyname(hostname)
     except OSError:
         lan_ip = None
     print("Betting Tools - cross-sport Monte Carlo + AI analysis")
-    print("  On this PC : http://127.0.0.1:5000")
+    print(f"  On this PC : http://127.0.0.1:{port}")
     if lan_ip and not lan_ip.startswith("127."):
-        print(f"  On phone   : http://{lan_ip}:5000   (same Wi-Fi network)")
+        print(f"  On phone   : http://{lan_ip}:{port}   (same Wi-Fi network)")
     print("  Backtest   : /backtest")
-    app.run(debug=False, host="0.0.0.0", port=5000)
+    app.run(debug=False, host="0.0.0.0", port=port)
