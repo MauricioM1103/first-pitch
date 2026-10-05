@@ -2671,13 +2671,21 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
     'which side does our model prefer' — no EV / price filtering, matched
     to bettingtools.ai's "always 3 picks per game" style.
 
+    Memory-cheap on Render free tier: we only reuse a sim that's ALREADY
+    in picks._SIM_CACHE (populated by the EV pass that just ran); we do
+    NOT trigger new 1500-trial Monte Carlo sims here. Games without a
+    cached sim fall back to Pinnacle devig for direction + confidence.
+
     Returns a list of pick dicts (not saved to plays_log — tracking stays
     gated to the EV-filtered picks that have genuine edge).
     """
     import picks as picks_mod
 
     total_line = (pin_total or {}).get("line")
-    sim = picks_mod._sim_for(sport_slug, home, away, market_total=total_line)
+    # Only use the sim if the EV pass already paid for it. Avoid cold sims
+    # here — 20+ cold sims per page render would OOM a 512MB Render dyno.
+    sim_cache = getattr(picks_mod, "_SIM_CACHE", {}) or {}
+    sim = sim_cache.get((sport_slug, home or "", away or "", total_line))
     out = []
 
     # ---- ML ----
