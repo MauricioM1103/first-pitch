@@ -69,7 +69,7 @@ def _ct_filter(iso_str, fmt="%I:%M %p CT"):
         if dt.tzinfo is None:
             from datetime import timezone
             dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(CENTRAL).strftime(fmt).lstrip("0")
+        return dt.astimezone(CENTRAL).strftime(fmt).lstrip("0").replace(" 0", " ")
     except Exception:
         return iso_str
 
@@ -877,10 +877,12 @@ FONTS_LINK = _FONTS  # keep historical name; THEME_SCRIPT appended below
 
 
 _PRIMARY_SECTIONS = [
+    ("schedule",   "Schedule",     "/schedule"),
     ("picks",      "Picks",        "/"),
     ("montecarlo", "Monte Carlo",  "/montecarlo"),
     ("analysis",   "AI Analysis",  "/ai-analysis"),
     ("logged",     "Logged Plays", "/logged"),
+    ("backtest",   "Backtest",     "/backtest"),
 ]
 
 
@@ -939,7 +941,6 @@ def render_date_toggle(base_url, sport_slug, date_str, prev_date, next_date, is_
 _SPORT_TABS = {
     "mlb": [
         ("schedule",   "Schedule",    "/mlb/schedule"),
-        ("edges",      "Edges",       "/edges"),
         ("montecarlo", "Monte Carlo", "/montecarlo"),
         ("analyst",    "AI Analyst",  "/analyst"),
         ("backtest",   "Backtest",    "/backtest"),
@@ -947,17 +948,15 @@ _SPORT_TABS = {
     ],
     "nfl": [
         ("schedule",  "Schedule",   "/sport/nfl"),
-        ("edges",     "Edges",      "/sport/nfl/edges"),
         ("backtest",  "Backtest",   "/sport/nfl/backtest"),
     ],
 }
-# Soccer leagues share the same tab set — Schedule/Edges/Monte Carlo/Backtest
+# Soccer leagues share the same tab set — Schedule / Monte Carlo / Backtest
 _SOCCER_SLUGS_WITH_MODEL = {"epl", "laliga", "ligamx"}
 _SOCCER_SLUGS_ALL = {"epl", "laliga", "ligamx", "ucl", "europa", "international"}
 for _s in _SOCCER_SLUGS_WITH_MODEL:
     _SPORT_TABS[_s] = [
         ("schedule",   "Schedule",    f"/sport/{_s}"),
-        ("edges",      "Edges",       f"/sport/{_s}/edges"),
         ("montecarlo", "Monte Carlo", f"/sport/{_s}/montecarlo"),
         ("backtest",   "Backtest",    f"/sport/{_s}/backtest"),
     ]
@@ -967,7 +966,6 @@ for _s in _SOCCER_SLUGS_WITH_MODEL:
 for _s in (_SOCCER_SLUGS_ALL - _SOCCER_SLUGS_WITH_MODEL):
     _SPORT_TABS[_s] = [
         ("schedule",   "Schedule",    f"/sport/{_s}"),
-        ("edges",      "Edges",       f"/sport/{_s}/edges"),
         ("montecarlo", "Monte Carlo", f"/sport/{_s}/montecarlo"),
     ]
 
@@ -976,7 +974,6 @@ def _default_sport_tabs(slug):
     """Fallback tab set for sports with no bespoke list (UFC)."""
     return [
         ("schedule",  "Schedule",   f"/sport/{slug}"),
-        ("edges",     "Edges",      f"/sport/{slug}/edges"),
     ]
 
 
@@ -1302,7 +1299,6 @@ INDEX_TEMPLATE = r"""<!doctype html>
       <span class="brand-name">Betting Tools</span>
       <nav class="nav-tabs">
         <a class="nav-tab active" href="/mlb/schedule">Schedule</a>
-        <a class="nav-tab" href="/edges">Edges</a>
         <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
         <a class="nav-tab" href="/analyst">AI Analyst</a>
         <a class="nav-tab" href="/market">Market</a>
@@ -1516,6 +1512,294 @@ INDEX_TEMPLATE = r"""<!doctype html>
 
 
 # ============================================================================
+# unified schedule hub — today's games across every sport, in CT
+# ============================================================================
+
+SCHEDULE_HUB_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Betting Tools &mdash; Schedule &mdash; {{ date_pretty }}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+{{ fonts_link|safe }}
+{{ shared_style|safe }}
+<style>
+.sched-hero { padding: 24px 0 16px; border-bottom: 1px solid var(--rule); margin-bottom: 20px; }
+.sched-hero h1 {
+  font-family: "Fraunces", Georgia, serif; font-style: italic;
+  font-size: 32px; margin: 0 0 6px;
+}
+.sched-hero .sub { color: var(--muted); font-size: 13px; margin: 0; }
+
+.sport-section { margin: 24px 0; }
+.sport-section h2 {
+  font-family: "Fraunces", Georgia, serif; font-style: italic; font-weight: 500;
+  font-size: 20px; margin: 0 0 10px;
+  display: flex; align-items: baseline; gap: 12px;
+}
+.sport-section h2 .count {
+  font-family: "JetBrains Mono", monospace; font-size: 11px;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted);
+  font-style: normal;
+}
+.sport-section h2 .deep-link {
+  margin-left: auto; font-family: "JetBrains Mono", monospace; font-size: 11px;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent);
+  text-decoration: none; font-style: normal;
+}
+.sport-section h2 .deep-link:hover { text-decoration: underline; }
+
+.sched-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+}
+.sched-card {
+  background: var(--card); border: 1px solid var(--rule); border-radius: 10px;
+  padding: 12px 14px; display: flex; flex-direction: column; gap: 6px;
+  font-family: "JetBrains Mono", monospace;
+}
+.sched-card .time {
+  font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--muted);
+}
+.sched-card .matchup { font-size: 13px; line-height: 1.4; }
+.sched-card .matchup .team { color: var(--ink); }
+.sched-card .matchup .vs { color: var(--muted); margin: 0 6px; }
+.sched-card .ml-row {
+  display: grid; grid-template-columns: 1fr 50px 48px;
+  gap: 8px; font-size: 11px; color: var(--muted);
+  padding-top: 6px; border-top: 1px solid var(--rule);
+}
+.sched-card .ml-row .side { color: var(--ink); }
+.sched-card .ml-row .price {
+  text-align: right; font-variant-numeric: tabular-nums;
+}
+.sched-card .ml-row .fair {
+  text-align: right; font-variant-numeric: tabular-nums; color: var(--muted);
+}
+
+.empty-note {
+  color: var(--muted); font-size: 12px; font-style: italic;
+  padding: 10px 0;
+}
+.no-games {
+  padding: 32px 20px; text-align: center;
+  background: var(--card); border: 1px dashed var(--rule); border-radius: 10px;
+  color: var(--muted);
+}
+@media (max-width: 680px) {
+  .sched-grid { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+{{ sport_strip|safe }}
+<main class="wrap">
+  <div class="sched-hero">
+    <h1>Today's Schedule</h1>
+    <p class="sub">
+      {{ date_pretty }} &middot; all times Central &middot;
+      <strong>{{ total_games }}</strong> game{{ '' if total_games == 1 else 's' }} across
+      <strong>{{ sports_with_games }}</strong> sport{{ '' if sports_with_games == 1 else 's' }}.
+      Pinnacle moneyline shown where posted.
+    </p>
+  </div>
+
+  {% if total_games == 0 %}
+    <div class="no-games">No games scheduled for today across any tracked sport.</div>
+  {% endif %}
+
+  {% for section in sections %}
+    {% if section.games %}
+    <section class="sport-section">
+      <h2>
+        {{ section.name }}
+        <span class="count">{{ section.games|length }} game{{ '' if section.games|length == 1 else 's' }}</span>
+        <a class="deep-link" href="{{ section.href }}">Full board &rsaquo;</a>
+      </h2>
+      <div class="sched-grid">
+        {% for g in section.games %}
+          <div class="sched-card">
+            <div class="time">{{ g.start_time|ct('%a %I:%M %p CT') }}</div>
+            <div class="matchup">
+              <span class="team">{{ g.away }}</span>
+              <span class="vs">@</span>
+              <span class="team">{{ g.home }}</span>
+            </div>
+            {% if g.ml %}
+            <div class="ml-row">
+              <span class="side">{{ g.away }}</span>
+              <span class="price">{{ g.ml.away_am_str }}</span>
+              <span class="fair">{{ g.ml.away_fair_pct }}%</span>
+            </div>
+            {% if g.ml.draw_am_str %}
+            <div class="ml-row">
+              <span class="side">Draw</span>
+              <span class="price">{{ g.ml.draw_am_str }}</span>
+              <span class="fair">{{ g.ml.draw_fair_pct }}%</span>
+            </div>
+            {% endif %}
+            <div class="ml-row">
+              <span class="side">{{ g.home }}</span>
+              <span class="price">{{ g.ml.home_am_str }}</span>
+              <span class="fair">{{ g.ml.home_fair_pct }}%</span>
+            </div>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+  {% endfor %}
+</main>
+{{ theme_script|safe }}
+</body>
+</html>
+"""
+
+
+def _mlb_schedule_today_lite(date_str):
+    """Lightweight MLB schedule — no team-stats/pitcher hydrate. Just the games
+    for `date_str` with team names and gameDate (UTC ISO). We optionally merge
+    Pinnacle ML quotes via mlb_odds for a quick price preview on the hub."""
+    url = f"{STATSAPI}/schedule?sportId=1&date={date_str}"
+    try:
+        data = _cached(f"mlb_sched_lite_{date_str}", 10 * 60, lambda: fetch_json(url))
+    except Exception:
+        return []
+    games = []
+    for date_block in (data or {}).get("dates", []):
+        for g in date_block.get("games", []):
+            teams = g.get("teams") or {}
+            home = ((teams.get("home") or {}).get("team") or {})
+            away = ((teams.get("away") or {}).get("team") or {})
+            games.append({
+                "home_name": home.get("name", ""),
+                "away_name": away.get("name", ""),
+                "start_time": g.get("gameDate", ""),
+                "ml": None,
+            })
+
+    # Overlay Pinnacle ML quotes where we have them (free Pinnacle guest API)
+    try:
+        pinn_games = generic_odds.parse_pinnacle_games(246, ml_outcomes=2) or []
+    except Exception:
+        pinn_games = []
+    pin_by_pair = {}
+    for pg in pinn_games:
+        key = (
+            generic_odds._team_key(pg.get("away_name", "")),
+            generic_odds._team_key(pg.get("home_name", "")),
+        )
+        pin_by_pair[key] = pg
+    for g in games:
+        k = (generic_odds._team_key(g["away_name"]),
+             generic_odds._team_key(g["home_name"]))
+        pg = pin_by_pair.get(k)
+        if pg and pg.get("ml"):
+            g["ml"] = pg["ml"]
+    return games
+
+
+def _sport_games_for_hub(sport, today_date):
+    """Return today's games for a given sport, as plain dicts the SCHEDULE_HUB
+    template understands. Uses Pinnacle (free) for odds; skips the Odds API to
+    stay inside the free tier's credit budget."""
+    slug = sport["slug"]
+    today_str = today_date.isoformat()
+    raw = []
+    try:
+        if slug == "mlb":
+            raw = _mlb_schedule_today_lite(today_str)
+        else:
+            raw = generic_odds.parse_pinnacle_games(
+                sport["pinnacle_league_id"],
+                ml_outcomes=sport["ml_outcomes"],
+                has_halves=sport.get("has_halves", False),
+            ) or []
+    except Exception:
+        raw = []
+
+    out = []
+    for g in raw:
+        st = g.get("start_time")
+        if not st:
+            continue
+        try:
+            dt = datetime.fromisoformat(st.replace("Z", "+00:00")).astimezone(CENTRAL)
+        except Exception:
+            continue
+        if dt.date() != today_date:
+            continue
+        ml_pin = g.get("ml") or {}
+        ml_payload = None
+        if ml_pin.get("home_am") is not None and ml_pin.get("away_am") is not None:
+            h_am = ml_pin["home_am"]; a_am = ml_pin["away_am"]
+            d_am = ml_pin.get("draw_am")
+            if d_am is not None and sport["ml_outcomes"] == 3:
+                ph = generic_odds.american_to_prob(h_am)
+                pd_ = generic_odds.american_to_prob(d_am)
+                pa = generic_odds.american_to_prob(a_am)
+                fh, fd, fa = generic_odds.devig_three_way(ph, pd_, pa)
+            else:
+                ph = generic_odds.american_to_prob(h_am)
+                pa = generic_odds.american_to_prob(a_am)
+                fh, fa = generic_odds.devig_two_sided(ph, pa)
+                fd = None
+            ml_payload = {
+                "home_am_str": _signed_am_str(h_am),
+                "away_am_str": _signed_am_str(a_am),
+                "home_fair_pct": round((fh or 0) * 100),
+                "away_fair_pct": round((fa or 0) * 100),
+                "draw_am_str": _signed_am_str(d_am) if d_am is not None else None,
+                "draw_fair_pct": round((fd or 0) * 100) if fd is not None else None,
+            }
+        out.append({
+            "away": g.get("away_name", ""),
+            "home": g.get("home_name", ""),
+            "start_time": st,
+            "ml": ml_payload,
+        })
+    out.sort(key=lambda x: x["start_time"] or "")
+    return out
+
+
+@app.route("/schedule")
+def schedule_hub():
+    today = datetime.now(CENTRAL).date()
+    date_pretty = today.strftime("%A, %B %d").replace(" 0", " ")
+
+    sections = []
+    total_games = 0
+    for sp in sports.SPORTS:
+        games = _sport_games_for_hub(sp, today)
+        if sp["slug"] == "mlb":
+            href = "/mlb/schedule"
+        else:
+            href = f"/sport/{sp['slug']}"
+        sections.append({
+            "slug":  sp["slug"],
+            "name":  sp["name"],
+            "href":  href,
+            "games": games,
+        })
+        total_games += len(games)
+    sports_with_games = sum(1 for s in sections if s["games"])
+
+    return render_template_string(
+        SCHEDULE_HUB_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        theme_script=THEME_SCRIPT,
+        sport_strip=render_sport_strip("schedule"),
+        sections=sections,
+        total_games=total_games,
+        sports_with_games=sports_with_games,
+        date_pretty=date_pretty,
+    )
+
+
+# ============================================================================
 # backtest report template
 # ============================================================================
 
@@ -1680,7 +1964,6 @@ svg.calib { max-width: 100%; height: auto; }
       <span class="brand-name">Betting Tools</span>
       <nav class="nav-tabs">
         <a class="nav-tab" href="/mlb/schedule">Schedule</a>
-        <a class="nav-tab" href="/edges">Edges</a>
         <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
         <a class="nav-tab" href="/analyst">AI Analyst</a>
         <a class="nav-tab" href="/market">Market</a>
@@ -2457,7 +2740,7 @@ def backtest():
             BACKTEST_TEMPLATE,
             fonts_link=FONTS_LINK,
             shared_style=SHARED_STYLE,
-            sport_strip=render_sport_strip("mlb"),
+            sport_strip=render_sport_strip("backtest"),
             state=None, m=None,
             top_elo=[], bottom_elo=[],
             per_season_rows=[],
@@ -2504,7 +2787,7 @@ def backtest():
         BACKTEST_TEMPLATE,
         fonts_link=FONTS_LINK,
         shared_style=SHARED_STYLE,
-        sport_strip=render_sport_strip("mlb"),
+        sport_strip=render_sport_strip("backtest"),
         state=state,
         m=m,
         top_elo=top_elo,
@@ -2706,7 +2989,6 @@ EDGES_TEMPLATE = r"""<!doctype html>
       <span class="brand-name">Betting Tools</span>
       <nav class="nav-tabs">
         <a class="nav-tab" href="/mlb/schedule">Schedule</a>
-        <a class="nav-tab active" href="/edges">Edges</a>
         <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
         <a class="nav-tab" href="/analyst">AI Analyst</a>
         <a class="nav-tab" href="/market">Market</a>
@@ -3006,7 +3288,6 @@ MARKET_TEMPLATE = r"""<!doctype html>
       <span class="brand-name">Betting Tools</span>
       <nav class="nav-tabs">
         <a class="nav-tab" href="/mlb/schedule">Schedule</a>
-        <a class="nav-tab" href="/edges">Edges</a>
         <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
         <a class="nav-tab" href="/analyst">AI Analyst</a>
         <a class="nav-tab active" href="/market">Market</a>
@@ -3571,7 +3852,7 @@ SPORT_SCHEDULE_TEMPLATE = r"""<!doctype html>
     <p class="sub">
       Each card shows Pinnacle's moneyline, {% if sport.spread_label %}{{ sport.spread_label|lower }}, {% endif %}and main total, with devigged fair probability per side.
       {% if sport.slug == 'nfl' %}NFL games also show the Elo+QB model's win probability.{% endif %}
-      Click <a href="/sport/{{ sport.slug }}/edges" style="color:var(--accent)">Edges</a> above for the +EV table across every market and book.
+      Daily best-EV plays live on the <a href="/" style="color:var(--accent)">Picks</a> page.
     </p>
   </div>
 
@@ -4979,7 +5260,6 @@ MONTECARLO_TEMPLATE = r"""<!doctype html>
       <span class="brand-name">Betting Tools</span>
       <nav class="nav-tabs">
         <a class="nav-tab" href="/mlb/schedule">Schedule</a>
-        <a class="nav-tab" href="/edges">Edges</a>
         <a class="nav-tab active" href="/montecarlo">Monte Carlo</a>
         <a class="nav-tab" href="/market">Market</a>
         <a class="nav-tab" href="/backtest">Model</a>
@@ -5430,7 +5710,6 @@ ANALYST_TEMPLATE = r"""<!doctype html>
       <span class="brand-name">Betting Tools</span>
       <nav class="nav-tabs">
         <a class="nav-tab" href="/mlb/schedule">Schedule</a>
-        <a class="nav-tab" href="/edges">Edges</a>
         <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
         <a class="nav-tab active" href="/analyst">AI Analyst</a>
       </nav>
@@ -7937,9 +8216,10 @@ main.logged-page { max-width: 1040px; }
           </div>
         </div>
         <span class="odd">{{ p.american }}</span>
-        {% if p.clv_pp is not none %}
-          <span class="clv {{ 'pos' if p.clv_pp > 0 else ('neg' if p.clv_pp < 0 else '') }}" title="Line movement from first-save to close (pp of Pinnacle devig). Positive = sharp signal.">
-            <span class="clv-lbl">CLV</span>{{ '%+.1f' % p.clv_pp }}
+        {% set clv = p.get('clv_pp') %}
+        {% if clv is not none %}
+          <span class="clv {{ 'pos' if clv > 0 else ('neg' if clv < 0 else '') }}" title="Line movement from first-save to close (pp of Pinnacle devig). Positive = sharp signal.">
+            <span class="clv-lbl">CLV</span>{{ '%+.1f' % clv }}
           </span>
         {% else %}
           <span class="clv">&mdash;</span>
@@ -7963,9 +8243,10 @@ main.logged-page { max-width: 1040px; }
           </div>
         </div>
         <span class="odd">{{ p.american }}</span>
-        {% if p.clv_pp is not none %}
-          <span class="clv {{ 'pos' if p.clv_pp > 0 else ('neg' if p.clv_pp < 0 else '') }}" title="Line movement from first-save to close (pp of Pinnacle devig). Positive = sharp signal.">
-            <span class="clv-lbl">CLV</span>{{ '%+.1f' % p.clv_pp }}
+        {% set clv = p.get('clv_pp') %}
+        {% if clv is not none %}
+          <span class="clv {{ 'pos' if clv > 0 else ('neg' if clv < 0 else '') }}" title="Line movement from first-save to close (pp of Pinnacle devig). Positive = sharp signal.">
+            <span class="clv-lbl">CLV</span>{{ '%+.1f' % clv }}
           </span>
         {% else %}
           <span class="clv">&mdash;</span>
