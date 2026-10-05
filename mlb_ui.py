@@ -7545,10 +7545,20 @@ main.logged-page { max-width: 1040px; }
   font-size: 18px; margin: 0 0 10px;
 }
 .pick-row {
-  display: grid; grid-template-columns: 68px 1fr 60px 70px;
+  display: grid; grid-template-columns: 68px 1fr 60px 60px 70px;
   gap: 10px; align-items: center;
   padding: 8px 0; border-top: 1px solid var(--rule);
   font-family: "JetBrains Mono", monospace; font-size: 12.5px;
+}
+.pick-row .clv {
+  text-align: right; font-size: 11px; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.pick-row .clv.pos { color: var(--good); }
+.pick-row .clv.neg { color: #ef4444; }
+.pick-row .clv .clv-lbl {
+  display: inline-block; font-size: 9px; letter-spacing: 0.1em;
+  color: var(--muted); margin-right: 3px;
 }
 .pick-row:first-of-type { border-top: none; }
 .pick-row .tag {
@@ -7584,7 +7594,7 @@ main.logged-page { max-width: 1040px; }
 @media (max-width: 680px) {
   .records-grid { grid-template-columns: 1fr; }
   .pick-row { grid-template-columns: 50px 1fr 58px; }
-  .pick-row .odd { display: none; }
+  .pick-row .odd, .pick-row .clv { display: none; }
   main.logged-page { padding-left: 14px; padding-right: 14px; }
 }
 </style>
@@ -7678,6 +7688,35 @@ main.logged-page { max-width: 1040px; }
       {% endfor %}
     </div>
   </section>
+
+  {% if summary.all_30d.clv_n or summary.all_90d.clv_n %}
+  <section class="records-section">
+    <h2>Closing-Line Value (CLV)</h2>
+    <div class="sub">
+      Change in Pinnacle's devigged probability between our FIRST snapshot of
+      a pick and its latest (closing-ish) value. Positive = the sharp side of
+      the market moved toward our pick after we locked in &mdash; the single
+      strongest leading indicator of long-run bettor skill. Only settled picks
+      count.
+    </div>
+    <div class="records-grid">
+      {% for key, label in [('all_7d','Last 7 days'),('all_30d','Last 30 days'),('all_90d','Last 90 days')] %}
+      {% set r = summary[key] %}
+      <div class="rec-tile {{ 'good' if r.clv_avg_pp > 0.3 else ('bad' if r.clv_avg_pp < -0.3 else '') }}">
+        <div class="lbl">{{ label }}</div>
+        {% if r.clv_n %}
+        <div class="wl">{{ '%+.2f' % r.clv_avg_pp }}<span class="pct">pp avg</span></div>
+        <span class="units">{{ '%.0f' % r.clv_pos_pct }}% beat close &middot; {{ '%+.2f' % r.clv_avg_ev_pct }}% EV</span>
+        {% else %}
+        <div class="wl" style="color:var(--muted)">&mdash;</div>
+        <span class="units" style="color:var(--muted)">&mdash;</span>
+        {% endif %}
+        <div class="meta">{{ r.clv_n }} CLV samples</div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
 
   {% if poly_summary and poly_summary.total_trades %}
   <section class="records-section">
@@ -7898,6 +7937,13 @@ main.logged-page { max-width: 1040px; }
           </div>
         </div>
         <span class="odd">{{ p.american }}</span>
+        {% if p.clv_pp is not none %}
+          <span class="clv {{ 'pos' if p.clv_pp > 0 else ('neg' if p.clv_pp < 0 else '') }}" title="Line movement from first-save to close (pp of Pinnacle devig). Positive = sharp signal.">
+            <span class="clv-lbl">CLV</span>{{ '%+.1f' % p.clv_pp }}
+          </span>
+        {% else %}
+          <span class="clv">&mdash;</span>
+        {% endif %}
         <span class="res {{ p.result }}">{{ p.result or 'pending' }}</span>
       </div>
       {% endfor %}
@@ -7917,6 +7963,13 @@ main.logged-page { max-width: 1040px; }
           </div>
         </div>
         <span class="odd">{{ p.american }}</span>
+        {% if p.clv_pp is not none %}
+          <span class="clv {{ 'pos' if p.clv_pp > 0 else ('neg' if p.clv_pp < 0 else '') }}" title="Line movement from first-save to close (pp of Pinnacle devig). Positive = sharp signal.">
+            <span class="clv-lbl">CLV</span>{{ '%+.1f' % p.clv_pp }}
+          </span>
+        {% else %}
+          <span class="clv">&mdash;</span>
+        {% endif %}
         <span class="res {{ p.result }}">{{ p.result or 'pending' }}</span>
       </div>
     {% endfor %}

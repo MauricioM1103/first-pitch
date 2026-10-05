@@ -71,10 +71,38 @@ def save_daily_picks(date_str, picks, overwrite_today=True):
     if os.path.exists(path) and not (overwrite_today and is_today):
         return False
 
+    # Preserve first-save snapshots per pick ID so CLV (closing-line value)
+    # can be computed later. On OVERWRITE, we lock in the ORIGINAL
+    # pinnacle_prob / decimal from the first time we saved this pick; later
+    # saves within the day only update the "latest" fields.
+    existing_first = {}
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                prev = json.load(f)
+            for prev_p in prev.get("picks", []):
+                pid = prev_p.get("id")
+                if pid:
+                    existing_first[pid] = {
+                        "first_snapshot_at":  prev_p.get("first_snapshot_at") or prev_p.get("snapshotted_at"),
+                        "first_pinnacle_prob": prev_p.get("first_pinnacle_prob")
+                                                 if prev_p.get("first_pinnacle_prob") is not None
+                                                 else prev_p.get("pinnacle_prob"),
+                        "first_decimal":      prev_p.get("first_decimal") or prev_p.get("decimal"),
+                        "first_fair_prob":    prev_p.get("first_fair_prob")
+                                                 if prev_p.get("first_fair_prob") is not None
+                                                 else prev_p.get("fair_prob"),
+                    }
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    now_iso = datetime.utcnow().isoformat(timespec="seconds") + "Z"
     slim = []
     for p in picks:
+        pid = p.get("id")
+        first = existing_first.get(pid, {})
         slim.append({
-            "id":            p.get("id"),
+            "id":            pid,
             "sport":         p.get("sport"),
             "sport_slug":    p.get("sport_slug"),
             "home_team":     p.get("home_team"),
@@ -88,10 +116,20 @@ def save_daily_picks(date_str, picks, overwrite_today=True):
             "pricing_prob":  p.get("pricing_prob"),
             "mc_prob":       p.get("mc_prob"),
             "consensus_prob": p.get("consensus_prob"),
+            "pinnacle_prob": p.get("pinnacle_prob"),
             "ev_pct":        p.get("ev_pct"),
             "strong":        bool(p.get("strong")),
             "start_time":    p.get("start_time"),
-            "snapshotted_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "snapshotted_at": now_iso,
+            # CLV capture — first-save snapshot locked in across the day
+            "first_snapshot_at":  first.get("first_snapshot_at") or now_iso,
+            "first_pinnacle_prob": first.get("first_pinnacle_prob")
+                                     if first.get("first_pinnacle_prob") is not None
+                                     else p.get("pinnacle_prob"),
+            "first_decimal":      first.get("first_decimal") or p.get("decimal"),
+            "first_fair_prob":    first.get("first_fair_prob")
+                                     if first.get("first_fair_prob") is not None
+                                     else p.get("fair_prob"),
         })
     payload = {"date": date_str, "picks": slim}
     text = json.dumps(payload)
@@ -494,12 +532,32 @@ def grade_date(date_str, sport_key_by_slug, force=False):
         # can't find the game, pending stays pending.
         res = grade_pick(p, ev)
         home_s, away_s = _extract_scores(ev) if ev else (None, None)
+        # CLV: how much did Pinnacle's devigged line move from our FIRST
+        # snapshot (opening-ish) to the latest save (closing-ish)? Positive
+        # pp = market moved toward our side after we picked (sharp signal).
+        first_pin = p.get("first_pinnacle_prob")
+        close_pin = p.get("pinnacle_prob")
+        clv_pp = None
+        clv_pct = None  # EV at close using the price we actually got
+        if first_pin is not None and close_pin is not None:
+            try:
+                clv_pp = (float(close_pin) - float(first_pin)) * 100.0
+            except (TypeError, ValueError):
+                clv_pp = None
+        dec = p.get("decimal") or p.get("first_decimal")
+        if close_pin is not None and dec:
+            try:
+                clv_pct = (float(close_pin) * float(dec) - 1.0) * 100.0
+            except (TypeError, ValueError):
+                clv_pct = None
         graded_picks.append({
             **p,
             "result":     res,
             "profit_u":   profit_at_1u(res, p.get("decimal")),
             "home_score": home_s,
             "away_score": away_s,
+            "clv_pp":     clv_pp,
+            "clv_ev_pct": clv_pct,
             "graded_at":  datetime.utcnow().isoformat(timespec="seconds") + "Z" if res in ("W","L","P") else None,
         })
 
@@ -529,6 +587,9 @@ def record_in_window(graded_by_date, days_back, strong_only=False, today=None):
     cutoff = today - timedelta(days=days_back - 1)
     w = l = p = pending = 0
     units = 0.0
+    clv_pps = []
+    clv_evs = []
+    clv_positive = 0
     for ds, picks in graded_by_date.items():
         try:
             d = datetime.strptime(ds, "%Y-%m-%d").date()
@@ -549,12 +610,36 @@ def record_in_window(graded_by_date, days_back, strong_only=False, today=None):
             else:
                 pending += 1
             units += pk.get("profit_u", 0) or 0
+            # CLV aggregation — only count settled picks (W/L/P) so pending
+            # picks don't bias the signal with half-moved lines.
+            if r in ("W", "L", "P"):
+                cpp = pk.get("clv_pp")
+                if cpp is not None:
+                    try:
+                        v = float(cpp)
+                        clv_pps.append(v)
+                        if v > 0:
+                            clv_positive += 1
+                    except (TypeError, ValueError):
+                        pass
+                cev = pk.get("clv_ev_pct")
+                if cev is not None:
+                    try:
+                        clv_evs.append(float(cev))
+                    except (TypeError, ValueError):
+                        pass
     settled = w + l
     pct = (w / settled * 100) if settled else 0.0
     roi = (units / settled * 100) if settled else 0.0
+    clv_n = len(clv_pps)
+    clv_avg_pp = (sum(clv_pps) / clv_n) if clv_n else 0.0
+    clv_pos_pct = (clv_positive / clv_n * 100) if clv_n else 0.0
+    clv_avg_ev = (sum(clv_evs) / len(clv_evs)) if clv_evs else 0.0
     return {
         "wins": w, "losses": l, "pushes": p, "pending": pending,
         "settled": settled, "win_pct": pct, "units": units, "roi_pct": roi,
+        "clv_n": clv_n, "clv_avg_pp": clv_avg_pp,
+        "clv_pos_pct": clv_pos_pct, "clv_avg_ev_pct": clv_avg_ev,
     }
 
 
