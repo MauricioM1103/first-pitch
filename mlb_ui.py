@@ -490,53 +490,14 @@ def get_games(date_str):
 
 SHARED_STYLE = r"""
 :root {
-  /* Paper ground, lightly punched-up accents for subtle gaming flavor */
-  --bg: #F1ECDF; --surface: #FBF8F0; --card: #FFFFFF;
-  --ink: #15110D; --muted: #786F62; --muted-2: #9A9186;
-  --rule: #DED7C6; --rule-strong: #C9C1AE; --chip-bg: #F1ECDF;
-  --accent: #D13438;              /* vibrant stitching red */
-  --accent-glow: rgba(209, 52, 56, 0.22);
-  --good: #0F8F5E;                /* emerald */
-  --good-glow: rgba(15, 143, 94, 0.22);
-  --warn: #C98412;                /* saturated amber */
-  --warn-glow: rgba(201, 132, 18, 0.22);
-  --poor: #D13438;
-  --focus: #D13438;
-  --card-shadow: 0 1px 0 rgba(26,22,19,0.04);
-  --header-bg: rgba(241,236,223,0.9);
-  --ev-strong-glow: 0 0 10px var(--good-glow);
-  --card-hover-shadow: 0 4px 20px rgba(21,17,13,0.06), 0 0 0 1px var(--rule-strong);
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    /* Late-night scoreboard: deeper ground, neon accents, soft glow */
-    --bg: #0E0D11; --surface: #15141A; --card: #1C1B23;
-    --ink: #ECEAF2; --muted: #8E8A99; --muted-2: #605D6E;
-    --rule: #26242D; --rule-strong: #3A3744; --chip-bg: #15141A;
-    --accent: #FF4D6A;
-    --accent-glow: rgba(255, 77, 106, 0.4);
-    --good: #22F0A0;              /* electric mint */
-    --good-glow: rgba(34, 240, 160, 0.35);
-    --warn: #FFC94A;
-    --warn-glow: rgba(255, 201, 74, 0.3);
-    --poor: #FF4D6A;
-    --focus: #22F0A0;
-    --card-shadow: 0 1px 0 rgba(0,0,0,0.3);
-    --header-bg: rgba(14,13,17,0.88);
-    --ev-strong-glow: 0 0 14px var(--good-glow);
-    --card-hover-shadow:
-      0 6px 24px rgba(0,0,0,0.45),
-      0 0 0 1px var(--accent),
-      0 0 20px rgba(255, 77, 106, 0.08);
-  }
-}
-:root[data-theme="dark"] {
+  /* Dark-only palette — late-night scoreboard look */
+  color-scheme: dark;
   --bg: #0E0D11; --surface: #15141A; --card: #1C1B23;
   --ink: #ECEAF2; --muted: #8E8A99; --muted-2: #605D6E;
   --rule: #26242D; --rule-strong: #3A3744; --chip-bg: #15141A;
   --accent: #FF4D6A;
   --accent-glow: rgba(255, 77, 106, 0.4);
-  --good: #22F0A0;
+  --good: #22F0A0;                /* electric mint */
   --good-glow: rgba(34, 240, 160, 0.35);
   --warn: #FFC94A;
   --warn-glow: rgba(255, 201, 74, 0.3);
@@ -662,12 +623,11 @@ header {
 }
 @media (max-width: 640px) {
   .sport-strip-inner.primary-nav {
-    grid-template-columns: 1fr auto;
+    grid-template-columns: 1fr;
     row-gap: 10px;
   }
   .brand { grid-column: 1; grid-row: 1; border-right: none; padding-right: 0; }
-  .theme-toggle { grid-column: 2; grid-row: 1; margin-left: auto; }
-  .primary-tabs { grid-column: 1 / 3; grid-row: 2; justify-content: flex-start; overflow-x: auto; }
+  .primary-tabs { grid-column: 1; grid-row: 2; justify-content: flex-start; overflow-x: auto; }
 }
 
 /* Secondary sport chip bar (inside MC / AI pages) */
@@ -689,25 +649,6 @@ header {
   color: var(--ink); background: var(--card);
   border-color: var(--accent, var(--ink));
   box-shadow: 0 0 0 1px var(--accent, transparent) inset;
-}
-
-.theme-toggle {
-  margin-left: auto; flex-shrink: 0;
-  width: 32px; height: 32px; border-radius: 999px;
-  border: 1px solid var(--rule-strong);
-  background: var(--surface);
-  color: var(--ink);
-  font-size: 15px; cursor: pointer; line-height: 1;
-  display: inline-flex; align-items: center; justify-content: center;
-  transition: color 120ms ease, background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
-}
-.theme-toggle:hover {
-  color: var(--accent);
-  border-color: var(--accent);
-  box-shadow: 0 0 10px var(--accent-glow);
-}
-.theme-toggle:focus-visible {
-  outline: 2px solid var(--focus); outline-offset: 2px;
 }
 
 .controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -776,13 +717,7 @@ footer {
   }
 }
 .brand-name {
-  text-shadow: 0 0 0 transparent;
-}
-:root[data-theme="dark"] .brand-name,
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .brand-name {
-    text-shadow: 0 0 18px rgba(255, 77, 106, 0.14);
-  }
+  text-shadow: 0 0 18px rgba(255, 77, 106, 0.14);
 }
 .nav-tab.active {
   box-shadow: 0 0 0 1px var(--accent-glow);
@@ -886,7 +821,7 @@ _PRIMARY_SECTIONS = [
 
 
 def render_sport_strip(active_slug):
-    """Top bar: BETTING TOOLS brand (left) | centered 3-tab primary nav | theme toggle (right)."""
+    """Top bar: BETTING TOOLS brand (left) | centered primary-tab nav. Dark-only."""
     active_primary = active_slug if active_slug in {s[0] for s in _PRIMARY_SECTIONS} else None
     parts = ['<div class="sport-strip"><div class="wrap sport-strip-inner primary-nav">']
     parts.append('<a class="brand" href="/">BETTING TOOLS</a>')
@@ -895,11 +830,6 @@ def render_sport_strip(active_slug):
         cls = "sport-pill active" if key == active_primary else "sport-pill"
         parts.append(f'<a class="{cls}" href="{href}">{label}</a>')
     parts.append('</nav>')
-    parts.append(
-        '<button class="theme-toggle" onclick="toggleTheme()" '
-        'title="Toggle dark / light theme" aria-label="Toggle theme">'
-        '<span id="theme-icon">☽</span></button>'
-    )
     parts.append('</div></div>')
     return "".join(parts)
 
@@ -987,33 +917,10 @@ def render_sport_nav(slug, active):
     return "".join(parts)
 
 
-THEME_SCRIPT = r"""
-<script>
-// Apply saved theme BEFORE first paint to avoid flash.
-(function(){
-  try {
-    var t = localStorage.getItem('theme');
-    if (t === 'dark' || t === 'light') {
-      document.documentElement.setAttribute('data-theme', t);
-    }
-  } catch (e) {}
-})();
-function toggleTheme(){
-  var cur = document.documentElement.getAttribute('data-theme');
-  if (!cur) {
-    // No explicit setting yet — use OS preference as the starting point.
-    cur = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  }
-  var next = cur === 'dark' ? 'light' : 'dark';
-  document.documentElement.setAttribute('data-theme', next);
-  try { localStorage.setItem('theme', next); } catch (e) {}
-  var icon = document.getElementById('theme-icon');
-  if (icon) icon.textContent = next === 'dark' ? '☼' : '☽';
-}
-</script>
-"""
-# Append the theme script so every template that injects FONTS_LINK gets it.
-FONTS_LINK = _FONTS + THEME_SCRIPT
+# Dark-only: no theme toggle. Kept as empty strings so templates that still
+# reference THEME_SCRIPT / FONTS_LINK don't need to be touched one by one.
+THEME_SCRIPT = ""
+FONTS_LINK = _FONTS
 
 
 # ============================================================================
@@ -2727,10 +2634,21 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
     import picks as picks_mod
 
     total_line = (pin_total or {}).get("line")
-    # Only use the sim if the EV pass already paid for it. Avoid cold sims
-    # here — 20+ cold sims per page render would OOM a 512MB Render dyno.
+    # Prefer a sim the EV pass already paid for. For soccer we also allow a
+    # cold sim: Dixon-Coles is light enough to run per-game without blowing
+    # the Render dyno, and we specifically need its draw_pct + btts_yes_pct
+    # for the Double-Chance and BTTS picks. For NHL / NFL / NCAAF we stay
+    # cache-only — those sims are the memory-expensive ones.
     sim_cache = getattr(picks_mod, "_SIM_CACHE", {}) or {}
-    sim = sim_cache.get((sport_slug, home or "", away or "", total_line))
+    sim_key = (sport_slug, home or "", away or "", total_line)
+    sim = sim_cache.get(sim_key)
+    if sim is None and sport_slug in ("epl", "laliga", "ligamx", "ucl",
+                                      "europa", "international"):
+        try:
+            sim = picks_mod._sim_for(sport_slug, home, away,
+                                     market_total=total_line)
+        except Exception:
+            sim = None
     out = []
 
     # ---- ML ----
