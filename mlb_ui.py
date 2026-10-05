@@ -877,7 +877,6 @@ FONTS_LINK = _FONTS  # keep historical name; THEME_SCRIPT appended below
 
 
 _PRIMARY_SECTIONS = [
-    ("schedule",   "Schedule",     "/schedule"),
     ("picks",      "Picks",        "/"),
     ("montecarlo", "Monte Carlo",  "/montecarlo"),
     ("analysis",   "AI Analysis",  "/ai-analysis"),
@@ -1512,151 +1511,8 @@ INDEX_TEMPLATE = r"""<!doctype html>
 
 
 # ============================================================================
-# unified schedule hub — today's games across every sport, in CT
+# Shared helpers for today's game board (fed into the unified Picks page)
 # ============================================================================
-
-SCHEDULE_HUB_TEMPLATE = r"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Betting Tools &mdash; Schedule &mdash; {{ date_pretty }}</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-{{ fonts_link|safe }}
-{{ shared_style|safe }}
-<style>
-.sched-hero { padding: 24px 0 16px; border-bottom: 1px solid var(--rule); margin-bottom: 20px; }
-.sched-hero h1 {
-  font-family: "Fraunces", Georgia, serif; font-style: italic;
-  font-size: 32px; margin: 0 0 6px;
-}
-.sched-hero .sub { color: var(--muted); font-size: 13px; margin: 0; }
-
-.sport-section { margin: 24px 0; }
-.sport-section h2 {
-  font-family: "Fraunces", Georgia, serif; font-style: italic; font-weight: 500;
-  font-size: 20px; margin: 0 0 10px;
-  display: flex; align-items: baseline; gap: 12px;
-}
-.sport-section h2 .count {
-  font-family: "JetBrains Mono", monospace; font-size: 11px;
-  letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted);
-  font-style: normal;
-}
-.sport-section h2 .deep-link {
-  margin-left: auto; font-family: "JetBrains Mono", monospace; font-size: 11px;
-  letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent);
-  text-decoration: none; font-style: normal;
-}
-.sport-section h2 .deep-link:hover { text-decoration: underline; }
-
-.sched-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 10px;
-}
-.sched-card {
-  background: var(--card); border: 1px solid var(--rule); border-radius: 10px;
-  padding: 12px 14px; display: flex; flex-direction: column; gap: 6px;
-  font-family: "JetBrains Mono", monospace;
-}
-.sched-card .time {
-  font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
-  color: var(--muted);
-}
-.sched-card .matchup { font-size: 13px; line-height: 1.4; }
-.sched-card .matchup .team { color: var(--ink); }
-.sched-card .matchup .vs { color: var(--muted); margin: 0 6px; }
-.sched-card .ml-row {
-  display: grid; grid-template-columns: 1fr 50px 48px;
-  gap: 8px; font-size: 11px; color: var(--muted);
-  padding-top: 6px; border-top: 1px solid var(--rule);
-}
-.sched-card .ml-row .side { color: var(--ink); }
-.sched-card .ml-row .price {
-  text-align: right; font-variant-numeric: tabular-nums;
-}
-.sched-card .ml-row .fair {
-  text-align: right; font-variant-numeric: tabular-nums; color: var(--muted);
-}
-
-.empty-note {
-  color: var(--muted); font-size: 12px; font-style: italic;
-  padding: 10px 0;
-}
-.no-games {
-  padding: 32px 20px; text-align: center;
-  background: var(--card); border: 1px dashed var(--rule); border-radius: 10px;
-  color: var(--muted);
-}
-@media (max-width: 680px) {
-  .sched-grid { grid-template-columns: 1fr; }
-}
-</style>
-</head>
-<body>
-{{ sport_strip|safe }}
-<main class="wrap">
-  <div class="sched-hero">
-    <h1>Today's Schedule</h1>
-    <p class="sub">
-      {{ date_pretty }} &middot; all times Central &middot;
-      <strong>{{ total_games }}</strong> game{{ '' if total_games == 1 else 's' }} across
-      <strong>{{ sports_with_games }}</strong> sport{{ '' if sports_with_games == 1 else 's' }}.
-      Pinnacle moneyline shown where posted.
-    </p>
-  </div>
-
-  {% if total_games == 0 %}
-    <div class="no-games">No games scheduled for today across any tracked sport.</div>
-  {% endif %}
-
-  {% for section in sections %}
-    {% if section.games %}
-    <section class="sport-section">
-      <h2>
-        {{ section.name }}
-        <span class="count">{{ section.games|length }} game{{ '' if section.games|length == 1 else 's' }}</span>
-        <a class="deep-link" href="{{ section.href }}">Full board &rsaquo;</a>
-      </h2>
-      <div class="sched-grid">
-        {% for g in section.games %}
-          <div class="sched-card">
-            <div class="time">{{ g.start_time|ct('%a %I:%M %p CT') }}</div>
-            <div class="matchup">
-              <span class="team">{{ g.away }}</span>
-              <span class="vs">@</span>
-              <span class="team">{{ g.home }}</span>
-            </div>
-            {% if g.ml %}
-            <div class="ml-row">
-              <span class="side">{{ g.away }}</span>
-              <span class="price">{{ g.ml.away_am_str }}</span>
-              <span class="fair">{{ g.ml.away_fair_pct }}%</span>
-            </div>
-            {% if g.ml.draw_am_str %}
-            <div class="ml-row">
-              <span class="side">Draw</span>
-              <span class="price">{{ g.ml.draw_am_str }}</span>
-              <span class="fair">{{ g.ml.draw_fair_pct }}%</span>
-            </div>
-            {% endif %}
-            <div class="ml-row">
-              <span class="side">{{ g.home }}</span>
-              <span class="price">{{ g.ml.home_am_str }}</span>
-              <span class="fair">{{ g.ml.home_fair_pct }}%</span>
-            </div>
-            {% endif %}
-          </div>
-        {% endfor %}
-      </div>
-    </section>
-    {% endif %}
-  {% endfor %}
-</main>
-{{ theme_script|safe }}
-</body>
-</html>
-"""
-
 
 def _mlb_schedule_today_lite(date_str):
     """Lightweight MLB schedule — no team-stats/pitcher hydrate. Just the games
@@ -1731,72 +1587,24 @@ def _sport_games_for_hub(sport, today_date):
             continue
         if dt.date() != today_date:
             continue
-        ml_pin = g.get("ml") or {}
-        ml_payload = None
-        if ml_pin.get("home_am") is not None and ml_pin.get("away_am") is not None:
-            h_am = ml_pin["home_am"]; a_am = ml_pin["away_am"]
-            d_am = ml_pin.get("draw_am")
-            if d_am is not None and sport["ml_outcomes"] == 3:
-                ph = generic_odds.american_to_prob(h_am)
-                pd_ = generic_odds.american_to_prob(d_am)
-                pa = generic_odds.american_to_prob(a_am)
-                fh, fd, fa = generic_odds.devig_three_way(ph, pd_, pa)
-            else:
-                ph = generic_odds.american_to_prob(h_am)
-                pa = generic_odds.american_to_prob(a_am)
-                fh, fa = generic_odds.devig_two_sided(ph, pa)
-                fd = None
-            ml_payload = {
-                "home_am_str": _signed_am_str(h_am),
-                "away_am_str": _signed_am_str(a_am),
-                "home_fair_pct": round((fh or 0) * 100),
-                "away_fair_pct": round((fa or 0) * 100),
-                "draw_am_str": _signed_am_str(d_am) if d_am is not None else None,
-                "draw_fair_pct": round((fd or 0) * 100) if fd is not None else None,
-            }
         out.append({
-            "away": g.get("away_name", ""),
-            "home": g.get("home_name", ""),
+            "away":       g.get("away_name", ""),
+            "home":       g.get("home_name", ""),
             "start_time": st,
-            "ml": ml_payload,
+            "ml":         g.get("ml"),
+            "spread":     g.get("spread"),
+            "total":      g.get("total"),
         })
     out.sort(key=lambda x: x["start_time"] or "")
     return out
 
 
+# /schedule is a legacy alias — now that the Picks page shows all games,
+# redirect so old deep links keep working.
 @app.route("/schedule")
-def schedule_hub():
-    today = datetime.now(CENTRAL).date()
-    date_pretty = today.strftime("%A, %B %d").replace(" 0", " ")
-
-    sections = []
-    total_games = 0
-    for sp in sports.SPORTS:
-        games = _sport_games_for_hub(sp, today)
-        if sp["slug"] == "mlb":
-            href = "/mlb/schedule"
-        else:
-            href = f"/sport/{sp['slug']}"
-        sections.append({
-            "slug":  sp["slug"],
-            "name":  sp["name"],
-            "href":  href,
-            "games": games,
-        })
-        total_games += len(games)
-    sports_with_games = sum(1 for s in sections if s["games"])
-
-    return render_template_string(
-        SCHEDULE_HUB_TEMPLATE,
-        fonts_link=FONTS_LINK,
-        shared_style=SHARED_STYLE,
-        theme_script=THEME_SCRIPT,
-        sport_strip=render_sport_strip("schedule"),
-        sections=sections,
-        total_games=total_games,
-        sports_with_games=sports_with_games,
-        date_pretty=date_pretty,
-    )
+def schedule_hub_redirect():
+    from flask import redirect
+    return redirect("/", code=302)
 
 
 # ============================================================================
@@ -2243,169 +2051,248 @@ PICKS_TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Betting Tools &mdash; Today's Picks</title>
+<title>Betting Tools &mdash; {{ date_pretty }}</title>
 {{ fonts_link|safe }}
 <style>
 {{ shared_style|safe }}
 
-.hero {
-  padding-bottom: 20px; margin-bottom: 20px;
-  border-bottom: 1px solid var(--rule);
-}
+.hero { padding: 20px 0 12px; margin-bottom: 12px; border-bottom: 1px solid var(--rule); }
 .hero h1 {
-  font-family: "Fraunces", Georgia, serif;
-  font-style: italic; font-weight: 400;
-  font-size: clamp(32px, 5vw, 52px);
-  line-height: 1.05; letter-spacing: -0.02em;
-  margin: 0 0 8px; font-variation-settings: "opsz" 144;
+  font-family: "Fraunces", Georgia, serif; font-style: italic; font-weight: 400;
+  font-size: clamp(26px, 4vw, 36px); line-height: 1.05;
+  margin: 0 0 6px;
 }
-.hero .sub { color: var(--muted); max-width: 760px; font-size: 13.5px; line-height: 1.6; }
+.hero .sub { color: var(--muted); font-size: 12.5px; margin: 0; }
+.hero .sub b { color: var(--ink); font-weight: 500; }
 
-.summary { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 20px; }
-.summary .pill {
-  background: var(--card); border: 1px solid var(--rule);
-  border-radius: 999px; padding: 8px 14px;
-  font-family: "JetBrains Mono", monospace; font-size: 11px;
-  color: var(--muted); font-variant-numeric: tabular-nums;
+.summary-strip { display: flex; flex-wrap: wrap; gap: 18px; margin: 10px 0 14px; }
+.summary-strip .stat {
+  font-family: "JetBrains Mono", monospace; font-size: 11.5px;
+  color: var(--muted); letter-spacing: 0.04em;
 }
-.summary .pill b { color: var(--ink); font-weight: 500; }
-.summary .pill.good b { color: var(--good); text-shadow: var(--ev-strong-glow); }
+.summary-strip .stat b { color: var(--ink); font-weight: 500; font-size: 13px; margin-right: 4px; }
+.summary-strip .stat.good b { color: var(--good); text-shadow: var(--ev-strong-glow); }
 
-.filter-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 20px; }
+.filter-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
 .filter-chips .chip {
-  padding: 6px 12px; border-radius: 999px;
+  padding: 5px 11px; border-radius: 999px;
   border: 1px solid var(--rule-strong);
   background: var(--surface); color: var(--muted);
-  font-size: 12px; font-weight: 500; text-decoration: none;
+  font-size: 11.5px; font-weight: 500; text-decoration: none;
 }
 .filter-chips .chip:hover { color: var(--ink); background: var(--card); }
 .filter-chips .chip.active { color: var(--ink); background: var(--card); border-color: var(--ink); }
 
-.pick-list { display: flex; flex-direction: column; gap: 12px; }
-
-.pick-card {
-  background: var(--card); border: 1px solid var(--rule);
-  border-radius: 12px; padding: 16px 20px;
-  display: grid; grid-template-columns: 48px 1fr; gap: 16px;
-  transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+.board-wrap {
+  background: var(--card); border: 1px solid var(--rule); border-radius: 10px;
+  overflow: hidden;
 }
-.pick-card:hover { border-color: var(--rule-strong); transform: translateY(-1px); box-shadow: var(--card-hover-shadow); }
-.pick-card.strong { box-shadow: inset 3px 0 0 var(--good); }
-
-.rank {
-  font-family: "Fraunces", Georgia, serif; font-style: italic;
-  font-size: 28px; color: var(--muted); line-height: 1;
-  text-align: right; padding-top: 4px;
+.board-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.board-table thead th {
+  text-align: left; padding: 10px 12px;
+  font-family: "JetBrains Mono", monospace; font-weight: 500;
+  font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted); border-bottom: 1px solid var(--rule);
+  background: var(--surface);
 }
-.pick-main { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.board-table tbody td {
+  padding: 12px; border-top: 1px solid var(--rule);
+  vertical-align: top;
+}
+.board-table tr.row-main:first-child td { border-top: none; }
+.board-table .col-status  { width: 90px; }
+.board-table .col-time    { width: 110px; }
+.board-table .col-match   { min-width: 180px; }
+.board-table .col-score   { width: 70px; text-align: center; }
+.board-table .col-line    { width: 180px; }
+.board-table .col-close   { width: 150px; }
+.board-table .col-picks   { min-width: 230px; }
+.board-table .col-view    { width: 70px; text-align: right; }
 
-.pick-meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 11.5px; color: var(--muted); }
-.pick-meta .sport {
-  font-family: "JetBrains Mono", monospace; font-size: 10px;
-  letter-spacing: 0.1em; text-transform: uppercase; font-weight: 500;
-  padding: 2px 8px; border-radius: 4px;
-  background: var(--chip-bg); color: var(--muted);
+.status-chip {
+  display: inline-block; padding: 3px 10px; border-radius: 999px;
+  font-family: "JetBrains Mono", monospace; font-size: 9.5px;
+  letter-spacing: 0.14em; text-transform: uppercase; font-weight: 500;
+  background: var(--surface); border: 1px solid var(--rule);
+  color: var(--muted);
+}
+.status-chip.st-upcoming { color: var(--accent); border-color: var(--accent); }
+.status-chip.st-live     { color: #ef4444; border-color: #ef4444;
+  background: color-mix(in oklab, #ef4444 10%, transparent); animation: pulse 1.6s infinite; }
+.status-chip.st-final    { color: var(--muted); }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.55} }
+
+.col-time { font-family: "JetBrains Mono", monospace; color: var(--muted); font-size: 11.5px; }
+.col-time .countdown { color: var(--ink); display: block; font-size: 12px; }
+.col-time .absolute  { color: var(--muted-2); display: block; font-size: 10.5px; margin-top: 2px; }
+
+.col-match .sport-tag {
+  display: inline-block;
+  font-family: "JetBrains Mono", monospace; font-size: 9px;
+  letter-spacing: 0.12em; text-transform: uppercase; font-weight: 500;
+  padding: 1px 6px; border-radius: 3px;
+  background: var(--surface); color: var(--muted); border: 1px solid var(--rule);
+  margin-bottom: 4px;
+}
+.col-match .team { display: block; color: var(--ink); font-weight: 500; font-size: 13px; line-height: 1.35; }
+.col-match .at { color: var(--muted); font-size: 11px; display: block; margin: 1px 0; }
+
+.col-score { font-family: "JetBrains Mono", monospace; font-size: 15px; font-weight: 600; color: var(--ink); }
+.col-score .pending { color: var(--muted-2); font-weight: 400; font-size: 13px; }
+.col-score .score-away { color: var(--ink); }
+.col-score .score-dash { color: var(--muted); margin: 0 3px; }
+
+.lines-block { font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: var(--muted); line-height: 1.5; }
+.lines-block .ln-row { display: flex; gap: 6px; align-items: baseline; }
+.lines-block .ln-k { color: var(--muted-2); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; min-width: 32px; }
+.lines-block .ln-v { color: var(--ink); font-variant-numeric: tabular-nums; }
+.lines-block .ln-v .book { color: var(--muted-2); font-size: 10px; margin-left: 4px; }
+
+.pick-badge-row {
+  display: flex; gap: 8px; align-items: center;
+  padding: 5px 0; font-size: 12px;
+}
+.pick-badge-row + .pick-badge-row { border-top: 1px dashed var(--rule); margin-top: 2px; padding-top: 7px; }
+.pick-badge-row .pick-ico {
+  display: inline-block; width: 18px; height: 18px; border-radius: 50%;
+  text-align: center; line-height: 18px; font-size: 10px; font-weight: 700;
+  background: var(--surface); color: var(--muted); border: 1px solid var(--rule);
+  flex-shrink: 0;
+}
+.pick-badge-row .pick-ico.ml   { background: color-mix(in oklab, var(--good) 20%, var(--card)); color: var(--good); border-color: color-mix(in oklab, var(--good) 40%, var(--rule)); }
+.pick-badge-row .pick-ico.spr  { background: color-mix(in oklab, var(--accent) 20%, var(--card)); color: var(--accent); border-color: color-mix(in oklab, var(--accent) 40%, var(--rule)); }
+.pick-badge-row .pick-ico.tot  { background: color-mix(in oklab, #f59e0b 20%, var(--card)); color: #f59e0b; border-color: color-mix(in oklab, #f59e0b 40%, var(--rule)); }
+.pick-badge-row .pick-lbl { color: var(--ink); font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.pick-badge-row .pick-conf {
+  font-family: "JetBrains Mono", monospace; font-size: 10.5px;
+  color: var(--muted); font-variant-numeric: tabular-nums;
+  padding: 1px 7px; border-radius: 4px; background: var(--surface);
   border: 1px solid var(--rule);
 }
-.pick-meta .market {
+.pick-badge-row .pick-conf.c5 { color: var(--good); border-color: var(--good); background: color-mix(in oklab, var(--good) 12%, transparent); }
+.pick-badge-row .pick-conf.c4 { color: var(--good); }
+.pick-badge-row .pick-res { font-size: 13px; font-weight: 700; margin-left: 2px; }
+.pick-badge-row .pick-res.W { color: var(--good); }
+.pick-badge-row .pick-res.L { color: #ef4444; }
+.pick-badge-row .pick-res.P { color: var(--muted-2); }
+.pick-badge-row .strong-star { color: var(--good); font-size: 11px; margin-left: 2px; text-shadow: var(--ev-strong-glow); }
+
+.btn-view {
+  padding: 5px 12px; border-radius: 6px;
+  border: 1px solid var(--rule-strong);
+  background: var(--surface); color: var(--ink);
+  font-size: 11.5px; font-weight: 500;
+  cursor: pointer; font-family: inherit;
+}
+.btn-view:hover { background: var(--card); border-color: var(--ink); }
+
+.no-picks-dash { color: var(--muted-2); font-size: 13px; }
+.col-close .close-pending { color: var(--muted-2); font-size: 11px; font-style: italic; }
+
+.row-expanded { background: color-mix(in oklab, var(--accent) 4%, transparent); }
+.row-expanded td { padding: 14px 20px; }
+.expanded-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 16px;
+}
+.pick-detail {
+  background: var(--card); border: 1px solid var(--rule); border-radius: 8px;
+  padding: 12px 16px;
+}
+.pick-detail.strong { box-shadow: inset 3px 0 0 var(--good); }
+.pick-detail-head {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline;
+  margin-bottom: 8px;
+}
+.pick-detail-head strong { font-size: 15px; color: var(--ink); }
+.pick-detail-head .market-tag {
   font-family: "JetBrains Mono", monospace; font-size: 10px;
-  letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent);
+  color: var(--accent); letter-spacing: 0.1em; text-transform: uppercase;
 }
-.pick-meta .game { color: var(--ink); font-weight: 500; font-size: 13px; }
-.pick-meta .time { color: var(--muted-2); font-family: "JetBrains Mono", monospace; font-size: 11px; }
-
-.pick-headline {
-  font-size: 18px; font-weight: 600; color: var(--ink);
-  letter-spacing: -0.01em; line-height: 1.25;
+.pick-detail-head .price {
+  font-family: "JetBrains Mono", monospace; font-size: 12px;
+  color: var(--muted); font-variant-numeric: tabular-nums;
 }
-.pick-headline .price {
-  font-family: "JetBrains Mono", monospace; font-size: 14px;
-  color: var(--muted); font-weight: 400;
-  margin-left: 10px; font-variant-numeric: tabular-nums;
+.pick-detail-head .book { font-family: "JetBrains Mono", monospace; font-size: 10px; color: var(--muted-2); }
+.pick-detail-head .strong-badge {
+  font-family: "JetBrains Mono", monospace; font-size: 9.5px;
+  letter-spacing: 0.14em; color: var(--good); font-weight: 700;
+  text-shadow: var(--ev-strong-glow);
 }
-.pick-headline .book {
-  font-family: "JetBrains Mono", monospace; font-size: 11px;
-  color: var(--muted-2); margin-left: 6px;
-}
-
-.pick-stats {
+.pick-stats-detail {
   display: flex; flex-wrap: wrap; gap: 14px;
   font-family: "JetBrains Mono", monospace; font-size: 11px;
-  font-variant-numeric: tabular-nums; color: var(--muted);
+  color: var(--muted); margin-bottom: 10px;
 }
-.pick-stats .ev { color: var(--good); font-weight: 600; text-shadow: var(--ev-strong-glow); }
-.pick-stats .label { color: var(--muted-2); margin-right: 4px; letter-spacing: 0.06em; text-transform: uppercase; font-size: 9.5px; }
-.pick-stats b { color: var(--ink); font-weight: 500; }
-
+.pick-stats-detail .ev { color: var(--good); font-weight: 600; text-shadow: var(--ev-strong-glow); }
+.pick-stats-detail b { color: var(--ink); font-weight: 500; }
+.pick-stats-detail .label { color: var(--muted-2); margin-right: 4px; font-size: 9.5px; letter-spacing: 0.06em; text-transform: uppercase; }
+.pick-bulletin {
+  color: var(--muted); font-size: 12.5px; line-height: 1.55;
+  padding: 8px 10px; border-left: 2px solid var(--accent);
+  background: color-mix(in oklab, var(--accent) 6%, transparent);
+  border-radius: 0 6px 6px 0; margin-bottom: 8px;
+}
+.pick-bulletin b { color: var(--ink); }
 .poly-signal {
-  margin: 8px 0 0;
-  padding: 7px 10px;
-  border-radius: 6px;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 11px;
-  line-height: 1.4;
+  margin: 6px 0; padding: 6px 10px; border-radius: 6px;
+  font-family: "JetBrains Mono", monospace; font-size: 11px;
   border-left: 3px solid var(--rule-strong);
-  background: var(--surface);
-  color: var(--ink);
+  background: var(--surface); color: var(--ink);
 }
 .poly-signal.poly-good { border-left-color: var(--good); background: color-mix(in oklab, var(--good) 10%, var(--card)); }
-.poly-signal.poly-bad  { border-left-color: #ef4444;    background: color-mix(in oklab, #ef4444 10%, var(--card)); }
-.poly-signal.poly-info { border-left-color: var(--accent, #60a5fa); color: var(--muted); }
-
-.bulletin {
-  color: var(--muted); font-size: 13px; line-height: 1.55;
-  padding: 10px 12px; border-left: 2px solid var(--accent);
-  background: color-mix(in oklab, var(--accent) 6%, transparent);
-  border-radius: 0 6px 6px 0;
-}
-.bulletin b, .bulletin strong { color: var(--ink); }
-
-.pick-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.pick-actions .btn-ai {
-  padding: 6px 12px; border-radius: 6px;
+.poly-signal.poly-bad  { border-left-color: #ef4444;   background: color-mix(in oklab, #ef4444 10%, var(--card)); }
+.poly-signal.poly-info { border-left-color: var(--accent); color: var(--muted); }
+.pick-detail .btn-ai {
+  padding: 5px 12px; border-radius: 6px;
   border: 1px solid var(--accent);
   background: color-mix(in oklab, var(--accent) 8%, transparent);
-  color: var(--accent); font-weight: 500; font-size: 12px;
+  color: var(--accent); font-weight: 500; font-size: 11.5px;
   cursor: pointer;
-  transition: background 120ms ease, box-shadow 120ms ease;
 }
-.pick-actions .btn-ai:hover {
-  background: color-mix(in oklab, var(--accent) 18%, transparent);
-  box-shadow: 0 0 12px var(--accent-glow);
-}
-.pick-actions .btn-ai:disabled { opacity: 0.6; cursor: wait; }
-.pick-actions .model-src {
+.pick-detail .btn-ai:hover { background: color-mix(in oklab, var(--accent) 18%, transparent); box-shadow: 0 0 10px var(--accent-glow); }
+.pick-detail .btn-ai:disabled { opacity: 0.6; cursor: wait; }
+.pick-detail .ai-analysis { padding: 10px 0 0; font-size: 12.5px; display: none; margin-top: 10px; border-top: 1px dashed var(--rule); }
+.pick-detail .ai-analysis.visible { display: block; }
+.pick-detail .ai-analysis h5 {
   font-family: "JetBrains Mono", monospace; font-size: 10px;
-  color: var(--muted-2); letter-spacing: 0.04em;
-}
-
-.ai-analysis {
-  padding: 12px 14px; border-top: 1px dashed var(--rule);
-  font-size: 13px; line-height: 1.55; display: none;
-}
-.ai-analysis.visible { display: block; }
-.ai-analysis h5 {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+  letter-spacing: 0.12em; text-transform: uppercase;
   color: var(--muted); margin: 10px 0 6px; font-weight: 500;
 }
-.ai-analysis ul { margin: 0 0 8px; padding-left: 20px; }
-.ai-analysis li { margin-bottom: 4px; color: var(--ink); }
-.ai-analysis .ai-pick {
+.pick-detail .ai-analysis ul { margin: 0 0 8px; padding-left: 20px; }
+.pick-detail .ai-analysis li { margin-bottom: 4px; color: var(--ink); }
+.pick-detail .ai-analysis .ai-pick {
   background: color-mix(in oklab, var(--good) 15%, transparent);
   box-shadow: inset 3px 0 0 var(--good);
   padding: 10px 14px; border-radius: 6px; margin-top: 10px;
 }
-.ai-analysis .ai-err { color: var(--accent); font-style: italic; font-size: 12.5px; }
-.ai-analysis .loading { color: var(--muted); font-style: italic; }
+.pick-detail .ai-analysis .ai-err { color: var(--accent); font-style: italic; font-size: 12px; }
+.pick-detail .ai-analysis .loading { color: var(--muted); font-style: italic; }
 
-.empty {
+.model-src { font-family: "JetBrains Mono", monospace; font-size: 9.5px; color: var(--muted-2); letter-spacing: 0.04em; margin-left: 10px; }
+
+.empty-board {
   padding: 60px 24px; text-align: center; color: var(--muted);
+  background: var(--card); border: 1px dashed var(--rule); border-radius: 10px;
 }
-.empty h2 {
-  font-family: "Fraunces", Georgia, serif;
-  font-style: italic; font-weight: 400;
-  font-size: 28px; margin: 0 0 8px; color: var(--ink);
+.empty-board h2 {
+  font-family: "Fraunces", Georgia, serif; font-style: italic;
+  font-size: 24px; margin: 0 0 8px; color: var(--ink);
+}
+
+@media (max-width: 900px) {
+  .board-table .col-close { display: none; }
+  .board-table .col-line { width: auto; }
+}
+@media (max-width: 680px) {
+  .board-wrap { border: none; background: transparent; }
+  .board-table thead { display: none; }
+  .board-table tbody td { display: block; border: none; padding: 4px 0; }
+  .board-table tr.row-main {
+    display: block; background: var(--card); border: 1px solid var(--rule);
+    border-radius: 10px; padding: 12px; margin-bottom: 10px;
+  }
+  .board-table .col-score, .board-table .col-line, .board-table .col-close { text-align: left; }
 }
 </style>
 </head>
@@ -2429,30 +2316,17 @@ PICKS_TEMPLATE = r"""<!doctype html>
 
 <main class="wrap reveal">
   <div class="hero">
-    <h1>Today's Picks &middot; {{ date_pretty }}</h1>
+    <h1>{{ date_pretty }}</h1>
     <p class="sub">
-      EV-ranked picks across every sport. Each candidate is scored against a 40% model /
-      60% Pinnacle no-vig blend; the picks list is sorted by <strong>expected value</strong>
-      (consensus prob &times; book decimal &minus; 1), floor <strong>+2% EV</strong>. Hard
-      filters: fair probability &ge; 46%, decimal odds &ge; 1.60, one pick per game,
-      games already started are hidden, pricing-model vs Monte Carlo divergence &gt; 8pp
-      drops the pick. Picks tagged <span style="color:var(--good);text-shadow:var(--ev-strong-glow);font-weight:600">&#9733; Strong</span>
-      clear BOTH 60% consensus AND +4% EV. Click <strong>Expand with AI</strong> for a
-      Claude-written structured take.
+      <b>{{ total_games }}</b> games across <b>{{ sports_with_games }}</b> sports &middot;
+      <b>{{ picks_count }}</b> picks ({{ strong_count }} strong) &middot;
+      all times Central. Picks are blends of our model and Pinnacle devig; N/5 badges =
+      confidence tier derived from consensus probability.
     </p>
   </div>
 
-  <div class="summary">
-    <span class="pill"><b>{{ picks|length }}</b> picks</span>
-    <span class="pill {% if strong_count %}good{% endif %}"><b>{{ strong_count }}</b> strong (&ge;60% model)</span>
-    {% for s in sport_counts %}
-      <span class="pill"><b>{{ s.count }}</b> {{ s.name }}</span>
-    {% endfor %}
-    <span class="pill" style="margin-left:auto">scan {{ scan_time_ms }} ms</span>
-  </div>
-
   {% if active_adj and active_adj.any %}
-  <div class="active-adj" style="margin: 4px 0 20px;">
+  <div class="active-adj" style="margin: 4px 0 14px;">
     <strong>Analyzer-tuned:</strong>
     {% for sport, w in active_adj.weights.items() %}
       <span class="adj-chip">{{ sport }} weights {{ (w.pricing*100)|int }}/{{ (w.mc*100)|int }}</span>
@@ -2468,73 +2342,154 @@ PICKS_TEMPLATE = r"""<!doctype html>
   {% endif %}
 
   <div class="filter-chips">
-    <a class="chip {% if sport_filter == 'all' %}active{% endif %}" href="/?date={{ date_str }}">All sports</a>
+    <a class="chip {% if sport_filter == 'all' %}active{% endif %}" href="/?date={{ date_str }}">All ({{ total_games }})</a>
     {% for s in sport_counts %}
       <a class="chip {% if sport_filter == s.slug %}active{% endif %}" href="/?date={{ date_str }}&sport={{ s.slug }}">{{ s.name }} ({{ s.count }})</a>
     {% endfor %}
   </div>
 
-  {% if picks %}
-  <div class="pick-list">
-    {% for p in picks %}
-    <article class="pick-card {% if p.strong %}strong{% endif %}" data-pick-id="{{ p.id }}">
-      <div class="rank">{{ loop.index }}</div>
-      <div class="pick-main">
-        <div class="pick-meta">
-          <span class="sport">{{ p.sport }}</span>
-          <span class="market">{{ p.market }}</span>
-          <span class="game">{{ p.game }}</span>
-          {% if p.start_time %}<span class="time">{{ p.start_time|ct }}</span>{% endif %}
-        </div>
-        <div class="pick-headline">
-          {{ p.pick }}
-          {% if p.strong %}<span style="color:var(--good);font-size:13px;margin-left:6px;text-shadow:var(--ev-strong-glow)" title="Model probability >= 60%">&#9733; Strong</span>{% endif %}
-          {% if p.american is not none and p.decimal is not none %}
-          <span class="price">{{ ('+' if p.american > 0 else '') ~ p.american }} ({{ '%.2f'|format(p.decimal) }})</span>
-          {% else %}
-          <span class="price" style="color:var(--muted-2)">price &mdash; verify</span>
-          {% endif %}
-          <span class="book">@ {{ p.book }}</span>
-        </div>
-        <div class="pick-stats">
-          <span><span class="label">Model</span><b>{{ (p.fair_prob * 100)|round|int }}%</b></span>
-          {% if p.decimal %}<span><span class="label">Market</span><b>{{ (100 / p.decimal)|round|int }}%</b></span>{% endif %}
-          <span>
-            {% if p.ev_pct is none %}<span style="color:var(--muted-2)">EV &mdash;</span>
-            {% elif p.ev_pct > 0.1 %}<span class="ev">EV +{{ '%.1f'|format(p.ev_pct) }}%</span>
-            {% else %}<span style="color:var(--muted-2)">EV {{ '%+.1f'|format(p.ev_pct) }}%</span>{% endif %}
-          </span>
-          {% if p.kelly_pct and p.kelly_pct > 0 %}<span><span class="label">Stake (1/4 K)</span><b>{{ '%.1f'|format(p.kelly_pct) }}%</b></span>{% endif %}
-        </div>
-        <div class="bulletin">{{ p.bulletin }}</div>
-        {% if p.polymarket_signal %}
-        <div class="poly-signal poly-{{ p.polymarket_signal.tone }}">
-          {{ p.polymarket_signal.label }}
-        </div>
+  {% if board_rows %}
+  <div class="board-wrap">
+    <table class="board-table">
+      <thead>
+        <tr>
+          <th class="col-status">Status</th>
+          <th class="col-time">Time</th>
+          <th class="col-match">Match</th>
+          <th class="col-score">Score</th>
+          <th class="col-line">Line</th>
+          <th class="col-close">Close</th>
+          <th class="col-picks">Picks</th>
+          <th class="col-view"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in board_rows %}
+        <tr class="row-main" data-row-id="{{ row.id }}">
+          <td class="col-status">
+            <span class="status-chip st-{{ row.status }}">{{ row.status|upper }}</span>
+          </td>
+          <td class="col-time">
+            {% if row.countdown %}<span class="countdown">{{ row.countdown }}</span>{% endif %}
+            <span class="absolute">{{ row.time_abs }}</span>
+          </td>
+          <td class="col-match">
+            <span class="sport-tag">{{ row.sport_name }}</span>
+            <span class="team">{{ row.away }}</span>
+            <span class="at">@</span>
+            <span class="team">{{ row.home }}</span>
+          </td>
+          <td class="col-score">
+            {% if row.score_home is not none %}
+              <span class="score-away">{{ row.score_away }}</span><span class="score-dash">&ndash;</span>{{ row.score_home }}
+            {% else %}
+              <span class="pending">&mdash;</span>
+            {% endif %}
+          </td>
+          <td class="col-line">
+            {% if row.lines %}
+              {% for ln in row.lines %}
+                <div class="ln-row"><span class="ln-k">{{ ln.k }}</span><span class="ln-v">{{ ln.v }}</span></div>
+              {% endfor %}
+            {% else %}
+              <span class="no-picks-dash">&mdash;</span>
+            {% endif %}
+          </td>
+          <td class="col-close">
+            {% if row.close_lines %}
+              {% for ln in row.close_lines %}
+                <div class="ln-row"><span class="ln-k">{{ ln.k }}</span><span class="ln-v">{{ ln.v }}</span></div>
+              {% endfor %}
+            {% else %}
+              <span class="close-pending">pending</span>
+            {% endif %}
+          </td>
+          <td class="col-picks">
+            {% if row.picks %}
+              {% for p in row.picks %}
+                <div class="pick-badge-row">
+                  <span class="pick-ico {{ p.icon_cls }}">{{ p.icon }}</span>
+                  <span class="pick-lbl">{{ p.pick_short }}</span>
+                  <span class="pick-conf c{{ p.conf }}">{{ p.conf }}/5</span>
+                  {% if p.strong %}<span class="strong-star" title="Model &ge; 60% AND EV &ge; +4%">&#9733;</span>{% endif %}
+                  {% if p.result %}<span class="pick-res {{ p.result }}" title="{{ p.result }}">{{ '✓' if p.result == 'W' else ('✗' if p.result == 'L' else '—') }}</span>{% endif %}
+                </div>
+              {% endfor %}
+            {% else %}
+              <span class="no-picks-dash">no pick</span>
+            {% endif %}
+          </td>
+          <td class="col-view">
+            {% if row.picks %}
+              <button class="btn-view" onclick="toggleRow('{{ row.id }}')">View</button>
+            {% endif %}
+          </td>
+        </tr>
+        {% if row.picks %}
+        <tr class="row-expanded" id="exp-{{ row.id }}" style="display:none">
+          <td colspan="8">
+            <div class="expanded-grid">
+              {% for p in row.picks %}
+                <div class="pick-detail {{ 'strong' if p.strong else '' }}" data-pick-id="{{ p.id }}">
+                  <div class="pick-detail-head">
+                    <strong>{{ p.pick }}</strong>
+                    <span class="market-tag">{{ p.market }}</span>
+                    {% if p.american is not none and p.decimal is not none %}
+                      <span class="price">{{ ('+' if p.american > 0 else '') ~ p.american }} ({{ '%.2f'|format(p.decimal) }})</span>
+                    {% else %}
+                      <span class="price" style="color:var(--muted-2)">price &mdash; verify</span>
+                    {% endif %}
+                    <span class="book">@ {{ p.book }}</span>
+                    {% if p.strong %}<span class="strong-badge">&#9733; STRONG</span>{% endif %}
+                  </div>
+                  <div class="pick-stats-detail">
+                    <span><span class="label">Model</span><b>{{ (p.fair_prob * 100)|round|int }}%</b></span>
+                    {% if p.pinnacle_prob %}<span><span class="label">Pinnacle</span><b>{{ (p.pinnacle_prob * 100)|round|int }}%</b></span>{% endif %}
+                    {% if p.consensus_prob %}<span><span class="label">Consensus</span><b>{{ (p.consensus_prob * 100)|round|int }}%</b></span>{% endif %}
+                    <span>
+                      {% if p.ev_pct is none %}<span style="color:var(--muted-2)">EV &mdash;</span>
+                      {% elif p.ev_pct > 0.1 %}<span class="ev">EV +{{ '%.1f'|format(p.ev_pct) }}%</span>
+                      {% else %}<span style="color:var(--muted-2)">EV {{ '%+.1f'|format(p.ev_pct) }}%</span>{% endif %}
+                    </span>
+                    {% if p.kelly_pct and p.kelly_pct > 0 %}<span><span class="label">Stake (1/4 K)</span><b>{{ '%.1f'|format(p.kelly_pct) }}%</b></span>{% endif %}
+                  </div>
+                  <div class="pick-bulletin">{{ p.bulletin }}</div>
+                  {% if p.polymarket_signal %}
+                    <div class="poly-signal poly-{{ p.polymarket_signal.tone }}">{{ p.polymarket_signal.label }}</div>
+                  {% endif %}
+                  <button class="btn-ai" onclick="analyzePick('{{ p.id }}', this)">Expand with AI</button>
+                  <span class="model-src">{{ p.model_source }}</span>
+                  <div class="ai-analysis" id="ai-{{ p.id }}"></div>
+                </div>
+              {% endfor %}
+            </div>
+          </td>
+        </tr>
         {% endif %}
-        <div class="pick-actions">
-          <button class="btn-ai" onclick="analyzePick('{{ p.id }}', this)">Expand with AI</button>
-          <span class="model-src">{{ p.model_source }}</span>
-        </div>
-        <div class="ai-analysis" id="ai-{{ p.id }}"></div>
-      </div>
-    </article>
-    {% endfor %}
+        {% endfor %}
+      </tbody>
+    </table>
   </div>
   {% else %}
-  <div class="empty">
-    <h2>No +EV picks on today's slate.</h2>
-    <p>Markets are tight or lines haven't posted yet. Try another date, or check back closer to game time.</p>
+  <div class="empty-board">
+    <h2>No games scheduled.</h2>
+    <p>No tracked sport has a game on this date. Try another date, or check back later.</p>
   </div>
   {% endif %}
 
   <footer>
-    <div>Ranked by EV &middot; models fit via walk-forward backtest &middot; bulletins template-generated</div>
+    <div>Picks blended via 40% model / 60% Pinnacle devig &middot; one row per game &middot; scan {{ scan_time_ms }} ms</div>
     <div>updated {{ now }}</div>
   </footer>
 </main>
 
 <script>
+function toggleRow(rowId) {
+  const el = document.getElementById('exp-' + rowId);
+  if (!el) return;
+  el.style.display = (el.style.display === 'none' || !el.style.display) ? 'table-row' : 'none';
+}
+
 async function analyzePick(pickId, btn) {
   const target = document.getElementById('ai-' + pickId);
   if (btn) { btn.disabled = true; btn.textContent = 'Thinking…'; }
@@ -2556,9 +2511,6 @@ function renderAI(d) {
     return '<div class="ai-err">' + esc(d.error) + '</div>'
       + (d.raw ? '<pre style="white-space:pre-wrap;color:var(--muted-2);font-size:11px">' + esc(d.raw) + '</pre>' : '');
   }
-  // Fallback path: Claude's reply hit max_tokens or returned non-JSON and the
-  // server salvaged plain-text bullets. Show them so the user still gets the
-  // analysis instead of a bare error.
   if (d.narrative) {
     return '<div style="font-size:12.5px;line-height:1.55;white-space:pre-wrap;color:var(--ink)">'
          + esc(d.narrative) + '</div>'
@@ -2588,9 +2540,240 @@ function renderAI(d) {
 """
 
 
+def _conf_tier(prob):
+    """Map a 0..1 probability to a 1..5 confidence badge."""
+    if prob is None:
+        return 1
+    try:
+        p = float(prob)
+    except (TypeError, ValueError):
+        return 1
+    if p >= 0.68: return 5
+    if p >= 0.62: return 4
+    if p >= 0.57: return 3
+    if p >= 0.52: return 2
+    return 1
+
+
+def _pick_icon(market):
+    """Return (glyph, css class) for a pick based on its market."""
+    m = (market or "").lower()
+    if "spread" in m or "line" in m: return ("±", "spr")
+    if "total" in m or "over" in m or "under" in m: return ("T", "tot")
+    return ("ML", "ml")
+
+
+def _pick_short_label(p):
+    """One-line label for the pick badge. Keep it compact."""
+    return p.get("pick") or "—"
+
+
+def _derive_status(start_iso, now_dt, has_score):
+    """upcoming | live | final — rough heuristic based on time + whether we
+    already graded a score for the game."""
+    if has_score:
+        return "final"
+    if not start_iso:
+        return "upcoming"
+    try:
+        st = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+    except Exception:
+        return "upcoming"
+    if st > now_dt:
+        return "upcoming"
+    # Game started. Heuristic for "live": within an outer window of 5 hours
+    # (NFL/soccer can run long, NHL/MLB usually finish in 3). After that we
+    # call it final even without a score.
+    from datetime import timedelta as _td
+    if st + _td(hours=5) > now_dt:
+        return "live"
+    return "final"
+
+
+def _countdown_str(start_iso, now_dt):
+    """Hh Mm Ss countdown — only when the game hasn't started yet."""
+    if not start_iso:
+        return None
+    try:
+        st = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+    except Exception:
+        return None
+    delta = st - now_dt
+    secs = int(delta.total_seconds())
+    if secs <= 0:
+        return None
+    h = secs // 3600
+    m = (secs % 3600) // 60
+    s = secs % 60
+    if h >= 24:
+        d = h // 24
+        return f"{d}d {h % 24}h"
+    return f"{h}h {m}m {s}s" if h else f"{m}m {s}s"
+
+
+def _format_ml_line(ml, ml_outcomes):
+    """Compact ML line: 'TB +118 / NYY -140' (or draw-inclusive for 3-way)."""
+    if not ml or ml.get("home_am") is None:
+        return None
+    parts = [f"{_signed_am_str(ml['away_am'])}"]
+    if ml.get("draw_am") is not None and ml_outcomes == 3:
+        parts.append(f"D {_signed_am_str(ml['draw_am'])}")
+    parts.append(f"{_signed_am_str(ml['home_am'])}")
+    return " / ".join(parts)
+
+
+def _format_spread_line(spread, away, home):
+    """Compact spread: 'KC -2.5 (-110)'."""
+    if not spread or spread.get("line_home") is None:
+        return None
+    line_h = spread["line_home"]
+    # Prefer the favored side label (the side with the negative number)
+    if line_h < 0:
+        label = f"{home.split()[-1] if home else 'HM'} {line_h:g}"
+        am = spread.get("home_am")
+    else:
+        label = f"{away.split()[-1] if away else 'AW'} {-line_h:g}"
+        am = spread.get("away_am")
+    if am is not None:
+        return f"{label} ({_signed_am_str(am)})"
+    return label
+
+
+def _format_total_line(total):
+    """Compact total: 'O/U 47.5'."""
+    if not total or total.get("line") is None:
+        return None
+    return f"O/U {total['line']:g}"
+
+
+def _build_board_rows(date_str, today_date, sport_filter):
+    """Return the unified board: one row per game with picks nested.
+
+    `date_str` is YYYY-MM-DD being viewed. `today_date` is the CT reference
+    for countdown/live-status computation (always real now())."""
+    import picks as picks_mod
+    import plays_log
+
+    view_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    now_dt = datetime.now(CENTRAL)
+
+    # 1) Today's scheduled games across every sport (schedule skeleton)
+    rows_by_key = {}
+    for sp in sports.SPORTS:
+        if sport_filter not in ("all", sp["slug"]):
+            continue
+        try:
+            games = _sport_games_for_hub(sp, view_date)
+        except Exception:
+            games = []
+        for g in games:
+            key = (sp["slug"],
+                   generic_odds._team_key(g["away"]),
+                   generic_odds._team_key(g["home"]))
+            rows_by_key[key] = {
+                "id":          f"{sp['slug']}-{generic_odds._team_key(g['away'])}-{generic_odds._team_key(g['home'])}",
+                "sport_slug":  sp["slug"],
+                "sport_name":  sp["name"],
+                "ml_outcomes": sp["ml_outcomes"],
+                "away":        g["away"],
+                "home":        g["home"],
+                "start_time":  g["start_time"],
+                "_ml":         g.get("ml"),
+                "_spread":     g.get("spread"),
+                "_total":      g.get("total"),
+                "picks":       [],
+                "score_home":  None,
+                "score_away":  None,
+            }
+
+    # 2) Today's picks across every sport
+    try:
+        all_picks = picks_mod.collect_picks(date_str)
+    except Exception:
+        all_picks = []
+
+    # 3) Grading overlay (scores + CLV + W/L on picks graded today)
+    graded_by_id = {}
+    try:
+        graded = plays_log.read_graded(date_str) or {}
+        for gp in graded.get("picks", []):
+            if gp.get("id"):
+                graded_by_id[gp["id"]] = gp
+    except Exception:
+        pass
+
+    # 4) Attach each pick to its game row, synthesizing a row when the pick's
+    #    game isn't in the schedule skeleton (keeps us from dropping picks).
+    for p in all_picks:
+        if sport_filter not in ("all", p.get("sport_slug", "")):
+            continue
+        key = (p.get("sport_slug", ""),
+               generic_odds._team_key(p.get("away_team", "")),
+               generic_odds._team_key(p.get("home_team", "")))
+        row = rows_by_key.get(key)
+        if row is None:
+            # Build a synthetic row from the pick's own metadata.
+            row = {
+                "id":          f"syn-{p.get('id', '')}",
+                "sport_slug":  p.get("sport_slug", ""),
+                "sport_name":  p.get("sport", ""),
+                "ml_outcomes": 2,
+                "away":        p.get("away_team", ""),
+                "home":        p.get("home_team", ""),
+                "start_time":  p.get("start_time"),
+                "_ml": None, "_spread": None, "_total": None,
+                "picks": [], "score_home": None, "score_away": None,
+            }
+            rows_by_key[key] = row
+
+        # Pick badge data
+        icon, icon_cls = _pick_icon(p.get("market"))
+        row["picks"].append({
+            **p,
+            "icon":          icon,
+            "icon_cls":      icon_cls,
+            "pick_short":    _pick_short_label(p),
+            "conf":          _conf_tier(p.get("consensus_prob") or p.get("fair_prob")),
+            "result":        (graded_by_id.get(p.get("id"), {}) or {}).get("result"),
+        })
+        # Overlay score if this pick graded with a final score
+        gp = graded_by_id.get(p.get("id"))
+        if gp and gp.get("home_score") is not None and row["score_home"] is None:
+            row["score_home"] = gp.get("home_score")
+            row["score_away"] = gp.get("away_score")
+
+    # 5) Finalize each row — status, countdown, line/close text, sort key.
+    rows = []
+    for row in rows_by_key.values():
+        has_score = row["score_home"] is not None
+        row["status"]    = _derive_status(row["start_time"], now_dt, has_score)
+        row["countdown"] = _countdown_str(row["start_time"], now_dt) if row["status"] == "upcoming" else None
+        try:
+            dt_ct = datetime.fromisoformat(row["start_time"].replace("Z", "+00:00")).astimezone(CENTRAL)
+            row["time_abs"] = dt_ct.strftime("%a %I:%M %p CT").replace(" 0", " ")
+        except Exception:
+            row["time_abs"] = row["start_time"] or ""
+        # Pack line entries
+        lines = []
+        if row["_ml"]:
+            v = _format_ml_line(row["_ml"], row["ml_outcomes"])
+            if v: lines.append({"k": "ML", "v": v})
+        if row["_spread"]:
+            v = _format_spread_line(row["_spread"], row["away"], row["home"])
+            if v: lines.append({"k": "SPR", "v": v})
+        if row["_total"]:
+            v = _format_total_line(row["_total"])
+            if v: lines.append({"k": "TOT", "v": v})
+        row["lines"]       = lines
+        row["close_lines"] = []  # populated later from CLV snapshot
+        rows.append(row)
+
+    rows.sort(key=lambda r: r.get("start_time") or "")
+    return rows, all_picks
+
+
 @app.route("/")
 def picks_landing():
-    import picks as picks_mod
     date_str = request.args.get("date") or datetime.now(CENTRAL).date().isoformat()
     sport_filter = (request.args.get("sport") or "all").lower()
     try:
@@ -2601,15 +2784,12 @@ def picks_landing():
 
     t0 = time.time()
     try:
-        all_picks = picks_mod.collect_picks(date_str)
+        board_rows, all_picks = _build_board_rows(date_str, d, sport_filter)
     except Exception:
-        all_picks = []
+        board_rows, all_picks = [], []
     scan_time_ms = int((time.time() - t0) * 1000)
 
-    # Snapshot the picks for the /logged dashboard. For TODAY's date we
-    # overwrite so the latest consensus state is persisted; for past dates
-    # the first snapshot locks history in. On Render free tier this also
-    # mirrors to GitHub (via log_persist) so the file survives spin-downs.
+    # Snapshot the picks for /logged (and GitHub mirror for Render spin-downs)
     try:
         import plays_log
         if all_picks:
@@ -2617,29 +2797,27 @@ def picks_landing():
     except Exception:
         pass
 
-    # Which analyzer-driven adjustments shaped this board
+    # Analyzer-driven adjustments overlay
     try:
         import model_analytics
         active_adj = model_analytics.active_adjustments_summary()
     except Exception:
         active_adj = {"any": False}
 
-    # Per-sport counts for filter chips
+    # Per-sport counts (over the whole slate, not just the filter)
     from collections import Counter
-    sport_counter = Counter(p["sport_slug"] for p in all_picks)
-    sport_name_by_slug = {p["sport_slug"]: p["sport"] for p in all_picks}
+    all_games_counter = Counter(r["sport_slug"] for r in board_rows)
+    all_name_by_slug  = {r["sport_slug"]: r["sport_name"] for r in board_rows}
     sport_counts = sorted(
-        [{"slug": s, "name": sport_name_by_slug[s], "count": sport_counter[s]}
-         for s in sport_counter],
+        [{"slug": s, "name": all_name_by_slug[s], "count": all_games_counter[s]}
+         for s in all_games_counter],
         key=lambda x: -x["count"],
     )
 
-    if sport_filter != "all":
-        picks = [p for p in all_picks if p["sport_slug"] == sport_filter]
-    else:
-        picks = all_picks
-
-    strong_count = sum(1 for p in picks if p.get("strong"))
+    picks_count   = sum(len(r["picks"]) for r in board_rows)
+    strong_count  = sum(1 for r in board_rows for p in r["picks"] if p.get("strong"))
+    total_games   = len(board_rows)
+    sports_with_games = len({r["sport_slug"] for r in board_rows})
     today = datetime.now(CENTRAL).date().isoformat()
 
     return render_template_string(
@@ -2647,10 +2825,13 @@ def picks_landing():
         fonts_link=FONTS_LINK,
         shared_style=SHARED_STYLE,
         sport_strip=render_sport_strip("picks"),
-        picks=picks,
+        board_rows=board_rows,
         sport_counts=sport_counts,
         sport_filter=sport_filter,
+        picks_count=picks_count,
         strong_count=strong_count,
+        total_games=total_games,
+        sports_with_games=sports_with_games,
         scan_time_ms=scan_time_ms,
         date_str=date_str,
         date_pretty=d.strftime("%A, %B %d").replace(" 0", " "),
