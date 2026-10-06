@@ -184,6 +184,25 @@ def _is_soccer(slug):
     return slug in {"epl", "laliga", "ligamx", "ucl", "europa", "international"}
 
 
+def _market_category(market):
+    """Reduce a market string ('F5 ML', '1H Spread', 'Win to Nil') to its
+    base category. The dedup key uses this so independent markets within
+    the same game (ML + Total + F5 ML + Win to Nil) each survive on the
+    board instead of just the single highest-EV one."""
+    m = (market or "").upper()
+    if "F5" in m or "FIRST 5" in m:
+        if "TOTAL" in m or "O/U" in m:  return "F5-Total"
+        if "SPREAD" in m or "RL" in m or "RUNLINE" in m: return "F5-Spread"
+        return "F5-ML"
+    if "WIN TO NIL" in m or "CLEAN SHEET" in m: return "WTN"
+    if "BTTS" in m or "BOTH TEAMS" in m: return "BTTS"
+    if "DOUBLE CHANCE" in m or " OR DRAW" in m or m == "DC": return "DC"
+    if "SPREAD" in m or "RUNLINE" in m or "RL" in m or "PUCK LINE" in m: return "Spread"
+    if "TOTAL" in m or "O/U" in m or "OVER" in m or "UNDER" in m: return "Total"
+    if "ML" in m or "MONEYLINE" in m: return "ML"
+    return market or ""
+
+
 def _is_draw_pick(pick):
     """Detect a soccer draw bet (pick text contains 'Draw')."""
     return _is_soccer(pick.get("sport_slug", "")) and "draw" in pick.get("pick", "").lower()
@@ -854,14 +873,18 @@ def collect_picks(date_str, today_only=True):
     # the 40/60 blend. Zero or negative EV picks don't belong on the board.
     filtered = [p for p in filtered if _passes_ev_filter(p)]
 
-    # ONE PICK PER GAME for the MAIN board — picking both ML and Over on
-    # the same game is double-dipping. Alt-line picks are exempt from this
-    # rule because they're informational companions, not primary bets.
+    # ONE PICK PER (GAME, MARKET CATEGORY) for the MAIN board. ML and Total
+    # aren't the same bet; picking both isn't double-dipping. For MLB
+    # specifically this unlocks F5 ML and F5 Total alongside the full-game
+    # markets — those are genuinely independent outcomes (first 5 innings vs
+    # the whole game) with their own model edge. Alt-line picks still bypass
+    # dedup entirely because they're informational companions.
     main_picks = [p for p in filtered if not p.get("alt_line_flag")]
     alt_picks  = [p for p in filtered if p.get("alt_line_flag")]
     best_per_game = {}
     for p in main_picks:
-        key = (p["sport_slug"], p.get("game", ""))
+        cat = _market_category(p.get("market"))
+        key = (p["sport_slug"], p.get("game", ""), cat)
         current = best_per_game.get(key)
         if not current or (p.get("ev_pct") or 0) > (current.get("ev_pct") or 0):
             best_per_game[key] = p

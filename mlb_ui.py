@@ -2144,6 +2144,9 @@ PICKS_TEMPLATE = r"""<!doctype html>
 .pick-badge-row .pick-ico.tot  { background: color-mix(in oklab, #f59e0b 20%, var(--card)); color: #f59e0b; border-color: color-mix(in oklab, #f59e0b 40%, var(--rule)); }
 .pick-badge-row .pick-ico.dc   { background: color-mix(in oklab, #a78bfa 20%, var(--card)); color: #a78bfa; border-color: color-mix(in oklab, #a78bfa 40%, var(--rule)); font-size: 8px; }
 .pick-badge-row .pick-ico.btts { background: color-mix(in oklab, #ec4899 20%, var(--card)); color: #ec4899; border-color: color-mix(in oklab, #ec4899 40%, var(--rule)); }
+.pick-badge-row .pick-ico.f5   { background: color-mix(in oklab, #22d3ee 20%, var(--card)); color: #22d3ee; border-color: color-mix(in oklab, #22d3ee 40%, var(--rule)); font-size: 8.5px; }
+.pick-badge-row .pick-ico.f5t  { background: color-mix(in oklab, #06b6d4 20%, var(--card)); color: #06b6d4; border-color: color-mix(in oklab, #06b6d4 40%, var(--rule)); font-size: 8.5px; }
+.pick-badge-row .pick-ico.wtn  { background: color-mix(in oklab, #84cc16 20%, var(--card)); color: #84cc16; border-color: color-mix(in oklab, #84cc16 40%, var(--rule)); font-size: 9px; }
 .pick-badge-row .pick-lbl { color: var(--ink); font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .pick-badge-row .pick-conf {
   font-family: "JetBrains Mono", monospace; font-size: 10.5px;
@@ -2606,6 +2609,10 @@ def _conf_tier(prob):
 def _pick_icon(market):
     """Return (glyph, css class) for a pick based on its market."""
     m = (market or "").lower()
+    if "f5" in m or "first 5" in m:
+        if "total" in m: return ("F5", "f5t")
+        return ("F5", "f5")
+    if "win to nil" in m or "clean sheet" in m: return ("WN", "wtn")
     if "btts" in m or "both teams" in m: return ("B", "btts")
     if "double" in m or "dc" in m or "or draw" in m: return ("2x", "dc")
     if "spread" in m or "line" in m: return ("±", "spr")
@@ -2735,13 +2742,21 @@ def _format_total_line(total):
     return f"O/U {line:g}"
 
 
-_PICK_MARKET_ORDER = {"ML": 0, "DC": 1, "Spread": 2, "Total": 3, "BTTS": 4}
+_PICK_MARKET_ORDER = {"ML": 0, "DC": 1, "Spread": 2, "Total": 3,
+                      "F5-ML": 4, "F5-Spread": 5, "F5-Total": 6,
+                      "WTN": 7, "BTTS": 8}
 
 
 def _market_category(market):
-    """Reduce a full market string ('1H Spread', 'Total (BTTS)') to its base
-    category — 'ML', 'DC', 'Spread', 'Total', 'BTTS', or raw if no match."""
+    """Reduce a full market string ('F5 ML', '1H Spread', 'Win to Nil') to
+    its base category — 'ML', 'DC', 'Spread', 'Total', 'F5-ML', 'F5-Spread',
+    'F5-Total', 'WTN', 'BTTS', or raw if no match."""
     m = (market or "").upper()
+    if "F5" in m or "FIRST 5" in m:
+        if "TOTAL" in m or "O/U" in m: return "F5-Total"
+        if "SPREAD" in m or "RL" in m or "RUNLINE" in m: return "F5-Spread"
+        return "F5-ML"
+    if "WIN TO NIL" in m or "CLEAN SHEET" in m: return "WTN"
     if "BTTS" in m or "BOTH TEAMS" in m: return "BTTS"
     if "DOUBLE CHANCE" in m or " OR DRAW" in m or m == "DC": return "DC"
     if "SPREAD" in m or "RUNLINE" in m or "RL" in m or "PUCK LINE" in m: return "Spread"
@@ -2911,6 +2926,31 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
             else:
                 out.append({"category": "BTTS", "market": "BTTS",
                             "pick": "BTTS: No", "fair_prob": 1 - byes})
+
+        # Win to Nil — favored side wins AND keeps a clean sheet. Derived
+        # from the Dixon-Coles joint pmf (no extra sim needed). Books
+        # overprice the "win AND CS" conjunction on dominant home sides,
+        # so this is historically one of the sharpest soccer EV markets.
+        # We only surface it when the model gives the side >= 25% — below
+        # that the price we'd need to beat is deep enough that the market
+        # is usually right.
+        if "WTN" not in existing_cats:
+            try:
+                import soccer_model
+                wtn = soccer_model.predict_win_to_nil(home, away, sport_slug)
+            except Exception:
+                wtn = None
+            if wtn:
+                home_wn = float(wtn.get("home_wn") or 0)
+                away_wn = float(wtn.get("away_wn") or 0)
+                if home_wn >= 0.25 and home_wn >= away_wn:
+                    out.append({"category": "WTN", "market": "Win to Nil",
+                                "pick": f"{home} to Win to Nil",
+                                "fair_prob": home_wn})
+                elif away_wn >= 0.25:
+                    out.append({"category": "WTN", "market": "Win to Nil",
+                                "pick": f"{away} to Win to Nil",
+                                "fair_prob": away_wn})
 
     return out
 
