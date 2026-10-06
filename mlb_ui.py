@@ -2766,26 +2766,10 @@ _PICK_MARKET_ORDER = {"ML": 0, "DC": 1, "Spread": 2, "Total": 3,
                       "NRFI": 9, "WTN": 10, "BTTS": 11}
 
 
-def _market_category(market):
-    """Reduce a full market string ('F5 ML', '1H Total', 'NRFI', 'Team Total',
-    'Win to Nil') to its base category. Dedup key for the main board uses
-    this so independent markets within the same game each survive."""
-    m = (market or "").upper()
-    if "NRFI" in m or "YRFI" in m or "1ST INNING" in m or "FIRST INNING" in m: return "NRFI"
-    if "F5" in m or "FIRST 5" in m:
-        if "TOTAL" in m or "O/U" in m: return "F5-Total"
-        if "SPREAD" in m or "RL" in m or "RUNLINE" in m: return "F5-Spread"
-        return "F5-ML"
-    if "1H" in m or "FIRST HALF" in m or "FIRST-HALF" in m:
-        if "TOTAL" in m or "O/U" in m: return "1H-Total"
-    if "TEAM TOTAL" in m: return "TT"
-    if "WIN TO NIL" in m or "CLEAN SHEET" in m: return "WTN"
-    if "BTTS" in m or "BOTH TEAMS" in m: return "BTTS"
-    if "DOUBLE CHANCE" in m or " OR DRAW" in m or m == "DC": return "DC"
-    if "SPREAD" in m or "RUNLINE" in m or "RL" in m or "PUCK LINE" in m: return "Spread"
-    if "TOTAL" in m or "O/U" in m or "OVER" in m or "UNDER" in m: return "Total"
-    if "ML" in m or "MONEYLINE" in m: return "ML"
-    return (market or "").title()
+# Market-category classifier lives in picks.py (one source of truth);
+# re-exported here so templates/model-fill code don't need to import picks
+# just for this helper.
+from picks import _market_category
 
 
 def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
