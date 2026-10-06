@@ -318,6 +318,22 @@ def fetch_scores_mlb(date_str):
             away_score = (teams.get("away") or {}).get("score")
             if home_score is None or away_score is None:
                 continue
+            # Inning-by-inning scoring for F5 / NRFI grading. Each entry is
+            # {"num": int, "home": runs, "away": runs}. statsapi exposes
+            # these under linescore.innings when the game has started.
+            innings = []
+            linescore = g.get("linescore") or {}
+            for inn in (linescore.get("innings") or []):
+                try:
+                    h = inn.get("home", {}).get("runs")
+                    a = inn.get("away", {}).get("runs")
+                    innings.append({
+                        "num":  int(inn.get("num") or 0),
+                        "home": int(h) if h is not None else None,
+                        "away": int(a) if a is not None else None,
+                    })
+                except (TypeError, ValueError):
+                    continue
             events.append({
                 "id":            str(g.get("gamePk")),
                 "home_team":     home.get("name") or home.get("teamName") or "",
@@ -329,6 +345,7 @@ def fetch_scores_mlb(date_str):
                     {"name": home.get("name") or home.get("teamName"), "score": str(home_score)},
                     {"name": away.get("name") or away.get("teamName"), "score": str(away_score)},
                 ],
+                "innings":       innings,
                 "commence_time": g.get("gameDate"),
             })
     _RESULTS_CACHE[cache_key] = (events, now)
@@ -408,6 +425,39 @@ def _extract_scores(event):
     return home, away
 
 
+def _f5_scores(event):
+    """Sum home + away runs through the FIRST 5 INNINGS of an MLB game.
+    Returns (home_f5, away_f5) or (None, None) if we don't have the data
+    or the game didn't make it through 5 innings."""
+    innings = event.get("innings") or []
+    if not innings:
+        return None, None
+    h = a = 0
+    seen = 0
+    for inn in innings:
+        if (inn.get("num") or 0) > 5:
+            continue
+        if inn.get("home") is None and inn.get("away") is None:
+            continue
+        h += int(inn.get("home") or 0)
+        a += int(inn.get("away") or 0)
+        seen += 1
+    if seen < 5:
+        return None, None
+    return h, a
+
+
+def _first_inning_scores(event):
+    """Home + away runs in the TOP + BOTTOM of the 1st inning. Returns
+    (home_1, away_1) or (None, None) if the inning hasn't played yet."""
+    for inn in (event.get("innings") or []):
+        if (inn.get("num") or 0) == 1:
+            if inn.get("home") is None and inn.get("away") is None:
+                return None, None
+            return int(inn.get("home") or 0), int(inn.get("away") or 0)
+    return None, None
+
+
 def grade_pick(pick, event):
     """Return 'W' | 'L' | 'P' | 'pending' for the pick given the result event."""
     if not event:
@@ -421,8 +471,100 @@ def grade_pick(pick, event):
     home_name = _norm(pick.get("home_team"))
     away_name = _norm(pick.get("away_team"))
     pick_norm = _norm(text)
+    # text_lc keeps the decimal point intact — _norm strips dots, which
+    # silently broke Over/Under line parsing on all .5 totals (e.g.
+    # "Over 9.5" became "over 95" → line = 95). Any downstream regex that
+    # pulls a line out of the pick text must use `text_lc`, not pick_norm.
+    text_lc = text.lower()
+    is_f5 = ("f5" in market.lower()) or ("first 5" in market.lower())
+    is_1h = (("1h" in market.lower() or "first half" in market.lower())
+             and "ml" not in market.lower())  # 1H Total specifically
 
-    # Moneyline (incl. 1H / 1P ML and soccer draws)
+    # ---- NRFI / YRFI (MLB, first-inning runs) ----
+    if "NRFI" in market.upper() or "YRFI" in market.upper():
+        h1, a1 = _first_inning_scores(event)
+        if h1 is None:
+            return "pending"
+        no_runs_1st = (h1 == 0 and a1 == 0)
+        wants_nrfi = "nrfi" in pick_norm or "no runs" in pick_norm
+        if wants_nrfi:
+            return "W" if no_runs_1st else "L"
+        return "L" if no_runs_1st else "W"
+
+    # ---- 1H / P1 Total (NFL / NCAAF / NHL) ----
+    # Our schedule-fetch doesn't carry halftime / period-1 scores for these
+    # sports (The Odds API only returns final). Mark pending — tracked but
+    # not graded until we add a scoreboard source that gives period data.
+    if is_1h and ("total" in market.lower()):
+        return "pending"
+
+    # ---- F5 ML / F5 Total ----
+    if is_f5:
+        hf, af = _f5_scores(event)
+        if hf is None:
+            return "pending"
+        if "total" in market.lower():
+            m = re.search(r"(over|under)\s*([\d.]+)", text_lc)
+            if not m:
+                return "pending"
+            side = m.group(1)
+            try:
+                line = float(m.group(2))
+            except ValueError:
+                return "pending"
+            tot = hf + af
+            if abs(tot - line) < 1e-6:
+                return "P"
+            if side == "over":
+                return "W" if tot > line else "L"
+            return "W" if tot < line else "L"
+        # F5 ML — tie after 5 is a push on most books
+        if home_name and (pick_norm == home_name or home_name in pick_norm):
+            return "W" if hf > af else ("P" if hf == af else "L")
+        if away_name and (pick_norm == away_name or away_name in pick_norm):
+            return "W" if af > hf else ("P" if hf == af else "L")
+        return "pending"
+
+    # ---- Team Total ----
+    if "team total" in market.lower():
+        m = re.search(r"(over|under)\s*([\d.]+)", text_lc)
+        if not m:
+            return "pending"
+        side = m.group(1)
+        try:
+            line = float(m.group(2))
+        except ValueError:
+            return "pending"
+        if home_name and home_name in pick_norm:
+            team_total = home
+        elif away_name and away_name in pick_norm:
+            team_total = away
+        else:
+            return "pending"
+        if abs(team_total - line) < 1e-6:
+            return "P"
+        if side == "over":
+            return "W" if team_total > line else "L"
+        return "W" if team_total < line else "L"
+
+    # ---- Win to Nil (soccer) — team wins AND opponent scores 0 ----
+    if "win to nil" in market.lower() or "clean sheet" in market.lower():
+        if home_name and home_name in pick_norm:
+            return "W" if (home > away and away == 0) else "L"
+        if away_name and away_name in pick_norm:
+            return "W" if (away > home and home == 0) else "L"
+        return "pending"
+
+    # ---- Double Chance (soccer) — side wins OR draws ----
+    if "double chance" in market.lower() or "1x" in pick_norm or "x2" in pick_norm:
+        # "home or draw" (1X) or "away or draw" (X2)
+        if home_name and home_name in pick_norm:
+            return "W" if home >= away else "L"
+        if away_name and away_name in pick_norm:
+            return "W" if away >= home else "L"
+        return "pending"
+
+    # ---- Moneyline (incl. 1H / 1P ML and soccer draws) ----
     if "ML" in market:
         if "draw" in pick_norm:
             return "W" if home == away else "L"
@@ -431,9 +573,9 @@ def grade_pick(pick, event):
         if away_name and (pick_norm == away_name or away_name in pick_norm):
             return "W" if away > home else ("P" if home == away else "L")
 
-    # Totals
+    # ---- Totals (full-game) ----
     if "Total" in market:
-        m = re.search(r"(over|under)\s*([\d.]+)", pick_norm)
+        m = re.search(r"(over|under)\s*([\d.]+)", text_lc)
         if m:
             side = m.group(1)
             try:
@@ -447,15 +589,14 @@ def grade_pick(pick, event):
                 return "W" if tot > line else "L"
             return "W" if tot < line else "L"
 
-    # BTTS
+    # ---- BTTS ----
     if market == "BTTS":
         if "yes" in pick_norm:
             return "W" if (home > 0 and away > 0) else "L"
         if "no" in pick_norm:
             return "W" if (home == 0 or away == 0) else "L"
 
-    # Spread / Run Line / Puck Line — pick text looks like
-    #   "Dallas Cowboys -3.5" or "Yankees +1.5"
+    # ---- Spread / Run Line / Puck Line ----
     if market in ("Spread", "Run Line", "Puck Line", "1H Spread", "1P Spread"):
         m = re.search(r"([+-][\d.]+)", text)
         if not m:
