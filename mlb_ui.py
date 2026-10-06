@@ -1443,7 +1443,11 @@ def _mlb_schedule_today_lite(date_str):
                 "ml": None,
             })
 
-    # Overlay Pinnacle ML quotes where we have them (free Pinnacle guest API)
+    # Overlay Pinnacle quotes where we have them (free Pinnacle guest API).
+    # Overlay ALL three markets (ML, run line, total) so the board's model-fill
+    # path can produce Spread + Total picks for MLB games — previously only ML
+    # was overlaid, which made MLB games render only an ML pick while every
+    # other sport showed the full ML / Spread / Total triplet.
     try:
         pinn_games = generic_odds.parse_pinnacle_games(246, ml_outcomes=2) or []
     except Exception:
@@ -1459,8 +1463,10 @@ def _mlb_schedule_today_lite(date_str):
         k = (generic_odds._team_key(g["away_name"]),
              generic_odds._team_key(g["home_name"]))
         pg = pin_by_pair.get(k)
-        if pg and pg.get("ml"):
-            g["ml"] = pg["ml"]
+        if pg:
+            if pg.get("ml"):     g["ml"]     = pg["ml"]
+            if pg.get("spread"): g["spread"] = pg["spread"]
+            if pg.get("total"):  g["total"]  = pg["total"]
     return games
 
 
