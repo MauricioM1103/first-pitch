@@ -2828,7 +2828,8 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
             sim = None
     out = []
 
-    # ---- ML ----
+    # ---- ML (ALWAYS emit both sides so the reader sees the model's lean
+    #        for the whole game, not just the favored side) ----
     if "ML" not in existing_cats:
         h_pct = a_pct = d_pct = 0.0
         if sim and sim.get("home_win_pct") is not None:
@@ -2846,18 +2847,21 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
             else:
                 h_pct, a_pct = generic_odds.devig_two_sided(p_h, p_a)
         if max(h_pct, a_pct, d_pct) > 0:
-            if h_pct >= max(a_pct, d_pct):
+            # Order by confidence: favored side first, then dog, then draw.
+            # The N/5 badge on each row shows the model's absolute probability.
+            sides = [
+                (h_pct, home, (pin_ml or {}).get("home_am")),
+                (a_pct, away, (pin_ml or {}).get("away_am")),
+            ]
+            if ml_outcomes == 3 and d_pct > 0:
+                sides.append((d_pct, "Draw", (pin_ml or {}).get("draw_am")))
+            sides.sort(key=lambda s: -s[0])
+            for prob, label, am in sides:
+                if prob <= 0:
+                    continue
                 out.append({"category": "ML", "market": "ML",
-                            "pick": home, "fair_prob": h_pct,
-                            "american": (pin_ml or {}).get("home_am")})
-            elif a_pct >= d_pct:
-                out.append({"category": "ML", "market": "ML",
-                            "pick": away, "fair_prob": a_pct,
-                            "american": (pin_ml or {}).get("away_am")})
-            else:
-                out.append({"category": "ML", "market": "ML",
-                            "pick": "Draw", "fair_prob": d_pct,
-                            "american": (pin_ml or {}).get("draw_am")})
+                            "pick": label, "fair_prob": prob,
+                            "american": am})
 
     # ---- Spread (snapped to half-point to match Polymarket / DK / FD) ----
     # Fixed-line sports (NHL puck line ±1.5, MLB run line ±1.5) are a trap
@@ -2887,16 +2891,22 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
             p_a = generic_odds.american_to_prob(pin_spread["away_am"])
             p_home_cover, _ = generic_odds.devig_two_sided(p_h, p_a)
         if p_home_cover is not None:
+            # Preferred side first; if its confidence tier is 1/5 (basically a
+            # coin flip) emit the other side too so the reader sees both.
+            picks_pair = []
             if p_home_cover >= 0.5:
-                label = f"{home} {line_h:+g}"
-                prob = p_home_cover
-                am = (pin_spread or {}).get("home_am")
+                picks_pair.append((f"{home} {line_h:+g}", p_home_cover, (pin_spread or {}).get("home_am")))
+                picks_pair.append((f"{away} {-line_h:+g}", 1 - p_home_cover, (pin_spread or {}).get("away_am")))
             else:
-                label = f"{away} {-line_h:+g}"
-                prob = 1 - p_home_cover
-                am = (pin_spread or {}).get("away_am")
+                picks_pair.append((f"{away} {-line_h:+g}", 1 - p_home_cover, (pin_spread or {}).get("away_am")))
+                picks_pair.append((f"{home} {line_h:+g}", p_home_cover, (pin_spread or {}).get("home_am")))
+            top_label, top_prob, top_am = picks_pair[0]
             out.append({"category": "Spread", "market": "Spread",
-                        "pick": label, "fair_prob": prob, "american": am})
+                        "pick": top_label, "fair_prob": top_prob, "american": top_am})
+            if _conf_tier(top_prob) <= 1:
+                lbl, prob, am = picks_pair[1]
+                out.append({"category": "Spread", "market": "Spread",
+                            "pick": lbl, "fair_prob": prob, "american": am})
 
     # ---- Total (snapped to half-point to match Polymarket / DK / FD) ----
     if "Total" not in existing_cats and pin_total and pin_total.get("line") is not None:
@@ -2921,16 +2931,20 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 p_u = generic_odds.american_to_prob(pin_total["under_am"])
                 p_over, _ = generic_odds.devig_two_sided(p_o, p_u)
             if p_over is not None:
+                picks_pair = []
                 if p_over >= 0.5:
-                    label = f"Over {line:g}"
-                    prob = p_over
-                    am = (pin_total or {}).get("over_am")
+                    picks_pair.append((f"Over {line:g}",  p_over,     (pin_total or {}).get("over_am")))
+                    picks_pair.append((f"Under {line:g}", 1 - p_over, (pin_total or {}).get("under_am")))
                 else:
-                    label = f"Under {line:g}"
-                    prob = 1 - p_over
-                    am = (pin_total or {}).get("under_am")
+                    picks_pair.append((f"Under {line:g}", 1 - p_over, (pin_total or {}).get("under_am")))
+                    picks_pair.append((f"Over {line:g}",  p_over,     (pin_total or {}).get("over_am")))
+                top_label, top_prob, top_am = picks_pair[0]
                 out.append({"category": "Total", "market": "Total",
-                            "pick": label, "fair_prob": prob, "american": am})
+                            "pick": top_label, "fair_prob": top_prob, "american": top_am})
+                if _conf_tier(top_prob) <= 1:
+                    lbl, prob, am = picks_pair[1]
+                    out.append({"category": "Total", "market": "Total",
+                                "pick": lbl, "fair_prob": prob, "american": am})
 
     # ---- Soccer-only extras: Double Chance (ML No) + Both Teams To Score ----
     is_soccer = sport_slug in ("epl", "laliga", "ligamx", "ucl", "europa", "international")
@@ -3247,19 +3261,36 @@ def _build_board_rows(date_str, today_date, sport_filter):
         if _status_now in ("live", "final"):
             continue
         existing_cats = {_market_category(p.get("market")) for p in row["picks"]}
+        # ML is special: we always want to show BOTH teams' confidence so the
+        # reader sees the full ML picture, not just the EV-favored side. If
+        # an EV pick is already on the board we still emit model-fill picks
+        # for both sides; the per-pick dedup below drops exact-label dupes.
+        existing_cats.discard("ML")
         fill = _model_fill_picks(
             row["sport_slug"], row["home"], row["away"],
             row["_ml"], row["_spread"], row["_total"],
             row["ml_outcomes"], existing_cats,
             pin_total_h1=row.get("_total_h1"),
         )
+        existing_labels = {(_market_category(p.get("market")),
+                            (p.get("pick") or "").strip().lower())
+                           for p in row["picks"]}
         for mp in fill:
+            dup_key = (_market_category(mp.get("market")),
+                       (mp.get("pick") or "").strip().lower())
+            if dup_key in existing_labels:
+                continue
+            existing_labels.add(dup_key)
             icon, icon_cls = _pick_icon(mp["market"])
             key = generic_odds._team_key(row["home"]) + "-" + generic_odds._team_key(row["away"])
             am = mp.get("american")
             dec = mlb_odds.american_to_decimal(am) if am is not None else None
+            # Suffix the id with a short hash of the pick label so two
+            # same-category picks (e.g. both ML sides, or Over + Under) get
+            # distinct ids for grading / DOM collection.
+            pick_hash = hex(abs(hash(mp["pick"])))[2:10]
             row["picks"].append({
-                "id":            f"model-{row['sport_slug']}-{key}-{mp['category'].lower()}",
+                "id":            f"model-{row['sport_slug']}-{key}-{mp['category'].lower()}-{pick_hash}",
                 "sport":         row["sport_name"],
                 "sport_slug":    row["sport_slug"],
                 "market":        mp["market"],
