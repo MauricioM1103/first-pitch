@@ -1507,6 +1507,7 @@ def _sport_games_for_hub(sport, today_date):
             "ml":         g.get("ml"),
             "spread":     g.get("spread"),
             "total":      g.get("total"),
+            "total_h1":   g.get("total_h1"),  # NFL/NCAAF/NHL/soccer 1H O/U
         })
     out.sort(key=lambda x: x["start_time"] or "")
     return out
@@ -2148,6 +2149,8 @@ PICKS_TEMPLATE = r"""<!doctype html>
 .pick-badge-row .pick-ico.f5t  { background: color-mix(in oklab, #06b6d4 20%, var(--card)); color: #06b6d4; border-color: color-mix(in oklab, #06b6d4 40%, var(--rule)); font-size: 8.5px; }
 .pick-badge-row .pick-ico.wtn  { background: color-mix(in oklab, #84cc16 20%, var(--card)); color: #84cc16; border-color: color-mix(in oklab, #84cc16 40%, var(--rule)); font-size: 9px; }
 .pick-badge-row .pick-ico.tt   { background: color-mix(in oklab, #fb923c 20%, var(--card)); color: #fb923c; border-color: color-mix(in oklab, #fb923c 40%, var(--rule)); font-size: 9px; }
+.pick-badge-row .pick-ico.h1   { background: color-mix(in oklab, #38bdf8 20%, var(--card)); color: #38bdf8; border-color: color-mix(in oklab, #38bdf8 40%, var(--rule)); font-size: 8.5px; }
+.pick-badge-row .pick-ico.nrfi { background: color-mix(in oklab, #fde047 25%, var(--card)); color: #ca8a04; border-color: color-mix(in oklab, #ca8a04 40%, var(--rule)); font-size: 9px; font-weight: 800; }
 .pick-badge-row .pick-lbl { color: var(--ink); font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .pick-badge-row .pick-conf {
   font-family: "JetBrains Mono", monospace; font-size: 10.5px;
@@ -2621,9 +2624,11 @@ def _conf_tier(prob):
 def _pick_icon(market):
     """Return (glyph, css class) for a pick based on its market."""
     m = (market or "").lower()
+    if "nrfi" in m or "yrfi" in m or "1st inning" in m: return ("1i", "nrfi")
     if "f5" in m or "first 5" in m:
         if "total" in m: return ("F5", "f5t")
         return ("F5", "f5")
+    if "1h" in m or "first half" in m or "first-half" in m: return ("1H", "h1")
     if "team total" in m: return ("TT", "tt")
     if "win to nil" in m or "clean sheet" in m: return ("WN", "wtn")
     if "btts" in m or "both teams" in m: return ("B", "btts")
@@ -2756,22 +2761,23 @@ def _format_total_line(total):
 
 
 _PICK_MARKET_ORDER = {"ML": 0, "DC": 1, "Spread": 2, "Total": 3,
-                      "TT": 4,
-                      "F5-ML": 5, "F5-Spread": 6, "F5-Total": 7,
-                      "WTN": 8, "BTTS": 9}
+                      "TT": 4, "1H-Total": 5,
+                      "F5-ML": 6, "F5-Spread": 7, "F5-Total": 8,
+                      "NRFI": 9, "WTN": 10, "BTTS": 11}
 
 
 def _market_category(market):
-    """Reduce a full market string ('F5 ML', '1H Spread', 'Team Total',
-    'Win to Nil') to its base category — 'ML', 'DC', 'Spread', 'Total',
-    'TT', 'F5-ML', 'F5-Spread', 'F5-Total', 'WTN', 'BTTS', or raw if no
-    match. Dedup key for the main board uses this so independent markets
-    within the same game each survive on the board."""
+    """Reduce a full market string ('F5 ML', '1H Total', 'NRFI', 'Team Total',
+    'Win to Nil') to its base category. Dedup key for the main board uses
+    this so independent markets within the same game each survive."""
     m = (market or "").upper()
+    if "NRFI" in m or "YRFI" in m or "1ST INNING" in m or "FIRST INNING" in m: return "NRFI"
     if "F5" in m or "FIRST 5" in m:
         if "TOTAL" in m or "O/U" in m: return "F5-Total"
         if "SPREAD" in m or "RL" in m or "RUNLINE" in m: return "F5-Spread"
         return "F5-ML"
+    if "1H" in m or "FIRST HALF" in m or "FIRST-HALF" in m:
+        if "TOTAL" in m or "O/U" in m: return "1H-Total"
     if "TEAM TOTAL" in m: return "TT"
     if "WIN TO NIL" in m or "CLEAN SHEET" in m: return "WTN"
     if "BTTS" in m or "BOTH TEAMS" in m: return "BTTS"
@@ -2783,7 +2789,7 @@ def _market_category(market):
 
 
 def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
-                       ml_outcomes, existing_cats):
+                       ml_outcomes, existing_cats, pin_total_h1=None):
     """Produce up to 3 model-opinion picks per game (ML + Spread + Total),
     skipping markets we already have an EV pick for. These are purely
     'which side does our model prefer' — no EV / price filtering, matched
@@ -2997,6 +3003,40 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 out.append({"category": "TT", "market": "Team Total",
                             "pick": best[1], "fair_prob": best[0]})
 
+    # ---- NFL / NCAAF 1H Total — Normal approx scaled from full-game sim ----
+    # NFL 1H scoring averages ~48% of full-game (slight bump above half
+    # because teams script their first offensive series heavily). We take
+    # the sim's expected_total × 0.48 as the 1H mean and scale sigma to
+    # sqrt(0.48) ≈ 0.69. Then P(1H > line) via Normal CDF.
+    if sport_slug in ("nfl", "ncaaf") and sim \
+       and "1H-Total" not in existing_cats and pin_total_h1 \
+       and pin_total_h1.get("line") is not None:
+        try:
+            line_h1 = float(pin_total_h1["line"])
+        except (TypeError, ValueError):
+            line_h1 = None
+        exp_full = sim.get("expected_total")
+        if line_h1 is not None and isinstance(exp_full, (int, float)) and exp_full > 0:
+            import math as _m
+            h1_mean = float(exp_full) * 0.48
+            # Full-game sigma from the sport (empirical). Scale down for 1H.
+            full_sigma = 17.5 if sport_slug == "nfl" else 20.0
+            h1_sigma = full_sigma * (0.48 ** 0.5)
+            # Normal CDF via erf
+            z = (line_h1 - h1_mean) / h1_sigma
+            p_under = 0.5 * (1.0 + _m.erf(z / _m.sqrt(2.0)))
+            p_over  = 1.0 - p_under
+            if p_over >= 0.5:
+                label = f"1H Over {line_h1:g}"
+                prob  = p_over
+                am    = pin_total_h1.get("over_am")
+            else:
+                label = f"1H Under {line_h1:g}"
+                prob  = p_under
+                am    = pin_total_h1.get("under_am")
+            out.append({"category": "1H-Total", "market": "1H Total",
+                        "pick": label, "fair_prob": prob, "american": am})
+
     # ---- NHL Team Total (model-only, Poisson from the sim's λ) ----
     if sport_slug == "nhl" and sim and "TT" not in existing_cats:
         # NHL sim exposes avg_home_goals / avg_away_goals — team-level
@@ -3072,6 +3112,7 @@ def _build_board_rows(date_str, today_date, sport_filter):
                 "_ml":         g.get("ml"),
                 "_spread":     g.get("spread"),
                 "_total":      g.get("total"),
+                "_total_h1":   g.get("total_h1"),
                 "picks":       [],
                 "score_home":  None,
                 "score_away":  None,
@@ -3112,7 +3153,7 @@ def _build_board_rows(date_str, today_date, sport_filter):
                 "away":        p.get("away_team", ""),
                 "home":        p.get("home_team", ""),
                 "start_time":  p.get("start_time"),
-                "_ml": None, "_spread": None, "_total": None,
+                "_ml": None, "_spread": None, "_total": None, "_total_h1": None,
                 "picks": [], "score_home": None, "score_away": None,
             }
             rows_by_key[key] = row
@@ -3162,6 +3203,7 @@ def _build_board_rows(date_str, today_date, sport_filter):
             row["sport_slug"], row["home"], row["away"],
             row["_ml"], row["_spread"], row["_total"],
             row["ml_outcomes"], existing_cats,
+            pin_total_h1=row.get("_total_h1"),
         )
         for mp in fill:
             icon, icon_cls = _pick_icon(mp["market"])

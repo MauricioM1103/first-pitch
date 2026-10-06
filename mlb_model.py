@@ -413,6 +413,42 @@ def prob_home_margin_ge(k, lam_home, lam_away, scope="full"):
     return j["p_margin_ge"][idx]
 
 
+def predict_nrfi(game_ctx):
+    """P(No Runs First Inning) + P(Yes Runs First Inning) for a game.
+
+    1st-inning scoring runs about 12% higher per inning than other innings
+    because the leadoff hitter + top of the order faces the SP fresh. We
+    scale each team's full-game expected runs by that ratio: 1st-inning
+    lambda ≈ full_game_lambda × (0.12 / 9) roughly ≈ 11.5% of the per-game
+    run expectation, which lines up with the empirical ~0.52 R/team/1st.
+
+    P(NRFI) = P(home scores 0 in B1) × P(away scores 0 in T1)
+            = exp(-λ_home_1st) × exp(-λ_away_1st)
+    """
+    lam_h_full = project_runs(game_ctx.get("home_rpg"), game_ctx.get("away_sp_era"),
+                              game_ctx.get("away_sp_ip"), game_ctx.get("away_team_era"),
+                              scope="full")
+    lam_a_full = project_runs(game_ctx.get("away_rpg"), game_ctx.get("home_sp_era"),
+                              game_ctx.get("home_sp_ip"), game_ctx.get("home_team_era"),
+                              scope="full")
+    if lam_h_full is None or lam_a_full is None:
+        return None
+    # First-inning rate: slightly over 1/9 of the full-game rate (leadoff
+    # bump). 0.123 is calibrated against ~0.52 R/team per 1st on 4.25 RPG.
+    FIRST_INNING_FACTOR = 0.123
+    lam_h_1 = lam_h_full * FIRST_INNING_FACTOR
+    lam_a_1 = lam_a_full * FIRST_INNING_FACTOR
+    p_h_0 = math.exp(-lam_h_1)
+    p_a_0 = math.exp(-lam_a_1)
+    p_nrfi = p_h_0 * p_a_0
+    return {
+        "lambda_home_1st": lam_h_1,
+        "lambda_away_1st": lam_a_1,
+        "p_nrfi": p_nrfi,
+        "p_yrfi": 1.0 - p_nrfi,
+    }
+
+
 def predict_full_total(game_ctx, line):
     """Return dict with lambda_home, lambda_away, expected_total, p_over, p_under."""
     lam_h = project_runs(game_ctx.get("home_rpg"), game_ctx.get("away_sp_era"),

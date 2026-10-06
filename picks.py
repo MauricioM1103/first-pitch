@@ -61,6 +61,7 @@ def _mlb_bets(date_str):
                 "book": use_book,
                 "ev_pct": ev_pct,
                 "kelly_pct": b["kelly_pct"],
+                "model_only": bool(b.get("model_only")),
                 "model_source": "Elo + starting-pitcher model (fit on 12 MLB seasons)",
                 "home_team": g["home"]["team"],
                 "away_team": g["away"]["team"],
@@ -190,10 +191,13 @@ def _market_category(market):
     the same game (ML + Total + F5 ML + Win to Nil) each survive on the
     board instead of just the single highest-EV one."""
     m = (market or "").upper()
+    if "NRFI" in m or "YRFI" in m or "1ST INNING" in m or "FIRST INNING" in m: return "NRFI"
     if "F5" in m or "FIRST 5" in m:
         if "TOTAL" in m or "O/U" in m:  return "F5-Total"
         if "SPREAD" in m or "RL" in m or "RUNLINE" in m: return "F5-Spread"
         return "F5-ML"
+    if "1H" in m or "FIRST HALF" in m or "FIRST-HALF" in m:
+        if "TOTAL" in m or "O/U" in m: return "1H-Total"
     if "TEAM TOTAL" in m: return "TT"
     if "WIN TO NIL" in m or "CLEAN SHEET" in m: return "WTN"
     if "BTTS" in m or "BOTH TEAMS" in m: return "BTTS"
@@ -266,7 +270,10 @@ def _passes_filter(p):
     dec = p.get("decimal") or 0.0
     if fair < MIN_FAIR_PROB:
         return False
-    if dec < MIN_DECIMAL:
+    # Model-only picks (NRFI, future "model opinion" markets we don't have
+    # auto-pulled book prices for) carry decimal=None by design. Let them
+    # through the dec floor — they already bypass the EV filter downstream.
+    if dec < MIN_DECIMAL and not p.get("model_only"):
         return False
     if _is_draw_pick(p) and dec >= SOCCER_DRAW_MAX_DEC:
         return False

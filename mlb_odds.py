@@ -587,6 +587,37 @@ def build_game_odds(away_team, home_team, model_prob_home=None, game_ctx=None):
                 "under": (f"Under {t5['line']} (F5)", t5.get("under_am"), pred["p_under"], fair_u, pred["p_push"]),
             }, limit=pin.get("total_limit_f5"))
 
+    # ---- NRFI / YRFI (model-only; Pinnacle doesn't post this market) ----
+    # First-inning Over/Under 0.5 — our Poisson gives P(both teams score 0
+    # in 1st). DK / FD / Caesars post it as "First 5 innings? No" (NRFI =
+    # YES, no run) at prices typically from +130 (chalky NRFI) to +180 on
+    # neutral games. We don't have an auto-pulled price, so the pick lands
+    # as a model-only candidate with no book price; the user compares the
+    # live DK number against our fair prob.
+    if game_ctx:
+        pred = M.predict_nrfi(game_ctx)
+        if pred:
+            # Prefer the side the model is more confident on.
+            if pred["p_nrfi"] >= pred["p_yrfi"]:
+                side_key, side_label, fair = "nrfi", "NRFI (No Runs 1st Inning)", pred["p_nrfi"]
+            else:
+                side_key, side_label, fair = "yrfi", "YRFI (Yes Runs 1st Inning)", pred["p_yrfi"]
+            # No American price available — just surface the fair prob
+            bets.append({
+                "market":    "NRFI",
+                "side":      side_key,
+                "pick":      side_label,
+                "model_prob": fair,
+                "fair_prob": fair,  # treat model = fair (no market blend here)
+                "american":  None,
+                "decimal":   None,
+                "ev_pct":    None,
+                "kelly_pct": None,
+                "push_prob": 0.0,
+                "limit":     None,
+                "model_only": True,  # bypasses the EV / price filters in picks.py
+            })
+
     return {
         "pinnacle": pin,
         "pin_fair": {"home": pin_home_fair, "away": pin_away_fair} if pin_home_fair else None,
