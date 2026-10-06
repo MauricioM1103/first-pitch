@@ -618,12 +618,28 @@ def grade_pick(pick, event):
     return "pending"
 
 
-def profit_at_1u(result, decimal):
-    """Units profit at a 1-unit stake."""
+def profit_at_1u(result, decimal, fair_prob=None):
+    """Units profit at a 1-unit stake.
+
+    When we have a book `decimal`, use it directly. When the pick is a
+    model-only market we don't fetch prices for (NRFI, Win to Nil, soccer
+    BTTS, Team Total, etc.), fall back to the model's fair probability to
+    derive breakeven odds (dec = 1 / fair_prob). That gives a zero-EV
+    reference line — any W/L streak on these picks shows up as a non-zero
+    units curve so /logged ROI reflects conviction accuracy, not just
+    "we didn't attach a price".
+    """
     try:
         d = float(decimal or 0)
     except (TypeError, ValueError):
         d = 0
+    if d <= 1 and fair_prob is not None:
+        try:
+            fp = float(fair_prob)
+            if 0.01 < fp < 0.99:
+                d = 1.0 / fp   # breakeven implied decimal
+        except (TypeError, ValueError):
+            pass
     if result == "W":
         return d - 1.0 if d > 1 else 0.0
     if result == "L":
@@ -671,7 +687,8 @@ def grade_date(date_str, sport_key_by_slug, force=False):
         if (p.get("source") == "book_dk") and p.get("result") in ("W", "L", "P"):
             graded_picks.append({
                 **p,
-                "profit_u": p.get("profit_u", profit_at_1u(p.get("result"), p.get("decimal"))),
+                "profit_u": p.get("profit_u", profit_at_1u(p.get("result"), p.get("decimal"),
+                                                            fair_prob=p.get("fair_prob"))),
                 "graded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
             })
             continue
@@ -710,7 +727,8 @@ def grade_date(date_str, sport_key_by_slug, force=False):
         graded_picks.append({
             **p,
             "result":     res,
-            "profit_u":   profit_at_1u(res, p.get("decimal")),
+            "profit_u":   profit_at_1u(res, p.get("decimal"),
+                                        fair_prob=p.get("fair_prob")),
             "home_score": home_s,
             "away_score": away_s,
             "clv_pp":     clv_pp,
