@@ -2946,6 +2946,84 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     out.append({"category": "Total", "market": "Total",
                                 "pick": lbl, "fair_prob": prob, "american": am})
 
+    # ---- Alternate Total lines (every sport) ----
+    # Generate alt totals at ±1 step around the main line (step varies by
+    # sport). Only surface alts where the fair prob lands in the 55-72%
+    # actionable band — too low = long-shot, too high = already-priced-in
+    # chalk. Alt picks carry source="alt" so they render ALT (not EV);
+    # price is None because we don't fetch alt-total odds — user verifies
+    # the live DK/FD number against our fair prob.
+    if "ALT-Total" not in existing_cats and pin_total and pin_total.get("line") is not None:
+        try:
+            main_line = float(pin_total["line"])
+        except (TypeError, ValueError):
+            main_line = None
+        if main_line is not None:
+            TOTAL_STEP_BY_SPORT = {
+                "mlb":   [1.0, 2.0],
+                "nhl":   [1.0, 2.0],
+                "nfl":   [3.0, 6.0],
+                "ncaaf": [3.5, 7.0],
+                "epl":   [1.0, 2.0], "laliga": [1.0, 2.0], "ligamx": [1.0, 2.0],
+                "ucl":   [1.0, 2.0], "europa": [1.0, 2.0], "international": [1.0, 2.0],
+            }
+            steps = TOTAL_STEP_BY_SPORT.get(sport_slug, [1.0])
+
+            def _p_total_over(alt_line):
+                """P(total > alt_line) using whichever signal is available."""
+                # NHL / NFL fallback: use the sim's totals list if numeric
+                totals_arr = (sim or {}).get("totals") or []
+                if isinstance(totals_arr, list) and totals_arr \
+                   and all(isinstance(t, (int, float)) for t in totals_arr):
+                    return sum(1 for t in totals_arr if t > alt_line) / len(totals_arr)
+                # NFL / NCAAF path: Normal approximation on expected_total
+                if sim and isinstance(sim.get("expected_total"), (int, float)):
+                    import math as _m
+                    exp_t = float(sim["expected_total"])
+                    full_sigma = {"nfl": 17.5, "ncaaf": 20.0,
+                                  "nhl": 2.3, "mlb": 3.8}.get(sport_slug, 2.0)
+                    z = (alt_line - exp_t) / full_sigma
+                    p_under = 0.5 * (1.0 + _m.erf(z / _m.sqrt(2.0)))
+                    return 1.0 - p_under
+                # Final fallback: shift the main-line devig by a per-step delta
+                if pin_total.get("over_am") is not None and pin_total.get("under_am") is not None:
+                    p_o = generic_odds.american_to_prob(pin_total["over_am"])
+                    p_u = generic_odds.american_to_prob(pin_total["under_am"])
+                    main_over, _ = generic_odds.devig_two_sided(p_o, p_u)
+                    if main_over is None:
+                        return None
+                    # Rough shift: ~6pp per step (works for MLB/NHL; coarser for NFL)
+                    shift = (main_line - alt_line) * 0.06
+                    return max(0.02, min(0.98, main_over + shift))
+                return None
+
+            emitted = 0
+            for step in steps:
+                for alt_raw in (main_line - step, main_line + step):
+                    if alt_raw <= 0:
+                        continue
+                    alt = _snap_to_half(alt_raw)
+                    if alt is None or abs(alt - main_line) < 0.01:
+                        continue
+                    p_over = _p_total_over(alt)
+                    if p_over is None:
+                        continue
+                    # Prefer the side with the biggest cushion over 55%
+                    for direction, prob in (("Over", p_over), ("Under", 1 - p_over)):
+                        if not (0.55 <= prob <= 0.72):
+                            continue
+                        out.append({
+                            "category": "Total",   # dedup key — allows alt alongside main
+                            "market":   "Alt Total",
+                            "pick":     f"{direction} {alt:g} (ALT · from main O/U {main_line:g})",
+                            "fair_prob": prob,
+                            "source":   "alt",
+                        })
+                        emitted += 1
+                        break  # only one side per alt line
+                if emitted >= 3:   # cap alt totals per game to avoid clutter
+                    break
+
     # ---- Soccer-only extras: Double Chance (ML No) + Both Teams To Score ----
     is_soccer = sport_slug in ("epl", "laliga", "ligamx", "ucl", "europa", "international")
     if is_soccer and sim:
@@ -3289,6 +3367,7 @@ def _build_board_rows(date_str, today_date, sport_filter):
             # same-category picks (e.g. both ML sides, or Over + Under) get
             # distinct ids for grading / DOM collection.
             pick_hash = hex(abs(hash(mp["pick"])))[2:10]
+            is_alt = (mp.get("source") == "alt")
             row["picks"].append({
                 "id":            f"model-{row['sport_slug']}-{key}-{mp['category'].lower()}-{pick_hash}",
                 "sport":         row["sport_name"],
@@ -3302,11 +3381,16 @@ def _build_board_rows(date_str, today_date, sport_filter):
                 "decimal":       dec,
                 "american":      am,
                 "kelly_pct":     None,
-                "book":          "pinnacle" if am is not None else None,
+                "book":          "pinnacle" if am is not None else ("verify at DK/FD" if is_alt else None),
                 "strong":        False,
-                "bulletin":      "Model-only pick — our simulator's preferred side at the posted line, no price filter applied.",
-                "model_source":  "model only (no EV filter)",
-                "model_only":    True,
+                "bulletin":      ("Alt-total candidate — model's fair prob at a non-main line. "
+                                  "We don't fetch alt-total odds; compare the live DK/FD price "
+                                  "against our fair prob to decide." if is_alt
+                                  else "Model-only pick — our simulator's preferred side at the posted line, no price filter applied."),
+                "model_source":  "model only (no EV filter)" if not is_alt else "alt-total from sim distribution",
+                "model_only":    not is_alt,
+                "source":        mp.get("source"),           # propagates "alt" or None
+                "alt_line_flag": is_alt,
                 "home_team":     row["home"],
                 "away_team":     row["away"],
                 "start_time":    row["start_time"],
