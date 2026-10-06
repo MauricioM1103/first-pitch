@@ -3037,6 +3037,38 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
             out.append({"category": "1H-Total", "market": "1H Total",
                         "pick": label, "fair_prob": prob, "american": am})
 
+    # ---- NHL Period 1 Total — Poisson on scaled-down full-game λ ----
+    # NHL P1 scoring averages ~30% of full-game (goalies are fresh, teams
+    # play structured for the first ~5 min). Pinnacle usually posts P1
+    # totals at 1.5 goals.
+    if (sport_slug == "nhl" and sim and "1H-Total" not in existing_cats
+        and pin_total_h1 and pin_total_h1.get("line") is not None):
+        try:
+            line_p1 = float(pin_total_h1["line"])
+            lam_h_full = float(sim.get("avg_home_goals") or 0)
+            lam_a_full = float(sim.get("avg_away_goals") or 0)
+        except (TypeError, ValueError):
+            line_p1 = None
+            lam_h_full = lam_a_full = 0.0
+        if line_p1 is not None and (lam_h_full + lam_a_full) > 0:
+            import math as _m
+            lam_p1 = (lam_h_full + lam_a_full) * 0.30
+            # P(X > line) where X ~ Poisson(lam_p1), line like 1.5 → P(X>=2)
+            cutoff = int(_m.floor(line_p1)) + 1
+            cum_le = sum((_m.exp(-lam_p1) * lam_p1**k) / _m.factorial(k)
+                         for k in range(cutoff))
+            p_over = 1.0 - cum_le
+            if p_over >= 0.5:
+                label = f"P1 Over {line_p1:g}"
+                prob = p_over
+                am = pin_total_h1.get("over_am")
+            else:
+                label = f"P1 Under {line_p1:g}"
+                prob = 1.0 - p_over
+                am = pin_total_h1.get("under_am")
+            out.append({"category": "1H-Total", "market": "1H Total",
+                        "pick": label, "fair_prob": prob, "american": am})
+
     # ---- NHL Team Total (model-only, Poisson from the sim's λ) ----
     if sport_slug == "nhl" and sim and "TT" not in existing_cats:
         # NHL sim exposes avg_home_goals / avg_away_goals — team-level
