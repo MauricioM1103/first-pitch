@@ -2294,11 +2294,23 @@ PICKS_TEMPLATE = r"""<!doctype html>
     border-radius: 10px; padding: 12px; margin-bottom: 10px;
   }
   .board-table .col-score, .board-table .col-line, .board-table .col-close { text-align: left; }
-  /* Picks column: let chips wrap on a second line instead of squishing */
-  .pick-badge-row { flex-wrap: wrap; row-gap: 4px; }
-  .pick-badge-row .pick-lbl { flex: 1 1 60%; min-width: 0; }
+  /* Picks column: let chips wrap on a second line instead of squishing.
+     Second-row chips indent 26px (icon width + its gap) so they visually
+     sit under the pick label rather than flush with the sport icon. */
+  .pick-badge-row {
+    flex-wrap: wrap; row-gap: 4px;
+    row-gap: 4px;
+  }
+  .pick-badge-row .pick-ico { align-self: flex-start; }
+  .pick-badge-row .pick-lbl { flex: 1 1 calc(100% - 32px); min-width: 0; }
   .pick-badge-row .pick-conf,
-  .pick-badge-row .src-tag { flex-shrink: 0; }
+  .pick-badge-row .src-tag,
+  .pick-badge-row .strong-star,
+  .pick-badge-row .pick-res { margin-left: 26px; flex-shrink: 0; }
+  .pick-badge-row .pick-conf + .src-tag,
+  .pick-badge-row .src-tag + .strong-star,
+  .pick-badge-row .src-tag + .pick-res,
+  .pick-badge-row .strong-star + .pick-res { margin-left: 0; }
   /* Expanded-view drawer: single-column cards on narrow screens */
   .expanded-grid { grid-template-columns: 1fr !important; }
   /* Hero text + EV callout tighten a notch for phones */
