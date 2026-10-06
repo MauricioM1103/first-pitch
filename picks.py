@@ -46,11 +46,18 @@ def _mlb_bets(date_str):
             # The Pinnacle moneyline is already low-vig so this is close.
             pin_dec = b.get("decimal") or 0
             pin_approx = (1.0 / pin_dec) if pin_dec > 1.0 else b.get("fair_prob")
+            # Use the FULL team names ("Los Angeles Dodgers") not the short
+            # names ("Dodgers") so the row-dedup key in _build_board_rows
+            # matches the schedule skeleton (which pulls full names via
+            # statsapi `name`). Using short names here used to spawn a
+            # synthetic second row per MLB game with an NRFI pick attached.
+            home_full = g["home"].get("team_full") or g["home"]["team"]
+            away_full = g["away"].get("team_full") or g["away"]["team"]
             out.append({
                 "id": f"mlb_{g.get('game_pk')}_{b['market']}_{b['side']}",
                 "sport": "MLB",
                 "sport_slug": "mlb",
-                "game": f"{g['away']['team']} at {g['home']['team']}",
+                "game": f"{away_full} at {home_full}",
                 "start_time": g.get("first_pitch_utc") or g.get("first_pitch"),
                 "market": b["market"],
                 "pick": b["pick"],
@@ -63,8 +70,8 @@ def _mlb_bets(date_str):
                 "kelly_pct": b["kelly_pct"],
                 "model_only": bool(b.get("model_only")),
                 "model_source": "Elo + starting-pitcher model (fit on 12 MLB seasons)",
-                "home_team": g["home"]["team"],
-                "away_team": g["away"]["team"],
+                "home_team": home_full,
+                "away_team": away_full,
                 "venue": g.get("venue", ""),
                 "p_home_model": g.get("p_home"),
             })
