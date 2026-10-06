@@ -1206,7 +1206,7 @@ INDEX_TEMPLATE = r"""<!doctype html>
       <nav class="nav-tabs">
         <a class="nav-tab active" href="/mlb/schedule">Schedule</a>
         <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
-        <a class="nav-tab" href="/analyst">AI Analyst</a>
+        <a class="nav-tab" href="/mlb/analyst">AI Analyst</a>
         <a class="nav-tab" href="/market">Market</a>
         <a class="nav-tab" href="/backtest">Model</a>
       </nav>
@@ -1686,7 +1686,7 @@ svg.calib { max-width: 100%; height: auto; }
       <nav class="nav-tabs">
         <a class="nav-tab" href="/mlb/schedule">Schedule</a>
         <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
-        <a class="nav-tab" href="/analyst">AI Analyst</a>
+        <a class="nav-tab" href="/mlb/analyst">AI Analyst</a>
         <a class="nav-tab" href="/market">Market</a>
         <a class="nav-tab active" href="/backtest">Model</a>
       </nav>
@@ -2147,6 +2147,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
 .pick-badge-row .pick-ico.f5   { background: color-mix(in oklab, #22d3ee 20%, var(--card)); color: #22d3ee; border-color: color-mix(in oklab, #22d3ee 40%, var(--rule)); font-size: 8.5px; }
 .pick-badge-row .pick-ico.f5t  { background: color-mix(in oklab, #06b6d4 20%, var(--card)); color: #06b6d4; border-color: color-mix(in oklab, #06b6d4 40%, var(--rule)); font-size: 8.5px; }
 .pick-badge-row .pick-ico.wtn  { background: color-mix(in oklab, #84cc16 20%, var(--card)); color: #84cc16; border-color: color-mix(in oklab, #84cc16 40%, var(--rule)); font-size: 9px; }
+.pick-badge-row .pick-ico.tt   { background: color-mix(in oklab, #fb923c 20%, var(--card)); color: #fb923c; border-color: color-mix(in oklab, #fb923c 40%, var(--rule)); font-size: 9px; }
 .pick-badge-row .pick-lbl { color: var(--ink); font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .pick-badge-row .pick-conf {
   font-family: "JetBrains Mono", monospace; font-size: 10.5px;
@@ -2290,6 +2291,17 @@ PICKS_TEMPLATE = r"""<!doctype html>
     border-radius: 10px; padding: 12px; margin-bottom: 10px;
   }
   .board-table .col-score, .board-table .col-line, .board-table .col-close { text-align: left; }
+  /* Picks column: let chips wrap on a second line instead of squishing */
+  .pick-badge-row { flex-wrap: wrap; row-gap: 4px; }
+  .pick-badge-row .pick-lbl { flex: 1 1 60%; min-width: 0; }
+  .pick-badge-row .pick-conf,
+  .pick-badge-row .src-tag { flex-shrink: 0; }
+  /* Expanded-view drawer: single-column cards on narrow screens */
+  .expanded-grid { grid-template-columns: 1fr !important; }
+  /* Hero text + EV callout tighten a notch for phones */
+  .ev-callout { font-size: 11.5px; padding: 8px 10px; }
+  .hero h1 { font-size: 24px; }
+  .filter-chips .chip { padding: 4px 9px; font-size: 11px; }
 }
 </style>
 </head>
@@ -2612,6 +2624,7 @@ def _pick_icon(market):
     if "f5" in m or "first 5" in m:
         if "total" in m: return ("F5", "f5t")
         return ("F5", "f5")
+    if "team total" in m: return ("TT", "tt")
     if "win to nil" in m or "clean sheet" in m: return ("WN", "wtn")
     if "btts" in m or "both teams" in m: return ("B", "btts")
     if "double" in m or "dc" in m or "or draw" in m: return ("2x", "dc")
@@ -2743,19 +2756,23 @@ def _format_total_line(total):
 
 
 _PICK_MARKET_ORDER = {"ML": 0, "DC": 1, "Spread": 2, "Total": 3,
-                      "F5-ML": 4, "F5-Spread": 5, "F5-Total": 6,
-                      "WTN": 7, "BTTS": 8}
+                      "TT": 4,
+                      "F5-ML": 5, "F5-Spread": 6, "F5-Total": 7,
+                      "WTN": 8, "BTTS": 9}
 
 
 def _market_category(market):
-    """Reduce a full market string ('F5 ML', '1H Spread', 'Win to Nil') to
-    its base category — 'ML', 'DC', 'Spread', 'Total', 'F5-ML', 'F5-Spread',
-    'F5-Total', 'WTN', 'BTTS', or raw if no match."""
+    """Reduce a full market string ('F5 ML', '1H Spread', 'Team Total',
+    'Win to Nil') to its base category — 'ML', 'DC', 'Spread', 'Total',
+    'TT', 'F5-ML', 'F5-Spread', 'F5-Total', 'WTN', 'BTTS', or raw if no
+    match. Dedup key for the main board uses this so independent markets
+    within the same game each survive on the board."""
     m = (market or "").upper()
     if "F5" in m or "FIRST 5" in m:
         if "TOTAL" in m or "O/U" in m: return "F5-Total"
         if "SPREAD" in m or "RL" in m or "RUNLINE" in m: return "F5-Spread"
         return "F5-ML"
+    if "TEAM TOTAL" in m: return "TT"
     if "WIN TO NIL" in m or "CLEAN SHEET" in m: return "WTN"
     if "BTTS" in m or "BOTH TEAMS" in m: return "BTTS"
     if "DOUBLE CHANCE" in m or " OR DRAW" in m or m == "DC": return "DC"
@@ -2951,6 +2968,71 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     out.append({"category": "WTN", "market": "Win to Nil",
                                 "pick": f"{away} to Win to Nil",
                                 "fair_prob": away_wn})
+
+        # Soccer Team Total — Dixon-Coles marginal gives us P(team goals
+        # over line) directly. Only surface this for leagues with a real
+        # DC fit (EPL, La Liga, Liga MX). UCL / Europa / international
+        # all fall back to a league-average λ ≈ 0.9 that makes "Under 1.5"
+        # read as strong across the entire slate (false positives).
+        if "TT" not in existing_cats and sport_slug in ("epl", "laliga", "ligamx"):
+            try:
+                import soccer_model as _sm
+                tt_home = _sm.predict_team_total(home, away, sport_slug, "home", 1.5)
+                tt_away = _sm.predict_team_total(home, away, sport_slug, "away", 1.5)
+            except Exception:
+                tt_home = tt_away = None
+            best = None  # (prob, label)
+            for side_name, tt in (("home", tt_home), ("away", tt_away)):
+                if not tt:
+                    continue
+                team = home if side_name == "home" else away
+                for direction, prob in (("Over", tt.get("over")),
+                                        ("Under", tt.get("under"))):
+                    if prob is None or prob < 0.60:
+                        continue
+                    label = f"{team} Team Total {direction} 1.5"
+                    if best is None or prob > best[0]:
+                        best = (prob, label)
+            if best:
+                out.append({"category": "TT", "market": "Team Total",
+                            "pick": best[1], "fair_prob": best[0]})
+
+    # ---- NHL Team Total (model-only, Poisson from the sim's λ) ----
+    if sport_slug == "nhl" and sim and "TT" not in existing_cats:
+        # NHL sim exposes avg_home_goals / avg_away_goals — team-level
+        # Poisson expectations. Pinnacle doesn't give us a line (we don't
+        # fetch team totals), so we probe both sides at the standard
+        # 2.5-goal number and surface the single most confident direction.
+        from math import exp
+        try:
+            import math as _math
+            lam_h = float(sim.get("avg_home_goals") or 0)
+            lam_a = float(sim.get("avg_away_goals") or 0)
+        except Exception:
+            lam_h = lam_a = 0.0
+        def _poisson_over(lam, line):
+            # P(X > line) where X ~ Poisson(lam). line = 2.5 → P(X >= 3)
+            if lam <= 0:
+                return None
+            cutoff = int(_math.floor(line)) + 1   # smallest integer x counting as "over"
+            cum = sum((_math.exp(-lam) * lam**k) / _math.factorial(k)
+                      for k in range(cutoff))
+            return 1.0 - cum
+        best = None
+        for side_name, lam in (("home", lam_h), ("away", lam_a)):
+            over_p = _poisson_over(lam, 2.5)
+            if over_p is None:
+                continue
+            team = home if side_name == "home" else away
+            for direction, prob in (("Over", over_p), ("Under", 1.0 - over_p)):
+                if prob < 0.60:
+                    continue
+                label = f"{team} Team Total {direction} 2.5"
+                if best is None or prob > best[0]:
+                    best = (prob, label)
+        if best:
+            out.append({"category": "TT", "market": "Team Total",
+                        "pick": best[1], "fair_prob": best[0]})
 
     return out
 
@@ -3579,7 +3661,7 @@ EDGES_TEMPLATE = r"""<!doctype html>
       <nav class="nav-tabs">
         <a class="nav-tab" href="/mlb/schedule">Schedule</a>
         <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
-        <a class="nav-tab" href="/analyst">AI Analyst</a>
+        <a class="nav-tab" href="/mlb/analyst">AI Analyst</a>
         <a class="nav-tab" href="/market">Market</a>
         <a class="nav-tab" href="/backtest">Model</a>
       </nav>
@@ -3878,7 +3960,7 @@ MARKET_TEMPLATE = r"""<!doctype html>
       <nav class="nav-tabs">
         <a class="nav-tab" href="/mlb/schedule">Schedule</a>
         <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
-        <a class="nav-tab" href="/analyst">AI Analyst</a>
+        <a class="nav-tab" href="/mlb/analyst">AI Analyst</a>
         <a class="nav-tab active" href="/market">Market</a>
         <a class="nav-tab" href="/backtest">Model</a>
       </nav>
@@ -6300,7 +6382,7 @@ ANALYST_TEMPLATE = r"""<!doctype html>
       <nav class="nav-tabs">
         <a class="nav-tab" href="/mlb/schedule">Schedule</a>
         <a class="nav-tab" href="/montecarlo">Monte Carlo</a>
-        <a class="nav-tab active" href="/analyst">AI Analyst</a>
+        <a class="nav-tab active" href="/mlb/analyst">AI Analyst</a>
       </nav>
     </div>
     <form class="controls" method="get" action="/analyst">

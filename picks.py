@@ -194,6 +194,7 @@ def _market_category(market):
         if "TOTAL" in m or "O/U" in m:  return "F5-Total"
         if "SPREAD" in m or "RL" in m or "RUNLINE" in m: return "F5-Spread"
         return "F5-ML"
+    if "TEAM TOTAL" in m: return "TT"
     if "WIN TO NIL" in m or "CLEAN SHEET" in m: return "WTN"
     if "BTTS" in m or "BOTH TEAMS" in m: return "BTTS"
     if "DOUBLE CHANCE" in m or " OR DRAW" in m or m == "DC": return "DC"
