@@ -2003,9 +2003,18 @@ PICKS_TEMPLATE = r"""<!doctype html>
   font-family: "JetBrains Mono", monospace;
   font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase;
   font-weight: 500; list-style: none; padding: 2px 0;
+  display: flex; align-items: center; gap: 8px;
 }
 .model-explain summary::-webkit-details-marker { display: none; }
+.model-explain summary::before {
+  content: "▸"; display: inline-block;
+  font-size: 12px; color: var(--accent);
+  transition: transform 160ms ease;
+  width: 10px; text-align: center;
+}
+.model-explain[open] summary::before { transform: rotate(90deg); }
 .model-explain summary:hover { color: var(--ink); }
+.model-explain summary:hover::before { color: var(--ink); }
 .model-explain[open] summary { color: var(--ink); margin-bottom: 10px; border-bottom: 1px solid var(--rule); padding-bottom: 8px; }
 .model-explain-grid {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
