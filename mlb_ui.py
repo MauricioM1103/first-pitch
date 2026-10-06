@@ -2860,6 +2860,15 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                             "american": (pin_ml or {}).get("draw_am")})
 
     # ---- Spread (snapped to half-point to match Polymarket / DK / FD) ----
+    # Fixed-line sports (NHL puck line ±1.5, MLB run line ±1.5) are a trap
+    # for the Pinnacle-devig fallback: those lines are structurally biased
+    # (~50% of NHL regulation games are 1-goal games, so the +1.5 dog covers
+    # ~65% at every matchup) and reading the devig into a 4/5 or 5/5 badge
+    # mislabels structural market shape as model conviction. Only surface a
+    # Spread model pick for these sports when the actual MC margin
+    # distribution is cached — the sim's real goal-margin pmf is where any
+    # genuine edge over the structural number shows up.
+    FIXED_LINE_SPORTS = {"nhl", "mlb"}
     line_h = None
     if "Spread" not in existing_cats and pin_spread and pin_spread.get("line_home") is not None:
         line_h = _snap_to_half(pin_spread["line_home"])
@@ -2871,7 +2880,9 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
         if numeric_margins:
             # Re-evaluate cover prob at the SNAPPED line (not Pinnacle's raw)
             p_home_cover = sum(1 for m in numeric_margins if m > -line_h) / len(numeric_margins)
-        elif pin_spread.get("home_am") is not None and pin_spread.get("away_am") is not None:
+        elif (pin_spread.get("home_am") is not None
+              and pin_spread.get("away_am") is not None
+              and sport_slug not in FIXED_LINE_SPORTS):
             p_h = generic_odds.american_to_prob(pin_spread["home_am"])
             p_a = generic_odds.american_to_prob(pin_spread["away_am"])
             p_home_cover, _ = generic_odds.devig_two_sided(p_h, p_a)
