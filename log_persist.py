@@ -105,22 +105,26 @@ def read_file(path):
 def _ensure_branch_exists():
     """Create the target branch if it doesn't exist yet. Idempotent — the
     GitHub API call checks once per process. First call does one GET + one
-    POST, every subsequent call is a cached no-op."""
+    POST, every subsequent call is a cached no-op.
+
+    Note on _api 404 handling: `_api` swallows 404s and returns None rather
+    than raising HTTPError. We rely on that here: a None result from the
+    "does this ref exist" GET means the branch is missing, and we fall
+    through to the create step.
+    """
     global _BRANCH_CREATION_CHECKED
     if _BRANCH_CREATION_CHECKED or not is_configured():
         return
     _BRANCH_CREATION_CHECKED = True
     branch = _branch()
     repo = _repo_slug()
-    # Does the branch already exist?
+    # Does the branch already exist? (`_api` returns None on a 404.)
     try:
-        _api(f"{GITHUB_API}/repos/{repo}/git/refs/heads/{branch}")
-        return  # exists
-    except HTTPError as e:
-        if e.code != 404:
-            return  # some other error — don't try to create
+        existing = _api(f"{GITHUB_API}/repos/{repo}/git/refs/heads/{branch}")
     except Exception:
-        return
+        return  # auth / rate-limit / network error — leave caller's fallback intact
+    if existing is not None:
+        return  # branch already there
     # Branch doesn't exist — fork from main's current head.
     try:
         main_ref = _api(f"{GITHUB_API}/repos/{repo}/git/refs/heads/main")
