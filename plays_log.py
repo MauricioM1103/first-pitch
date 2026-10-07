@@ -96,12 +96,29 @@ def save_daily_picks(date_str, picks, overwrite_today=True):
         except (OSError, json.JSONDecodeError):
             pass
 
+    # MERGE with existing picks instead of replacing. The main picks pipeline
+    # drops started games via _is_started, so after kickoff the picks list
+    # shrinks — if we overwrote blindly, those picks would disappear from the
+    # log and nothing graded them. Pick IDs are stable, so new saves update
+    # existing entries by id and leave untouched entries in place.
+    prev_picks_by_id = {}
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                prev_full = json.load(f)
+            for prev_p in prev_full.get("picks", []):
+                pid = prev_p.get("id")
+                if pid:
+                    prev_picks_by_id[pid] = prev_p
+        except (OSError, json.JSONDecodeError):
+            pass
+
     now_iso = datetime.utcnow().isoformat(timespec="seconds") + "Z"
-    slim = []
+    merged_by_id = dict(prev_picks_by_id)   # start with everything we had
     for p in picks:
         pid = p.get("id")
         first = existing_first.get(pid, {})
-        slim.append({
+        merged_by_id[pid] = {
             "id":            pid,
             "sport":         p.get("sport"),
             "sport_slug":    p.get("sport_slug"),
@@ -134,7 +151,8 @@ def save_daily_picks(date_str, picks, overwrite_today=True):
             "first_fair_prob":    first.get("first_fair_prob")
                                      if first.get("first_fair_prob") is not None
                                      else p.get("fair_prob"),
-        })
+        }
+    slim = list(merged_by_id.values())
     payload = {"date": date_str, "picks": slim}
     text = json.dumps(payload)
     try:
@@ -264,7 +282,13 @@ def _fetch_json(url, timeout=15):
 def fetch_scores(sport_key, days_from=3):
     """Pull final scores from The Odds API. Returns list of event dicts.
     Returns [] when ODDS_API_KEY isn't set — the grader then uses sport-
-    specific fallbacks (fetch_scores_mlb for MLB)."""
+    specific fallbacks (fetch_scores_mlb for MLB).
+
+    Empty responses cache for only 2 minutes (vs 30 min for non-empty) so
+    a transient API hiccup during the first grader pass doesn't lock us
+    out of grading for half an hour. Non-empty caches stay at the full TTL
+    to avoid pointless API burn once we have the scores we need.
+    """
     if not sport_key:
         return []
     key = os.environ.get("ODDS_API_KEY")
@@ -272,8 +296,11 @@ def fetch_scores(sport_key, days_from=3):
         return []
     now = time.time()
     hit = _RESULTS_CACHE.get(sport_key)
-    if hit and now - hit[1] < _RESULTS_TTL_S:
-        return hit[0]
+    if hit:
+        events, saved_at = hit
+        ttl = _RESULTS_TTL_S if events else 120   # 2 min for empty
+        if now - saved_at < ttl:
+            return events
     params = urlencode({"apiKey": key, "daysFrom": days_from})
     url = f"{ODDS_API_BASE}/sports/{sport_key}/scores/?{params}"
     try:

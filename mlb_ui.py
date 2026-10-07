@@ -3606,6 +3606,18 @@ def picks_landing():
                 seen_ids.add(p.get("id"))
         if confident:
             plays_log.save_daily_picks(date_str, confident)
+            # Re-grade yesterday + today so the /logged record updates the
+            # moment picks save, not only when /logged is opened. Yesterday's
+            # late games are the common case where results trickle in after
+            # the daily board was already fetched.
+            try:
+                import sports as _sports
+                sport_key_by_slug = {s["slug"]: s.get("odds_api_key") for s in _sports.SPORTS}
+                today_d = datetime.strptime(date_str, "%Y-%m-%d").date()
+                for ds in ((today_d - timedelta(days=1)).isoformat(), date_str):
+                    plays_log.grade_date(ds, sport_key_by_slug)
+            except Exception:
+                pass
     except Exception:
         pass
 
