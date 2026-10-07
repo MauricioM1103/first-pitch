@@ -1508,6 +1508,8 @@ def _sport_games_for_hub(sport, today_date):
             "spread":     g.get("spread"),
             "total":      g.get("total"),
             "total_h1":   g.get("total_h1"),  # NFL/NCAAF/NHL/soccer 1H O/U
+            "total_alts": g.get("total_alts") or [],  # Pinnacle alt-total candidates
+            "spread_alts": g.get("spread_alts") or [],
         })
     out.sort(key=lambda x: x["start_time"] or "")
     return out
@@ -2492,7 +2494,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
                   <span class="pick-lbl">{{ p.pick_short }}</span>
                   <span class="pick-conf c{{ p.conf }}">{{ p.conf }}/5</span>
                   {% if p.source == 'alt' or p.alt_line_flag %}
-                    <span class="src-tag alt" title="Alt-line candidate — fair prob from our model, but we don't fetch alt-line odds; verify the price at DK/FD before taking it.">ALT</span>
+                    <span class="src-tag alt" title="Alt-line candidate — priced off Pinnacle's own alt-total candidate when available, else fair prob only; verify at DK/FD.">ALT{% if p.ev_pct is not none and p.ev_pct > 0.5 %} +{{ '%.0f'|format(p.ev_pct) }}%{% endif %}</span>
                   {% elif p.model_only %}
                     <span class="src-tag model" title="Model-only pick — our simulator's preferred side, no price filter applied">MODEL</span>
                   {% else %}
@@ -2794,7 +2796,8 @@ from picks import _market_category
 
 
 def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
-                       ml_outcomes, existing_cats, pin_total_h1=None):
+                       ml_outcomes, existing_cats, pin_total_h1=None,
+                       pin_total_alts=None):
     """Produce up to 3 model-opinion picks per game (ML + Spread + Total),
     skipping markets we already have an EV pick for. These are purely
     'which side does our model prefer' — no EV / price filtering, matched
@@ -2946,13 +2949,16 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     out.append({"category": "Total", "market": "Total",
                                 "pick": lbl, "fair_prob": prob, "american": am})
 
-    # ---- Alternate Total lines (every sport) ----
-    # Generate alt totals at ±1 step around the main line (step varies by
-    # sport). Only surface alts where the fair prob lands in the 55-72%
-    # actionable band — too low = long-shot, too high = already-priced-in
-    # chalk. Alt picks carry source="alt" so they render ALT (not EV);
-    # price is None because we don't fetch alt-total odds — user verifies
-    # the live DK/FD number against our fair prob.
+    # ---- Alternate Total lines (every sport, Pinnacle-priced) ----
+    # Pinnacle publishes a full candidate list for each spread + total market;
+    # the main picker previously discarded everything but the "best main"
+    # line. generic_odds now exposes the full candidate list as `total_alts`.
+    # We iterate THOSE lines (real book prices) instead of generating
+    # arbitrary ±1/±2 steps, so every alt pick carries real EV.
+    #
+    # Filter: only alts where (a) our fair prob is in the actionable band
+    # (0.55-0.72) AND (b) at least +1% EV against the Pinnacle alt price.
+    # Pure negative-EV alts are suppressed — surfacing them would be noise.
     if "ALT-Total" not in existing_cats and pin_total and pin_total.get("line") is not None:
         try:
             main_line = float(pin_total["line"])
@@ -2997,33 +3003,44 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     return max(0.02, min(0.98, main_over + shift))
                 return None
 
-            # Collect every valid alt in the actionable band, then keep only
-            # the TOP 2 by confidence. Caps clutter + always surfaces the
-            # strongest two picks (not whichever two we evaluated first).
+            # Iterate Pinnacle's actual alt-total candidates (not synthetic
+            # ±1 steps). Keep the top 2 (over OR under per line) by EV.
             candidates = []
-            for step in steps:
-                for alt_raw in (main_line - step, main_line + step):
-                    if alt_raw <= 0:
+            for cand in (pin_total_alts or []):
+                try:
+                    alt_line = float(cand.get("line"))
+                except (TypeError, ValueError):
+                    continue
+                # Skip the main line itself
+                if abs(alt_line - main_line) < 0.01:
+                    continue
+                p_over = _p_total_over(alt_line)
+                if p_over is None:
+                    continue
+                for direction, prob, am in (
+                    ("Over",  p_over,     cand.get("over_am")),
+                    ("Under", 1 - p_over, cand.get("under_am")),
+                ):
+                    if am is None or not (0.55 <= prob <= 0.72):
                         continue
-                    alt = _snap_to_half(alt_raw)
-                    if alt is None or abs(alt - main_line) < 0.01:
+                    dec = mlb_odds.american_to_decimal(am)
+                    if not dec or dec <= 1.0:
                         continue
-                    p_over = _p_total_over(alt)
-                    if p_over is None:
+                    ev_pct = (prob * dec - 1.0) * 100.0
+                    if ev_pct < 1.0:   # require at least +1% EV
                         continue
-                    for direction, prob in (("Over", p_over), ("Under", 1 - p_over)):
-                        if not (0.55 <= prob <= 0.72):
-                            continue
-                        candidates.append((prob, direction, alt))
-                        break   # one side per alt
-            candidates.sort(key=lambda c: -c[0])    # highest confidence first
-            for prob, direction, alt in candidates[:2]:
+                    candidates.append((ev_pct, prob, direction, alt_line, am, dec))
+            candidates.sort(key=lambda c: -c[0])   # highest EV first
+            for ev_pct, prob, direction, alt_line, am, dec in candidates[:2]:
                 out.append({
-                    "category": "Total",
-                    "market":   "Alt Total",
-                    "pick":     f"{direction} {alt:g} (ALT · from main O/U {main_line:g})",
+                    "category":  "Total",
+                    "market":    "Alt Total",
+                    "pick":      f"{direction} {alt_line:g} (ALT · from main O/U {main_line:g})",
                     "fair_prob": prob,
-                    "source":   "alt",
+                    "source":    "alt",
+                    "american":  am,
+                    "decimal":   dec,
+                    "ev_pct":    ev_pct,
                 })
 
     # ---- Soccer-only extras: Double Chance (ML No) + Both Teams To Score ----
@@ -3255,6 +3272,8 @@ def _build_board_rows(date_str, today_date, sport_filter):
                 "_spread":     g.get("spread"),
                 "_total":      g.get("total"),
                 "_total_h1":   g.get("total_h1"),
+                "_total_alts": g.get("total_alts") or [],
+                "_spread_alts": g.get("spread_alts") or [],
                 "picks":       [],
                 "score_home":  None,
                 "score_away":  None,
@@ -3296,6 +3315,7 @@ def _build_board_rows(date_str, today_date, sport_filter):
                 "home":        p.get("home_team", ""),
                 "start_time":  p.get("start_time"),
                 "_ml": None, "_spread": None, "_total": None, "_total_h1": None,
+                "_total_alts": [], "_spread_alts": [],
                 "picks": [], "score_home": None, "score_away": None,
             }
             rows_by_key[key] = row
@@ -3351,6 +3371,7 @@ def _build_board_rows(date_str, today_date, sport_filter):
             row["_ml"], row["_spread"], row["_total"],
             row["ml_outcomes"], existing_cats,
             pin_total_h1=row.get("_total_h1"),
+            pin_total_alts=row.get("_total_alts") or [],
         )
         existing_labels = {(_market_category(p.get("market")),
                             (p.get("pick") or "").strip().lower())
@@ -3370,6 +3391,17 @@ def _build_board_rows(date_str, today_date, sport_filter):
             # distinct ids for grading / DOM collection.
             pick_hash = hex(abs(hash(mp["pick"])))[2:10]
             is_alt = (mp.get("source") == "alt")
+            # Honor an EV% the fill branch computed (alt totals now carry it
+            # when Pinnacle had the alt line in its candidate set); fall back
+            # to None for picks without a book price.
+            mp_ev = mp.get("ev_pct")
+            # Kelly stake (quarter) from the computed EV
+            kelly_pct = None
+            if mp_ev is not None and dec and dec > 1.0:
+                b = dec - 1.0
+                q = 1.0 - mp["fair_prob"]
+                k = ((mp["fair_prob"] * b - q) / b) * 0.25 * 100.0 if b > 0 else 0.0
+                kelly_pct = max(0.0, k)
             row["picks"].append({
                 "id":            f"model-{row['sport_slug']}-{key}-{mp['category'].lower()}-{pick_hash}",
                 "sport":         row["sport_name"],
@@ -3379,10 +3411,10 @@ def _build_board_rows(date_str, today_date, sport_filter):
                 "fair_prob":     mp["fair_prob"],
                 "consensus_prob": mp["fair_prob"],  # same for model-only (no market blend)
                 "pinnacle_prob": None,
-                "ev_pct":        None,
+                "ev_pct":        mp_ev,
                 "decimal":       dec,
                 "american":      am,
-                "kelly_pct":     None,
+                "kelly_pct":     kelly_pct,
                 "book":          "pinnacle" if am is not None else ("verify at DK/FD" if is_alt else None),
                 "strong":        False,
                 "bulletin":      ("Alt-total candidate — model's fair prob at a non-main line. "
@@ -3476,10 +3508,15 @@ def picks_landing():
                 p = {**p, "model_only": False}
                 confident.append(p)
                 seen_ids.add(p.get("id"))
-        # Model-only fill picks that scored 4/5+ (new).
+        # Everything else from the board that scored 4/5+: model-only picks
+        # AND alt-line picks. The previous filter required model_only=True,
+        # which silently dropped every ALT pick (we set model_only=False for
+        # alt totals to distinguish them from model-only chalks).
         for row in board_rows:
             for p in row["picks"]:
-                if not p.get("model_only"):
+                # Skip EV picks (already captured above via all_picks).
+                is_ev = (not p.get("model_only")) and p.get("source") != "alt"
+                if is_ev:
                     continue
                 if p.get("conf", 0) < 4:
                     continue

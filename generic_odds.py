@@ -252,6 +252,13 @@ def parse_pinnacle_games(league_id, ml_outcomes=2, has_halves=False):
             best = _best_main(sc0)
             entry["spread"] = {k: best[k] for k in ("line_home", "home_am", "away_am")}
             entry["spread_limit"] = best.get("limit")
+            # Expose every candidate so downstream can price alt lines
+            # directly off Pinnacle instead of approximating. Keys: line_home,
+            # home_am, away_am per candidate.
+            entry["spread_alts"] = [
+                {k: c.get(k) for k in ("line_home", "home_am", "away_am")}
+                for c in sc0
+            ]
         if sc1:
             best = _best_main(sc1)
             entry["spread_h1"] = {k: best[k] for k in ("line_home", "home_am", "away_am")}
@@ -259,6 +266,11 @@ def parse_pinnacle_games(league_id, ml_outcomes=2, has_halves=False):
             best = _best_main(tc0)
             entry["total"] = {k: best[k] for k in ("line", "over_am", "under_am")}
             entry["total_limit"] = best.get("limit")
+            # Full candidate list for alt totals (over_am + under_am per line).
+            entry["total_alts"] = [
+                {k: c.get(k) for k in ("line", "over_am", "under_am")}
+                for c in tc0
+            ]
         if tc1:
             best = _best_main(tc1)
             entry["total_h1"] = {k: best[k] for k in ("line", "over_am", "under_am")}
