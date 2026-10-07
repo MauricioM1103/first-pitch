@@ -2929,6 +2929,8 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
             if isinstance(margins_arr, list) else []
         if main_line_h is not None and numeric_margins:
             n = len(numeric_margins)
+            MAX_GAP = 0.12
+            MAX_EV_PCT = 15.0
             candidates = []
             for cand in pin_spread_alts:
                 try:
@@ -2938,18 +2940,32 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 if abs(alt_h - main_line_h) < 0.01:
                     continue
                 home_cover = sum(1 for m in numeric_margins if m > -alt_h) / n
+                # Pinnacle's own devigged fair prob for this alt line
+                pin_home_fair = None
+                if cand.get("home_am") is not None and cand.get("away_am") is not None:
+                    p_h_raw = generic_odds.american_to_prob(cand["home_am"])
+                    p_a_raw = generic_odds.american_to_prob(cand["away_am"])
+                    fh, _fa = generic_odds.devig_two_sided(p_h_raw, p_a_raw)
+                    pin_home_fair = fh
                 for side, prob, am, team, sign in (
                     ("home", home_cover,     cand.get("home_am"), home, alt_h),
                     ("away", 1 - home_cover, cand.get("away_am"), away, -alt_h),
                 ):
                     if am is None or not (0.55 <= prob <= 0.72):
                         continue
+                    # Model-vs-market agreement check
+                    if pin_home_fair is not None:
+                        pin_side_fair = pin_home_fair if side == "home" else (1 - pin_home_fair)
+                        if abs(prob - pin_side_fair) > MAX_GAP:
+                            continue
                     dec = mlb_odds.american_to_decimal(am)
                     if not dec or dec <= 1.0:
                         continue
                     ev_pct = (prob * dec - 1.0) * 100.0
                     if ev_pct < 1.0:
                         continue
+                    if ev_pct > MAX_EV_PCT:
+                        ev_pct = MAX_EV_PCT
                     label = (f"{team} {sign:+g} (ALT · from main "
                              f"{home} {main_line_h:+g})")
                     candidates.append((ev_pct, prob, label, am, dec))
@@ -3060,6 +3076,19 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
 
             # Iterate Pinnacle's actual alt-total candidates (not synthetic
             # ±1 steps). Keep the top 2 (over OR under per line) by EV.
+            #
+            # Sanity cap: reject any alt where the model's probability
+            # diverges from Pinnacle's OWN devigged fair probability (at
+            # the same alt line) by more than 12pp. Pinnacle is sharp;
+            # 20-30% "edges" are almost always sim overconfidence on a
+            # tail line, not a real market mispricing. 12pp still leaves
+            # plenty of room for genuine model-vs-market disagreement
+            # (which does happen on alt lines where volume is low) while
+            # killing the obvious artifacts.
+            MAX_MODEL_VS_MARKET_GAP = 0.12
+            MAX_EV_PCT = 15.0   # hard ceiling — anything above almost
+                                # certainly reflects a sim bug or a stale
+                                # Pinnacle price; display cap only
             candidates = []
             for cand in (pin_total_alts or []):
                 try:
@@ -3072,18 +3101,33 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 p_over = _p_total_over(alt_line)
                 if p_over is None:
                     continue
+                # Pinnacle's own devigged fair prob at this alt line, for
+                # the sanity cap below.
+                pin_over_fair = None
+                if cand.get("over_am") is not None and cand.get("under_am") is not None:
+                    p_o_raw = generic_odds.american_to_prob(cand["over_am"])
+                    p_u_raw = generic_odds.american_to_prob(cand["under_am"])
+                    fo, _fu = generic_odds.devig_two_sided(p_o_raw, p_u_raw)
+                    pin_over_fair = fo
                 for direction, prob, am in (
                     ("Over",  p_over,     cand.get("over_am")),
                     ("Under", 1 - p_over, cand.get("under_am")),
                 ):
                     if am is None or not (0.55 <= prob <= 0.72):
                         continue
+                    # Model-vs-market agreement check per side
+                    if pin_over_fair is not None:
+                        pin_side_fair = pin_over_fair if direction == "Over" else (1 - pin_over_fair)
+                        if abs(prob - pin_side_fair) > MAX_MODEL_VS_MARKET_GAP:
+                            continue
                     dec = mlb_odds.american_to_decimal(am)
                     if not dec or dec <= 1.0:
                         continue
                     ev_pct = (prob * dec - 1.0) * 100.0
-                    if ev_pct < 1.0:   # require at least +1% EV
+                    if ev_pct < 1.0:
                         continue
+                    if ev_pct > MAX_EV_PCT:
+                        ev_pct = MAX_EV_PCT   # cap display
                     candidates.append((ev_pct, prob, direction, alt_line, am, dec))
             candidates.sort(key=lambda c: -c[0])   # highest EV first
             for ev_pct, prob, direction, alt_line, am, dec in candidates[:2]:

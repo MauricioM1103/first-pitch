@@ -558,10 +558,35 @@ def _norm(s):
     return (s or "").lower().strip().replace(".", "").replace("-", " ")
 
 
+def _event_date_close_to_pick(ev, pick, hours_tolerance=36):
+    """True iff the event's commence_time is within `hours_tolerance` of the
+    pick's start_time. Guards against matching a pick to the SAME TEAMS'
+    different game — e.g. MLB divisional series where the same two teams
+    play 3+ games in a week, or a pick for next week's game matching this
+    week's result. Returns True if either side has no timestamp (fall
+    through to legacy name-only match)."""
+    pst = pick.get("start_time")
+    est = ev.get("commence_time")
+    if not pst or not est:
+        return True
+    try:
+        pdt = datetime.fromisoformat(pst.replace("Z", "+00:00"))
+        edt = datetime.fromisoformat(est.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return True
+    delta_h = abs((pdt - edt).total_seconds()) / 3600.0
+    return delta_h <= hours_tolerance
+
+
 def find_result_event(pick, events):
     """Match a pick to a scored event — handles short vs full team names
     (e.g. pick carries "White Sox", event has "Chicago White Sox"). Also
     checks statsapi's short-name field when present.
+
+    Prefers an event whose commence_time is within 36h of the pick's start
+    time — this is the fix for "results posted for games that have not
+    started": without a date filter, a pick for an upcoming game between
+    two teams who just played last week would match the past result.
     """
     home = _norm(pick.get("home_team"))
     away = _norm(pick.get("away_team"))
@@ -573,7 +598,39 @@ def find_result_event(pick, events):
         short = _norm(ev.get(f"{side}_team_short"))
         return [n for n in (full, short) if n]
 
-    # Pass 1: exact or substring match on either direction
+    # Pass 1a: date-aligned exact/substring match (preferred)
+    for ev in events:
+        if not ev.get("completed"):
+            continue
+        if not _event_date_close_to_pick(ev, pick):
+            continue
+        home_cands = _candidate_names(ev, "home")
+        away_cands = _candidate_names(ev, "away")
+        home_hit = any(home == c or home in c or c in home for c in home_cands)
+        away_hit = any(away == c or away in c or c in away for c in away_cands)
+        if home_hit and away_hit:
+            return ev
+
+    # Pass 1b: date-aligned mascot-only match (last-word of each team name)
+    pick_home_last = home.rsplit(" ", 1)[-1] if " " in home else home
+    pick_away_last = away.rsplit(" ", 1)[-1] if " " in away else away
+    for ev in events:
+        if not ev.get("completed"):
+            continue
+        if not _event_date_close_to_pick(ev, pick):
+            continue
+        for ec in _candidate_names(ev, "home"):
+            if pick_home_last in ec:
+                for ec2 in _candidate_names(ev, "away"):
+                    if pick_away_last in ec2:
+                        return ev
+
+    # Pass 2: legacy name-only match. ONLY used for picks without a
+    # start_time (can't do date-aware matching anyway) — picks that DO
+    # have a start_time but didn't find a date-aligned match stay pending
+    # rather than being matched against a different week's same-teams game.
+    if pick.get("start_time"):
+        return None
     for ev in events:
         if not ev.get("completed"):
             continue
@@ -583,11 +640,6 @@ def find_result_event(pick, events):
         away_hit = any(away == c or away in c or c in away for c in away_cands)
         if home_hit and away_hit:
             return ev
-
-    # Pass 2: last-word match (team mascot) — "white sox" ↔ "white sox",
-    # "guardians" ↔ "guardians" even if full names differ
-    pick_home_last = home.rsplit(" ", 1)[-1] if " " in home else home
-    pick_away_last = away.rsplit(" ", 1)[-1] if " " in away else away
     for ev in events:
         if not ev.get("completed"):
             continue
