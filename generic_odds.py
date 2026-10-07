@@ -277,6 +277,49 @@ def parse_pinnacle_games(league_id, ml_outcomes=2, has_halves=False):
 
         games.append(entry)
 
+    # Overlay BTTS prices from Pinnacle "special" matchups (Both Teams To
+    # Score Yes/No). Pinnacle serves these as a separate matchup linked to
+    # the main game via `parent.id` or `parentId`. Defensive: if the special
+    # structure doesn't match assumptions, no BTTS data is attached and the
+    # model-only BTTS pick still shows (just without a price / EV number).
+    games_by_mu = {g["matchup_id"]: g for g in games}
+    for mu in matchups:
+        if mu.get("type") == "matchup":
+            continue
+        special = mu.get("special") or {}
+        desc = (special.get("description") or "").lower() if isinstance(special, dict) else ""
+        category = (special.get("category") or "").lower() if isinstance(special, dict) else ""
+        is_btts = ("both teams to score" in desc) or ("both teams to score" in category) or \
+                  (category == "btts") or (desc == "btts")
+        if not is_btts:
+            continue
+        parent = mu.get("parent") or {}
+        parent_id = parent.get("id") if isinstance(parent, dict) else (mu.get("parentId") or mu.get("parentMatchupId"))
+        if parent_id not in games_by_mu:
+            continue
+        # Parse Yes/No prices from the special's own markets. Participants
+        # usually carry name="Yes" / name="No" or alignment-coded designations.
+        mu_sid = mu.get("id")
+        parts = mu.get("participants") or []
+        yes_pid = next((p.get("id") for p in parts if (p.get("name") or "").strip().lower() == "yes"), None)
+        no_pid  = next((p.get("id") for p in parts if (p.get("name") or "").strip().lower() == "no"), None)
+        yes_am = no_am = None
+        for mk in by_mu.get(mu_sid, []):
+            if mk.get("type") != "moneyline":
+                continue
+            prices = mk.get("prices") or []
+            if yes_pid is not None:
+                yes_am = _price_participant(prices, yes_pid) or yes_am
+            if no_pid is not None:
+                no_am = _price_participant(prices, no_pid)  or no_am
+            # Fallback: designation-based "yes"/"no"
+            if yes_am is None:
+                yes_am = _price_designation(prices, "yes")
+            if no_am is None:
+                no_am = _price_designation(prices, "no")
+        if yes_am is not None or no_am is not None:
+            games_by_mu[parent_id]["btts"] = {"yes_am": yes_am, "no_am": no_am}
+
     games.sort(key=lambda g: g.get("start_time") or "")
     return games
 

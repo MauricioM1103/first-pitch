@@ -1510,6 +1510,7 @@ def _sport_games_for_hub(sport, today_date):
             "total_h1":   g.get("total_h1"),  # NFL/NCAAF/NHL/soccer 1H O/U
             "total_alts": g.get("total_alts") or [],  # Pinnacle alt-total candidates
             "spread_alts": g.get("spread_alts") or [],
+            "btts":       g.get("btts"),       # soccer Yes/No prices
         })
     out.sort(key=lambda x: x["start_time"] or "")
     return out
@@ -2797,7 +2798,8 @@ from picks import _market_category
 
 def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                        ml_outcomes, existing_cats, pin_total_h1=None,
-                       pin_total_alts=None, pin_spread_alts=None):
+                       pin_total_alts=None, pin_spread_alts=None,
+                       pin_btts=None):
     """Produce up to 3 model-opinion picks per game (ML + Spread + Total),
     skipping markets we already have an EV pick for. These are purely
     'which side does our model prefer' — no EV / price filtering, matched
@@ -3123,15 +3125,26 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                             "pick": dc_label, "fair_prob": dc_prob})
 
         # Both Teams To Score — pulled straight from the Dixon-Coles sim's
-        # btts_yes_pct, which it computes from the joint-goal pmf.
+        # btts_yes_pct. When we have Pinnacle BTTS prices (from the special
+        # matchup parse in generic_odds), compute real EV against the book
+        # price. Otherwise the pick ships as model-only with no EV number.
         if "BTTS" not in existing_cats and sim.get("btts_yes_pct") is not None:
             byes = float(sim["btts_yes_pct"]) / 100.0
+            btts_yes_am = (pin_btts or {}).get("yes_am")
+            btts_no_am  = (pin_btts or {}).get("no_am")
             if byes >= 0.5:
-                out.append({"category": "BTTS", "market": "BTTS",
-                            "pick": "BTTS: Yes", "fair_prob": byes})
+                am = btts_yes_am
+                prob = byes
+                label = "BTTS: Yes"
             else:
-                out.append({"category": "BTTS", "market": "BTTS",
-                            "pick": "BTTS: No", "fair_prob": 1 - byes})
+                am = btts_no_am
+                prob = 1 - byes
+                label = "BTTS: No"
+            dec = mlb_odds.american_to_decimal(am) if am is not None else None
+            ev_pct = (prob * dec - 1.0) * 100.0 if (dec and dec > 1.0) else None
+            out.append({"category": "BTTS", "market": "BTTS",
+                        "pick": label, "fair_prob": prob,
+                        "american": am, "ev_pct": ev_pct})
 
         # Win to Nil — favored side wins AND keeps a clean sheet. Derived
         # from the Dixon-Coles joint pmf (no extra sim needed). Books
@@ -3338,6 +3351,7 @@ def _build_board_rows(date_str, today_date, sport_filter):
                 "_total_h1":   g.get("total_h1"),
                 "_total_alts": g.get("total_alts") or [],
                 "_spread_alts": g.get("spread_alts") or [],
+                "_btts":       g.get("btts"),
                 "picks":       [],
                 "score_home":  None,
                 "score_away":  None,
@@ -3379,7 +3393,7 @@ def _build_board_rows(date_str, today_date, sport_filter):
                 "home":        p.get("home_team", ""),
                 "start_time":  p.get("start_time"),
                 "_ml": None, "_spread": None, "_total": None, "_total_h1": None,
-                "_total_alts": [], "_spread_alts": [],
+                "_total_alts": [], "_spread_alts": [], "_btts": None,
                 "picks": [], "score_home": None, "score_away": None,
             }
             rows_by_key[key] = row
@@ -3437,6 +3451,7 @@ def _build_board_rows(date_str, today_date, sport_filter):
             pin_total_h1=row.get("_total_h1"),
             pin_total_alts=row.get("_total_alts") or [],
             pin_spread_alts=row.get("_spread_alts") or [],
+            pin_btts=row.get("_btts"),
         )
         existing_labels = {(_market_category(p.get("market")),
                             (p.get("pick") or "").strip().lower())
