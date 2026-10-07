@@ -2997,7 +2997,10 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     return max(0.02, min(0.98, main_over + shift))
                 return None
 
-            emitted = 0
+            # Collect every valid alt in the actionable band, then keep only
+            # the TOP 2 by confidence. Caps clutter + always surfaces the
+            # strongest two picks (not whichever two we evaluated first).
+            candidates = []
             for step in steps:
                 for alt_raw in (main_line - step, main_line + step):
                     if alt_raw <= 0:
@@ -3008,21 +3011,20 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     p_over = _p_total_over(alt)
                     if p_over is None:
                         continue
-                    # Prefer the side with the biggest cushion over 55%
                     for direction, prob in (("Over", p_over), ("Under", 1 - p_over)):
                         if not (0.55 <= prob <= 0.72):
                             continue
-                        out.append({
-                            "category": "Total",   # dedup key — allows alt alongside main
-                            "market":   "Alt Total",
-                            "pick":     f"{direction} {alt:g} (ALT · from main O/U {main_line:g})",
-                            "fair_prob": prob,
-                            "source":   "alt",
-                        })
-                        emitted += 1
-                        break  # only one side per alt line
-                if emitted >= 3:   # cap alt totals per game to avoid clutter
-                    break
+                        candidates.append((prob, direction, alt))
+                        break   # one side per alt
+            candidates.sort(key=lambda c: -c[0])    # highest confidence first
+            for prob, direction, alt in candidates[:2]:
+                out.append({
+                    "category": "Total",
+                    "market":   "Alt Total",
+                    "pick":     f"{direction} {alt:g} (ALT · from main O/U {main_line:g})",
+                    "fair_prob": prob,
+                    "source":   "alt",
+                })
 
     # ---- Soccer-only extras: Double Chance (ML No) + Both Teams To Score ----
     is_soccer = sport_slug in ("epl", "laliga", "ligamx", "ucl", "europa", "international")
