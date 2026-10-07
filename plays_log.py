@@ -956,13 +956,33 @@ def grade_all(limit_dates=90):
 # Record aggregation
 # ---------------------------------------------------------------------------
 
+def _conf_tier_for(pk):
+    """Mirror of mlb_ui._conf_tier — reproduced here to avoid an import cycle."""
+    prob = pk.get("consensus_prob") or pk.get("fair_prob")
+    if prob is None:
+        return 1
+    try:
+        p = float(prob)
+    except (TypeError, ValueError):
+        return 1
+    if p >= 0.68: return 5
+    if p >= 0.62: return 4
+    if p >= 0.57: return 3
+    if p >= 0.52: return 2
+    return 1
+
+
 def record_in_window(graded_by_date, days_back, strong_only=False, today=None,
-                     source=None):
-    """Aggregate W/L/P/pending + units + ROI for picks that match `source`.
-    source=None → all picks (back-compat).
-    source="ev"    → only EV-verified consensus picks.
-    source="model" → only model-only picks that scored 4/5 or 5/5.
-    source="book_dk" → only picks imported from the user's DK history."""
+                     source=None, conf_tier=None, plus_ev_only=False):
+    """Aggregate W/L/P/pending + units + ROI for picks that match the filters.
+      source="ev"       → only EV-verified consensus picks.
+      source="model"    → only model-only picks that scored 4/5 or 5/5.
+      source="book_dk"  → only picks imported from the user's DK history.
+      conf_tier=5       → only picks whose consensus_prob maps to the 5/5 tier
+                          (prob >= 68%). Any int 1-5 works.
+      plus_ev_only=True → only picks with ev_pct > 0 (any positive edge,
+                          not just the +2% threshold used for EV tagging).
+    """
     today = today or date.today()
     cutoff = today - timedelta(days=days_back - 1)
     w = l = p = pending = 0
@@ -983,6 +1003,12 @@ def record_in_window(graded_by_date, days_back, strong_only=False, today=None,
             if source is not None:
                 pk_source = pk.get("source") or ("model" if pk.get("model_only") else "ev")
                 if pk_source != source:
+                    continue
+            if conf_tier is not None and _conf_tier_for(pk) != conf_tier:
+                continue
+            if plus_ev_only:
+                ev = pk.get("ev_pct")
+                if ev is None or ev <= 0:
                     continue
             r = pk.get("result")
             if r == "W":
@@ -1030,10 +1056,13 @@ def record_in_window(graded_by_date, days_back, strong_only=False, today=None,
 def summary(graded_by_date, today=None):
     """Return dict of 7D / 30D / 90D records sliced by subset:
       all_*     → every settled pick (back-compat)
-      strong_*  → the ★ strong EV picks
+      strong_*  → the ★ strong EV picks (consensus ≥ 60% AND EV ≥ +4%)
       ev_*      → only consensus/EV-verified picks (source == "ev")
-      model_*   → only 4/5-5/5 model-only picks (source == "model")
-      dk_*      → only user's imported DraftKings bets (source == "book_dk")
+      model_*   → only model-only picks that scored 4/5 or 5/5
+      conf5_*   → only 5/5 confidence picks (consensus ≥ 68%), any source
+      conf4_*   → only 4/5 confidence picks (62% ≤ consensus < 68%)
+      plusev_*  → any pick with ev_pct > 0 (positive EV, not just +2%)
+      dk_*      → only picks imported from the user's DraftKings history
     """
     out = {}
     for label, days in (("7d", 7), ("30d", 30), ("90d", 90)):
@@ -1041,6 +1070,9 @@ def summary(graded_by_date, today=None):
         out[f"strong_{label}"] = record_in_window(graded_by_date, days, True,  today)
         out[f"ev_{label}"]     = record_in_window(graded_by_date, days, False, today, source="ev")
         out[f"model_{label}"]  = record_in_window(graded_by_date, days, False, today, source="model")
+        out[f"conf5_{label}"]  = record_in_window(graded_by_date, days, False, today, conf_tier=5)
+        out[f"conf4_{label}"]  = record_in_window(graded_by_date, days, False, today, conf_tier=4)
+        out[f"plusev_{label}"] = record_in_window(graded_by_date, days, False, today, plus_ev_only=True)
         out[f"dk_{label}"]     = record_in_window(graded_by_date, days, False, today, source="book_dk")
     return out
 

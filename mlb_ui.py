@@ -2544,9 +2544,6 @@ PICKS_TEMPLATE = r"""<!doctype html>
                     {% if p.kelly_pct and p.kelly_pct > 0 %}<span><span class="label">Stake (1/4 K)</span><b>{{ '%.1f'|format(p.kelly_pct) }}%</b></span>{% endif %}
                   </div>
                   <div class="pick-bulletin">{{ p.bulletin }}</div>
-                  {% if p.polymarket_signal %}
-                    <div class="poly-signal poly-{{ p.polymarket_signal.tone }}">{{ p.polymarket_signal.label }}</div>
-                  {% endif %}
                   <button class="btn-ai" onclick="analyzePick('{{ p.id }}', this)">Expand with AI</button>
                   <span class="model-src">{{ p.model_source }}</span>
                   <div class="ai-analysis" id="ai-{{ p.id }}"></div>
@@ -9077,16 +9074,67 @@ main.logged-page { max-width: 1040px; }
   </section>
 
   <section class="records-section">
-    <h2>Model Picks Record <span style="color:var(--muted);font-size:13px">4/5 &amp; 5/5 confidence</span></h2>
+    <h2>5/5 Confidence Picks <span style="color:var(--good);font-size:13px">consensus &ge; 68%</span></h2>
     <div class="sub">
-      Every ML / spread / total pick that scored a 4/5 or 5/5 confidence badge
-      on the board, graded at the Pinnacle price we captured when the pick posted.
-      This includes model-only picks that didn't clear the EV filter — so you can
-      see whether high-conviction model opinions alone beat the market without the
-      EV guardrail.
+      The highest conviction tier. ML / spread / total picks the model gave at
+      least 68% consensus probability. Graded at the price captured when the
+      pick posted. Any source (EV-verified, model-only, or alt).
     </div>
     <div class="records-grid">
-      {% for key, label in [('model_7d','Last 7 days'),('model_30d','Last 30 days'),('model_90d','Last 90 days')] %}
+      {% for key, label in [('conf5_7d','Last 7 days'),('conf5_30d','Last 30 days'),('conf5_90d','Last 90 days')] %}
+      {% set r = summary[key] %}
+      <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
+        <div class="lbl">{{ label }}</div>
+        {% if r.settled %}
+        <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
+        <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
+        {% else %}
+        <div class="wl" style="color:var(--muted)">&mdash;</div>
+        <span class="units" style="color:var(--muted)">&mdash;</span>
+        {% endif %}
+        <div class="meta">{{ r.settled }} settled{% if r.pending %} &middot; {{ r.pending }} pending{% endif %}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="records-section">
+    <h2>4/5 Confidence Picks <span style="color:var(--muted);font-size:13px">consensus 62&ndash;68%</span></h2>
+    <div class="sub">
+      Second-highest conviction tier. The gap between 4/5 and 5/5 ROI is the
+      cleanest read on whether the model's absolute probability bucketing is
+      calibrated — if 5/5 crushes 4/5, the model is honestly identifying its
+      best plays. If they're similar, the tier split isn't informative.
+    </div>
+    <div class="records-grid">
+      {% for key, label in [('conf4_7d','Last 7 days'),('conf4_30d','Last 30 days'),('conf4_90d','Last 90 days')] %}
+      {% set r = summary[key] %}
+      <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
+        <div class="lbl">{{ label }}</div>
+        {% if r.settled %}
+        <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
+        <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
+        {% else %}
+        <div class="wl" style="color:var(--muted)">&mdash;</div>
+        <span class="units" style="color:var(--muted)">&mdash;</span>
+        {% endif %}
+        <div class="meta">{{ r.settled }} settled{% if r.pending %} &middot; {{ r.pending }} pending{% endif %}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="records-section">
+    <h2>Positive-EV Picks <span style="color:var(--accent);font-size:13px">any ev_pct &gt; 0</span></h2>
+    <div class="sub">
+      Any pick where the model's consensus probability × the posted price
+      exceeded 1.0 — i.e. positive expected value, no matter the confidence
+      tier. Looser than the EV-tagged picks (which require +2% EV); captures
+      every small edge the model flagged. Over a large sample this is the
+      "did we actually find +EV at the book?" record.
+    </div>
+    <div class="records-grid">
+      {% for key, label in [('plusev_7d','Last 7 days'),('plusev_30d','Last 30 days'),('plusev_90d','Last 90 days')] %}
       {% set r = summary[key] %}
       <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
         <div class="lbl">{{ label }}</div>
@@ -9166,59 +9214,6 @@ main.logged-page { max-width: 1040px; }
         <div class="meta">{{ r.clv_n }} CLV samples</div>
       </div>
       {% endfor %}
-    </div>
-  </section>
-  {% endif %}
-
-  {% if poly_summary and poly_summary.total_trades %}
-  <section class="records-section">
-    <h2>Polymarket History
-      <span style="color:var(--muted);font-size:14px">
-        {{ poly_summary.total_trades }} trades &middot;
-        {{ poly_summary.wins }}-{{ poly_summary.losses }}
-        ({{ '%.1f' % poly_summary.win_pct }}% hit) &middot;
-        <span class="{{ 'good' if poly_summary.pnl > 0 else ('bad' if poly_summary.pnl < 0 else '') }}">${{ '%+.2f' % poly_summary.pnl }}</span>
-      </span>
-    </h2>
-    <div class="sub">
-      Your settled Polymarket trades, bucketed by sport + market + side.
-      Daily picks that match a strong winning bucket get a green "Pattern
-      match" badge; picks matching a chronically losing bucket get a red
-      warning. Signals need ≥ 3 settled trades in the bucket to fire.
-    </div>
-    <div class="breakdown-grid">
-      <div class="breakdown-col">
-        <h3>Winning patterns</h3>
-        <table class="brk-table">
-          <thead><tr><th>Pattern</th><th>Record</th><th>Win %</th><th>PnL</th></tr></thead>
-          <tbody>
-          {% for r in poly_summary.top_winning %}
-            <tr>
-              <td class="brk-key">{{ r.key }}</td>
-              <td>{{ r.wins }}-{{ r.losses }}</td>
-              <td class="{{ 'good' if r.win_pct >= 55 else '' }}">{{ '%.0f' % r.win_pct }}%</td>
-              <td class="good">+${{ '%.2f' % r.pnl }}</td>
-            </tr>
-          {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      <div class="breakdown-col">
-        <h3>Losing patterns</h3>
-        <table class="brk-table">
-          <thead><tr><th>Pattern</th><th>Record</th><th>Win %</th><th>PnL</th></tr></thead>
-          <tbody>
-          {% for r in poly_summary.top_losing %}
-            <tr>
-              <td class="brk-key">{{ r.key }}</td>
-              <td>{{ r.wins }}-{{ r.losses }}</td>
-              <td class="{{ 'bad' if r.win_pct < 35 else '' }}">{{ '%.0f' % r.win_pct }}%</td>
-              <td class="bad">${{ '%.2f' % r.pnl }}</td>
-            </tr>
-          {% endfor %}
-          </tbody>
-        </table>
-      </div>
     </div>
   </section>
   {% endif %}
@@ -9687,11 +9682,10 @@ def logged_plays():
         odds_usage = generic_odds.odds_api_usage_summary()
     except Exception:
         odds_usage = None
-    try:
-        import polymarket_history
-        poly_summary = polymarket_history.summary()
-    except Exception:
-        poly_summary = None
+    # Polymarket history was removed from /logged — kept the import path
+    # intact in case anything else still consumes it, but no longer passed
+    # to the template.
+    poly_summary = None
     # Trigger the daily analysis in a background thread (fire-and-forget) so
     # /logged never blocks on it. We still read the LATEST available analysis
     # synchronously — on first-ever visit this is None and the UI shows the
