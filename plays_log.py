@@ -27,6 +27,7 @@ import log_persist
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 REMOTE_LOGS_PATH = log_persist.DEFAULT_LOGS_PATH
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
+ESPN_SCOREBOARD_BASE = "https://site.api.espn.com/apis/site/v2/sports"
 
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
@@ -282,6 +283,107 @@ def _fetch_json(url, timeout=15):
 # Last error per sport key so grader_status can surface it on /logged.
 # Kept in-process; resets on worker restart (same lifetime as _RESULTS_CACHE).
 _RESULTS_LAST_ERROR = {}
+_ESPN_CACHE = {}
+_ESPN_TTL_S = 10 * 60   # scores refresh every 10 min — ESPN doesn't rate-limit at this rate
+
+
+def _parse_espn_events(data):
+    """Convert an ESPN scoreboard JSON payload into the event dict shape
+    the rest of the grader (find_result_event / _extract_scores / grade_pick)
+    already understands. Picks up period/half scores too so NFL 1H Total,
+    NHL P1 Total, F5 ML/Total etc. have the raw data they need."""
+    events_out = []
+    for ev in (data or {}).get("events", []):
+        comps = ev.get("competitions") or []
+        if not comps:
+            continue
+        comp = comps[0]
+        status = (comp.get("status") or {}).get("type") or {}
+        completed = bool(status.get("completed")) or (status.get("state") == "post")
+        home = next((c for c in comp.get("competitors", []) if c.get("homeAway") == "home"), None)
+        away = next((c for c in comp.get("competitors", []) if c.get("homeAway") == "away"), None)
+        if not home or not away:
+            continue
+        home_team = (home.get("team") or {}).get("displayName") or ""
+        away_team = (away.get("team") or {}).get("displayName") or ""
+        home_short = (home.get("team") or {}).get("shortDisplayName") or (home.get("team") or {}).get("name") or ""
+        away_short = (away.get("team") or {}).get("shortDisplayName") or (away.get("team") or {}).get("name") or ""
+        home_score = home.get("score")
+        away_score = away.get("score")
+        # Period-level scores (quarters / periods / innings) for finer grading.
+        # ESPN exposes them as a list under competitor.linescores, one entry
+        # per period in order. We align them into num/home/away triples so
+        # grade_pick's F5/NRFI/1H helpers can consume them like statsapi.
+        home_ls = home.get("linescores") or []
+        away_ls = away.get("linescores") or []
+        innings = []
+        for i, pair in enumerate(zip(home_ls, away_ls), start=1):
+            h_ls, a_ls = pair
+            try:
+                innings.append({
+                    "num":  i,
+                    "home": int(float(h_ls.get("value"))) if h_ls.get("value") is not None else None,
+                    "away": int(float(a_ls.get("value"))) if a_ls.get("value") is not None else None,
+                })
+            except (TypeError, ValueError):
+                continue
+        events_out.append({
+            "id":                str(ev.get("id") or ""),
+            "home_team":         home_team,
+            "away_team":         away_team,
+            "home_team_short":   home_short,
+            "away_team_short":   away_short,
+            "completed":         completed,
+            "scores": [
+                {"name": home_team, "score": str(home_score) if home_score is not None else "0"},
+                {"name": away_team, "score": str(away_score) if away_score is not None else "0"},
+            ],
+            "innings":           innings,
+            "commence_time":     comp.get("date"),
+        })
+    return events_out
+
+
+def fetch_scores_espn(paths, days_back=3):
+    """Fetch final scores from ESPN's public scoreboard JSON. `paths` is a
+    sport-path string ("football/nfl") or a list of them (for aggregated
+    sports like international soccer).
+
+    No API key, no rate-limit meter, no monthly cap. Caches in-process for
+    10 min. Walks the last `days_back` calendar days (ESPN's default
+    scoreboard returns today only, so we hit `?dates=YYYYMMDD` per day).
+    """
+    if not paths:
+        return []
+    if isinstance(paths, str):
+        paths = [paths]
+    cache_key = ("espn", tuple(paths), days_back)
+    now = time.time()
+    hit = _ESPN_CACHE.get(cache_key)
+    if hit:
+        events, saved_at = hit
+        ttl = _ESPN_TTL_S if events else 60
+        if now - saved_at < ttl:
+            return events
+    all_events = []
+    seen_ids = set()
+    cutoff_dates = [(date.today() - timedelta(days=d)).strftime("%Y%m%d")
+                    for d in range(days_back + 1)]
+    for path in paths:
+        for d in cutoff_dates:
+            url = f"{ESPN_SCOREBOARD_BASE}/{path}/scoreboard?dates={d}"
+            try:
+                data = _fetch_json(url)
+            except Exception as e:
+                _RESULTS_LAST_ERROR[path] = f"{type(e).__name__}: {e}"
+                continue
+            for ev in _parse_espn_events(data):
+                if ev["id"] and ev["id"] not in seen_ids:
+                    seen_ids.add(ev["id"])
+                    all_events.append(ev)
+            _RESULTS_LAST_ERROR.pop(path, None)
+    _ESPN_CACHE[cache_key] = (all_events, now)
+    return all_events
 
 
 def fetch_scores(sport_key, days_from=3):
@@ -409,25 +511,41 @@ def grader_status():
     for sp in _sports.SPORTS:
         slug = sp["slug"]
         key = sp.get("odds_api_key")
+        espn = sp.get("espn_scoreboard")
         n_events = 0
-        source = "odds_api" if key else "none"
+        source = "none"
+        last_err = None
         if slug == "mlb":
             try:
                 today_str = date.today().isoformat()
                 n_events = len(fetch_scores_mlb(today_str))
                 source = "statsapi"
-            except Exception:
-                n_events = 0
-        elif key:
+            except Exception as e:
+                last_err = f"{type(e).__name__}: {e}"
+        if espn:
             try:
-                n_events = len(fetch_scores(key))
-            except Exception:
-                n_events = 0
+                espn_events = len(fetch_scores_espn(espn))
+                n_events = max(n_events, espn_events)
+                if source == "none":
+                    source = "espn"
+                else:
+                    source = f"{source}+espn"
+                # Surface any per-path ESPN error
+                paths = espn if isinstance(espn, list) else [espn]
+                for p in paths:
+                    if p in _RESULTS_LAST_ERROR:
+                        last_err = _RESULTS_LAST_ERROR[p]
+                        break
+            except Exception as e:
+                last_err = last_err or f"{type(e).__name__}: {e}"
+        if n_events == 0 and key and not last_err:
+            last_err = _RESULTS_LAST_ERROR.get(key)
         out["per_sport"][slug] = {
             "source":     source,
             "events":     n_events,
             "api_key":    key or "(none)",
-            "last_error": _RESULTS_LAST_ERROR.get(key) if key else None,
+            "espn_path":  espn or "(none)",
+            "last_error": last_err,
         }
     return out
 
@@ -736,18 +854,27 @@ def grade_date(date_str, sport_key_by_slug, force=False):
     if not raw:
         return existing
 
-    # Only call sports that this date actually has picks in
+    # Only call sports that this date actually has picks in. ESPN is now
+    # the primary scores source (free, unlimited, period-level data for
+    # every sport); Odds API only runs when ESPN returns nothing AND an
+    # Odds API key is configured. MLB keeps statsapi as its first source
+    # because statsapi has richer inning data than ESPN does for baseball.
+    import sports as _sports
+    sport_entry_by_slug = {s["slug"]: s for s in _sports.SPORTS}
     need_sports = {p["sport_slug"] for p in raw["picks"]}
     events_by_sport = {}
     for slug in need_sports:
-        key = sport_key_by_slug.get(slug)
-        events = fetch_scores(key) if key else []
-        # MLB fallback: statsapi.mlb.com works without any API key, so even
-        # if ODDS_API_KEY isn't configured on this host, MLB picks still
-        # grade. Merge both sources — MLB first (richer team-name coverage).
+        events = []
+        sp = sport_entry_by_slug.get(slug) or {}
         if slug == "mlb":
-            mlb_events = fetch_scores_mlb(date_str)
-            events = mlb_events + events
+            events.extend(fetch_scores_mlb(date_str))
+        espn_path = sp.get("espn_scoreboard")
+        if espn_path:
+            events.extend(fetch_scores_espn(espn_path))
+        if not events:
+            key = sport_key_by_slug.get(slug)
+            if key:
+                events = fetch_scores(key)
         events_by_sport[slug] = events
 
     graded_picks = []
