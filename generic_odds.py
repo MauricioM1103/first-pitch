@@ -104,11 +104,20 @@ def _max_limit(limits):
 
 
 def devig_three_way(p_h, p_d, p_a):
-    """Multiplicative devig for 3-way (soccer home/draw/away) implied probs."""
+    """Multiplicative devig for 3-way (soccer home/draw/away) implied probs.
+
+    Same bad-data guard as devig_two_sided — a mirrored or stale Pinnacle
+    quote outside [1.00, 1.20] total vig returns None rather than feeding
+    a nonsense devig into every downstream EV calc.
+    """
     if None in (p_h, p_d, p_a):
         return None, None, None
     total = p_h + p_d + p_a
     if total <= 0:
+        return None, None, None
+    if total < 1.00 or total > 1.25:
+        return None, None, None
+    if abs(p_h - p_a) < 1e-9 and abs(p_h - p_d) < 1e-9:
         return None, None, None
     return p_h / total, p_d / total, p_a / total
 
