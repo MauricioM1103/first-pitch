@@ -2797,7 +2797,7 @@ from picks import _market_category
 
 def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                        ml_outcomes, existing_cats, pin_total_h1=None,
-                       pin_total_alts=None):
+                       pin_total_alts=None, pin_spread_alts=None):
     """Produce up to 3 model-opinion picks per game (ML + Spread + Total),
     skipping markets we already have an EV pick for. These are purely
     'which side does our model prefer' — no EV / price filtering, matched
@@ -2910,6 +2910,62 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 lbl, prob, am = picks_pair[1]
                 out.append({"category": "Spread", "market": "Spread",
                             "pick": lbl, "fair_prob": prob, "american": am})
+
+    # ---- Alternate Spread lines (every sport, Pinnacle-priced) ----
+    # Same shape as Alt Total: iterate Pinnacle's spread_alts candidate list
+    # (now exposed by generic_odds), compute P(side covers at alt line) from
+    # the sim's actual margin distribution, price EV against the real
+    # Pinnacle alt price. Only emit alts with +1% EV in the 55-72% band.
+    # Requires a cached sim with numeric margins — Pinnacle devig can't
+    # tell us how probability shifts across lines in a useful way.
+    if "ALT-Spread" not in existing_cats and pin_spread \
+       and pin_spread.get("line_home") is not None and pin_spread_alts:
+        try:
+            main_line_h = float(pin_spread["line_home"])
+        except (TypeError, ValueError):
+            main_line_h = None
+        margins_arr = (sim or {}).get("margins") or []
+        numeric_margins = [float(m) for m in margins_arr
+                           if isinstance(m, (int, float))] \
+            if isinstance(margins_arr, list) else []
+        if main_line_h is not None and numeric_margins:
+            n = len(numeric_margins)
+            candidates = []
+            for cand in pin_spread_alts:
+                try:
+                    alt_h = float(cand.get("line_home"))
+                except (TypeError, ValueError):
+                    continue
+                if abs(alt_h - main_line_h) < 0.01:
+                    continue
+                home_cover = sum(1 for m in numeric_margins if m > -alt_h) / n
+                for side, prob, am, team, sign in (
+                    ("home", home_cover,     cand.get("home_am"), home, alt_h),
+                    ("away", 1 - home_cover, cand.get("away_am"), away, -alt_h),
+                ):
+                    if am is None or not (0.55 <= prob <= 0.72):
+                        continue
+                    dec = mlb_odds.american_to_decimal(am)
+                    if not dec or dec <= 1.0:
+                        continue
+                    ev_pct = (prob * dec - 1.0) * 100.0
+                    if ev_pct < 1.0:
+                        continue
+                    label = (f"{team} {sign:+g} (ALT · from main "
+                             f"{home} {main_line_h:+g})")
+                    candidates.append((ev_pct, prob, label, am, dec))
+            candidates.sort(key=lambda c: -c[0])
+            for ev_pct, prob, label, am, dec in candidates[:2]:
+                out.append({
+                    "category":  "Spread",
+                    "market":    "Alt Spread",
+                    "pick":      label,
+                    "fair_prob": prob,
+                    "source":    "alt",
+                    "american":  am,
+                    "decimal":   dec,
+                    "ev_pct":    ev_pct,
+                })
 
     # ---- Total (snapped to half-point to match Polymarket / DK / FD) ----
     if "Total" not in existing_cats and pin_total and pin_total.get("line") is not None:
@@ -3372,6 +3428,7 @@ def _build_board_rows(date_str, today_date, sport_filter):
             row["ml_outcomes"], existing_cats,
             pin_total_h1=row.get("_total_h1"),
             pin_total_alts=row.get("_total_alts") or [],
+            pin_spread_alts=row.get("_spread_alts") or [],
         )
         existing_labels = {(_market_category(p.get("market")),
                             (p.get("pick") or "").strip().lower())
