@@ -9000,6 +9000,16 @@ main.logged-page { max-width: 1040px; }
       <code>ODDS_API_KEY</code> is not set, so NFL / NCAAF / NHL / soccer / UFC picks will stay pending
       until the key is added on Render.
     {% endif %}
+    {% if grader_status.per_sport %}
+      <div style="margin-top:6px;font-size:11px;color:var(--muted);display:flex;flex-wrap:wrap;gap:10px">
+      {% for slug, info in grader_status.per_sport.items() %}
+        <span title="{{ info.source }}; api key: {{ info.api_key }}">
+          <strong style="color:{% if info.events %}var(--good){% else %}var(--muted-2){% endif %}">{{ slug }}</strong>
+          <span style="font-variant-numeric:tabular-nums">{{ info.events }} ev</span>
+        </span>
+      {% endfor %}
+      </div>
+    {% endif %}
   </div>
 
   {% if odds_usage and odds_usage.key_set %}

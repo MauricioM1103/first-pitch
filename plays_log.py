@@ -380,11 +380,42 @@ def fetch_scores_mlb(date_str):
 
 
 def grader_status():
-    """Diagnostic for /logged: which graders are available right now?"""
-    return {
+    """Diagnostic for /logged: which graders are available right now AND how
+    many events each one is currently returning. Previously only reported
+    whether the ODDS_API_KEY env var was set — which hid the common failure
+    mode where the key is set but the API returns empty for a given sport
+    (match not in the fetched league, API coverage gap, rate-limited, etc)."""
+    import sports as _sports
+    out = {
         "odds_api_enabled": bool(os.environ.get("ODDS_API_KEY")),
-        "mlb_statsapi":     True,  # always available, no key needed
+        "mlb_statsapi":     True,
+        "per_sport":        {},
     }
+    # Count events currently cached per sport key (reflects last fetch).
+    # Also show mlb statsapi event count for today.
+    for sp in _sports.SPORTS:
+        slug = sp["slug"]
+        key = sp.get("odds_api_key")
+        n_events = 0
+        source = "odds_api" if key else "none"
+        if slug == "mlb":
+            try:
+                today_str = date.today().isoformat()
+                n_events = len(fetch_scores_mlb(today_str))
+                source = "statsapi"
+            except Exception:
+                n_events = 0
+        elif key:
+            try:
+                n_events = len(fetch_scores(key))
+            except Exception:
+                n_events = 0
+        out["per_sport"][slug] = {
+            "source":     source,
+            "events":     n_events,
+            "api_key":    key or "(none)",
+        }
+    return out
 
 
 # ---------------------------------------------------------------------------
