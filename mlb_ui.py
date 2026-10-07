@@ -2496,7 +2496,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
                   {% if p.source == 'alt' or p.alt_line_flag %}
                     <span class="src-tag alt" title="Alt-line candidate — priced off Pinnacle's own alt-total candidate when available, else fair prob only; verify at DK/FD.">ALT{% if p.ev_pct is not none and p.ev_pct > 0.5 %} +{{ '%.0f'|format(p.ev_pct) }}%{% endif %}</span>
                   {% elif p.model_only %}
-                    <span class="src-tag model" title="Model-only pick — our simulator's preferred side, no price filter applied">MODEL</span>
+                    <span class="src-tag model" title="Model-only pick — our simulator's preferred side; EV computed against Pinnacle when a book price is attached">MODEL{% if p.ev_pct is not none and p.ev_pct > 0.5 %} +{{ '%.0f'|format(p.ev_pct) }}%{% endif %}</span>
                   {% else %}
                     <span class="src-tag ev" title="EV-verified: cleared the +2% expected-value bar after model + Pinnacle devig consensus">EV{% if p.ev_pct and p.ev_pct > 0 %} +{{ '%.0f'|format(p.ev_pct) }}%{% endif %}</span>
                   {% endif %}
@@ -3217,8 +3217,12 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 label = f"1H Under {line_h1:g}"
                 prob  = p_under
                 am    = pin_total_h1.get("under_am")
+            # EV against Pinnacle's own 1H price: prob × decimal − 1
+            dec = mlb_odds.american_to_decimal(am) if am is not None else None
+            ev_pct = (prob * dec - 1.0) * 100.0 if (dec and dec > 1.0) else None
             out.append({"category": "1H-Total", "market": "1H Total",
-                        "pick": label, "fair_prob": prob, "american": am})
+                        "pick": label, "fair_prob": prob, "american": am,
+                        "ev_pct": ev_pct})
 
     # ---- NHL Period 1 Total — Poisson on scaled-down full-game λ ----
     # NHL P1 scoring averages ~30% of full-game (goalies are fresh, teams
@@ -3249,8 +3253,12 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 label = f"P1 Under {line_p1:g}"
                 prob = 1.0 - p_over
                 am = pin_total_h1.get("under_am")
+            # EV against Pinnacle's P1 price
+            dec = mlb_odds.american_to_decimal(am) if am is not None else None
+            ev_pct = (prob * dec - 1.0) * 100.0 if (dec and dec > 1.0) else None
             out.append({"category": "1H-Total", "market": "1H Total",
-                        "pick": label, "fair_prob": prob, "american": am})
+                        "pick": label, "fair_prob": prob, "american": am,
+                        "ev_pct": ev_pct})
 
     # ---- NHL Team Total (model-only, Poisson from the sim's λ) ----
     if sport_slug == "nhl" and sim and "TT" not in existing_cats:
