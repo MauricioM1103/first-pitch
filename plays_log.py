@@ -279,6 +279,11 @@ def _fetch_json(url, timeout=15):
         return json.load(r)
 
 
+# Last error per sport key so grader_status can surface it on /logged.
+# Kept in-process; resets on worker restart (same lifetime as _RESULTS_CACHE).
+_RESULTS_LAST_ERROR = {}
+
+
 def fetch_scores(sport_key, days_from=3):
     """Pull final scores from The Odds API. Returns list of event dicts.
     Returns [] when ODDS_API_KEY isn't set — the grader then uses sport-
@@ -286,26 +291,34 @@ def fetch_scores(sport_key, days_from=3):
 
     Empty responses cache for only 2 minutes (vs 30 min for non-empty) so
     a transient API hiccup during the first grader pass doesn't lock us
-    out of grading for half an hour. Non-empty caches stay at the full TTL
-    to avoid pointless API burn once we have the scores we need.
+    out of grading for half an hour. Also records the last HTTP error per
+    sport so /logged can show WHY a sport is sitting at zero events.
     """
     if not sport_key:
         return []
     key = os.environ.get("ODDS_API_KEY")
     if not key:
+        _RESULTS_LAST_ERROR[sport_key] = "ODDS_API_KEY not set"
         return []
     now = time.time()
     hit = _RESULTS_CACHE.get(sport_key)
     if hit:
         events, saved_at = hit
-        ttl = _RESULTS_TTL_S if events else 120   # 2 min for empty
+        ttl = _RESULTS_TTL_S if events else 120
         if now - saved_at < ttl:
             return events
     params = urlencode({"apiKey": key, "daysFrom": days_from})
     url = f"{ODDS_API_BASE}/sports/{sport_key}/scores/?{params}"
     try:
         events = _fetch_json(url) or []
-    except (URLError, ValueError, TimeoutError, ConnectionError, OSError):
+        _RESULTS_LAST_ERROR.pop(sport_key, None)
+    except URLError as e:
+        reason = getattr(e, "reason", str(e))
+        code = getattr(e, "code", None)
+        _RESULTS_LAST_ERROR[sport_key] = f"HTTP {code}: {reason}" if code else str(reason)
+        events = []
+    except (ValueError, TimeoutError, ConnectionError, OSError) as e:
+        _RESULTS_LAST_ERROR[sport_key] = f"{type(e).__name__}: {e}"
         events = []
     _RESULTS_CACHE[sport_key] = (events, now)
     return events
@@ -414,6 +427,7 @@ def grader_status():
             "source":     source,
             "events":     n_events,
             "api_key":    key or "(none)",
+            "last_error": _RESULTS_LAST_ERROR.get(key) if key else None,
         }
     return out
 

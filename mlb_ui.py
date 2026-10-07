@@ -9001,14 +9001,25 @@ main.logged-page { max-width: 1040px; }
       until the key is added on Render.
     {% endif %}
     {% if grader_status.per_sport %}
-      <div style="margin-top:6px;font-size:11px;color:var(--muted);display:flex;flex-wrap:wrap;gap:10px">
+      <div style="margin-top:6px;font-size:11px;color:var(--muted);display:flex;flex-wrap:wrap;gap:10px;align-items:center">
       {% for slug, info in grader_status.per_sport.items() %}
-        <span title="{{ info.source }}; api key: {{ info.api_key }}">
-          <strong style="color:{% if info.events %}var(--good){% else %}var(--muted-2){% endif %}">{{ slug }}</strong>
+        <span title="{{ info.source }}; api key: {{ info.api_key }}{% if info.last_error %} — last error: {{ info.last_error }}{% endif %}">
+          <strong style="color:{% if info.events %}var(--good){% elif info.last_error %}#ef4444{% else %}var(--muted-2){% endif %}">{{ slug }}</strong>
           <span style="font-variant-numeric:tabular-nums">{{ info.events }} ev</span>
         </span>
       {% endfor %}
+      <a href="/logged/regrade" style="margin-left:auto;color:var(--accent);text-decoration:underline;font-size:11px">force re-grade all &rarr;</a>
       </div>
+      {# Explicit error list so API failures are impossible to miss #}
+      {% set err_sports = grader_status.per_sport.items() | selectattr('1.last_error') | list %}
+      {% if err_sports %}
+        <div style="margin-top:6px;font-size:11px;color:#ef4444;line-height:1.5">
+          <strong>Score-feed errors:</strong>
+          {% for slug, info in err_sports %}
+            <div><code>{{ slug }}</code>: {{ info.last_error }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
     {% endif %}
   </div>
 
@@ -9624,6 +9635,26 @@ def _normalize_date(raw):
         except ValueError:
             continue
     raise ValueError(f"unparseable date: {raw!r}")
+
+
+@app.route("/logged/regrade")
+def logged_regrade():
+    """Force a re-grade pass for all logged dates (or one date via ?date=).
+    Bypasses the normal 'skip if all settled' short-circuit so corrected
+    graders (new markets, bug fixes) and freshly-arrived scores both apply."""
+    import plays_log, sports as _sports
+    from flask import redirect
+    date_str = request.args.get("date")
+    sport_key_by_slug = {s["slug"]: s.get("odds_api_key") for s in _sports.SPORTS}
+    try:
+        if date_str:
+            plays_log.grade_date(date_str, sport_key_by_slug, force=True)
+        else:
+            for ds in plays_log.all_logged_dates(limit=14):
+                plays_log.grade_date(ds, sport_key_by_slug, force=True)
+    except Exception:
+        pass
+    return redirect("/logged", code=302)
 
 
 @app.route("/logged")
