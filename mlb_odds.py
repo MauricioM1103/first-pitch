@@ -94,6 +94,12 @@ def devig_two_sided(p_a, p_b):
     downstream EV calc with a bogus "coin flip" fair probability. Real
     Pinnacle vig lives in [1.015, 1.08] for two-sided main markets;
     anything outside [1.00, 1.20] is almost certainly a data error.
+
+    Previously this also rejected identical prices on both sides, but
+    that false-positived on legitimate symmetric lines like Over/Under at
+    -108/-108 (common for well-balanced totals). The vig-range check
+    alone catches the real pathology — +481/+481 totals to 0.34 (way
+    below 1.00) and gets dropped there.
     """
     if p_a is None or p_b is None:
         return None, None
@@ -101,10 +107,6 @@ def devig_two_sided(p_a, p_b):
     if total <= 0:
         return None, None
     if total < 1.00 or total > 1.20:
-        return None, None
-    # Identical prices on both sides is the specific pathology we saw —
-    # Pinnacle freezes a stale number into both legs when they can't post.
-    if abs(p_a - p_b) < 1e-9:
         return None, None
     return p_a / total, p_b / total
 

@@ -107,8 +107,10 @@ def devig_three_way(p_h, p_d, p_a):
     """Multiplicative devig for 3-way (soccer home/draw/away) implied probs.
 
     Same bad-data guard as devig_two_sided — a mirrored or stale Pinnacle
-    quote outside [1.00, 1.20] total vig returns None rather than feeding
-    a nonsense devig into every downstream EV calc.
+    quote outside [1.00, 1.25] total vig returns None rather than feeding
+    a nonsense devig into every downstream EV calc. The identical-prices
+    check was removed (false-positived on legitimate symmetric 3-way lines);
+    the vig-range check alone catches the real pathology.
     """
     if None in (p_h, p_d, p_a):
         return None, None, None
@@ -116,8 +118,6 @@ def devig_three_way(p_h, p_d, p_a):
     if total <= 0:
         return None, None, None
     if total < 1.00 or total > 1.25:
-        return None, None, None
-    if abs(p_h - p_a) < 1e-9 and abs(p_h - p_d) < 1e-9:
         return None, None, None
     return p_h / total, p_d / total, p_a / total
 
@@ -206,6 +206,10 @@ def parse_pinnacle_games(league_id, ml_outcomes=2, has_halves=False):
             # period 1 (halves if has_halves)
             "ml_h1": None, "spread_h1": None, "total_h1": None,
             "ml_h1_limit": None,
+            # Pinnacle `team_total` markets (per-side Over/Under at various
+            # lines). Previously discarded — soccer slates especially carry
+            # ~8 TT markets per game that produce real +EV picks.
+            "team_total_home": [], "team_total_away": [],
         }
 
         tc0, sc0, tc1, sc1 = [], [], [], []
@@ -256,6 +260,33 @@ def parse_pinnacle_games(league_id, ml_outcomes=2, has_halves=False):
                     continue
                 cand = {"line": line, "over_am": o_am, "under_am": u_am, "limit": lim}
                 (tc0 if period == 0 else tc1).append(cand)
+            elif typ == "team_total" and period == 0:
+                # Key format: "s;{period};tt;{line};{side}" where side is
+                # "home" or "away". The market's own `side` field is the
+                # most reliable source, then line via points, then the key.
+                side_tag = (m.get("side") or "").lower()
+                try:
+                    line = float(key.split(";")[3])
+                except (ValueError, IndexError):
+                    line = None
+                if line is None:
+                    # fallback: parse points off any price with over/under
+                    for p in prices:
+                        if p.get("points") is not None:
+                            line = float(p["points"])
+                            break
+                if side_tag not in ("home", "away") or line is None:
+                    continue
+                o_am = _price_designation(prices, "over")
+                u_am = _price_designation(prices, "under")
+                if o_am is None or u_am is None:
+                    continue
+                cand = {"line": line, "over_am": o_am, "under_am": u_am,
+                        "limit": lim}
+                if side_tag == "home":
+                    entry["team_total_home"].append(cand)
+                else:
+                    entry["team_total_away"].append(cand)
 
         if sc0:
             best = _best_main(sc0)
@@ -328,6 +359,75 @@ def parse_pinnacle_games(league_id, ml_outcomes=2, has_halves=False):
                 no_am = _price_designation(prices, "no")
         if yes_am is not None or no_am is not None:
             games_by_mu[parent_id]["btts"] = {"yes_am": yes_am, "no_am": no_am}
+
+    # Overlay Draw No Bet prices from Pinnacle "special" matchups (soccer
+    # only). Same `parent.id` linking pattern as BTTS. Participants are the
+    # home/away teams; prices come as a 2-side moneyline on the special.
+    for mu in matchups:
+        if mu.get("type") == "matchup":
+            continue
+        special = mu.get("special") or {}
+        desc = (special.get("description") or "").lower() if isinstance(special, dict) else ""
+        # Only full-game DNB — skip "Draw No Bet 1st Half" variant for now.
+        if "draw no bet" not in desc or "1st half" in desc or "half" in desc:
+            continue
+        parent = mu.get("parent") or {}
+        parent_id = parent.get("id") if isinstance(parent, dict) else (mu.get("parentId") or mu.get("parentMatchupId"))
+        if parent_id not in games_by_mu:
+            continue
+        parent_g = games_by_mu[parent_id]
+        parent_home = parent_g.get("home_name", "").strip().lower()
+        parent_away = parent_g.get("away_name", "").strip().lower()
+        mu_sid = mu.get("id")
+        parts = mu.get("participants") or []
+        # Match special participants to parent home/away by name.
+        home_pid = next((p.get("id") for p in parts
+                         if (p.get("name") or "").strip().lower() == parent_home), None)
+        away_pid = next((p.get("id") for p in parts
+                         if (p.get("name") or "").strip().lower() == parent_away), None)
+        if home_pid is None or away_pid is None:
+            continue
+        home_am = away_am = None
+        for mk in by_mu.get(mu_sid, []):
+            if mk.get("type") != "moneyline":
+                continue
+            prices = mk.get("prices") or []
+            home_am = _price_participant(prices, home_pid) or home_am
+            away_am = _price_participant(prices, away_pid) or away_am
+        if home_am is not None and away_am is not None:
+            parent_g["dnb"] = {"home_am": home_am, "away_am": away_am}
+
+    # Overlay UFC "Fight Goes To Decision" prices (Yes/No). Same special
+    # pattern as BTTS: 2 participants named Yes/No, prices via participantId.
+    # The model prices via a_dec + b_dec from ufc_model.simulate_fight.
+    for mu in matchups:
+        if mu.get("type") == "matchup":
+            continue
+        special = mu.get("special") or {}
+        desc = (special.get("description") or "").lower() if isinstance(special, dict) else ""
+        if "fight goes to decision" not in desc:
+            continue
+        parent = mu.get("parent") or {}
+        parent_id = parent.get("id") if isinstance(parent, dict) else (mu.get("parentId") or mu.get("parentMatchupId"))
+        if parent_id not in games_by_mu:
+            continue
+        mu_sid = mu.get("id")
+        parts = mu.get("participants") or []
+        yes_pid = next((p.get("id") for p in parts if (p.get("name") or "").strip().lower() == "yes"), None)
+        no_pid  = next((p.get("id") for p in parts if (p.get("name") or "").strip().lower() == "no"), None)
+        yes_am = no_am = None
+        for mk in by_mu.get(mu_sid, []):
+            if mk.get("type") != "moneyline":
+                continue
+            prices = mk.get("prices") or []
+            if yes_pid is not None:
+                yes_am = _price_participant(prices, yes_pid) or yes_am
+            if no_pid is not None:
+                no_am = _price_participant(prices, no_pid) or no_am
+        if yes_am is not None or no_am is not None:
+            games_by_mu[parent_id]["goes_distance"] = {
+                "yes_am": yes_am, "no_am": no_am,
+            }
 
     games.sort(key=lambda g: g.get("start_time") or "")
     return games
@@ -443,8 +543,18 @@ def odds_api_usage_summary():
 # ============================================================================
 
 def _add_bet(bets, market, side, pick, fair_prob, pin_decimal, best_dec, best_book,
-             limit=None, push_prob=0.0):
-    """Add a bet entry per the best source price (prefer book over Pinnacle for EV)."""
+             limit=None, push_prob=0.0, pinnacle_prob=None):
+    """Add a bet entry per the best source price (prefer book over Pinnacle for EV).
+
+    pinnacle_prob: Pinnacle's own devigged probability for this side. When
+    omitted, defaults to fair_prob — which is correct for ML/Spread/Total
+    (where fair_prob IS the Pinnacle devig). For markets whose fair_prob
+    comes from a bespoke model (BTTS from soccer_model.predict_btts), the
+    caller MUST pass pinnacle_prob separately; otherwise the consensus
+    blender in picks.py will treat the market as agreeing with the model
+    and skip pulling EV back toward the real Pinnacle-implied number,
+    producing nonsense +100%+ EV figures on BTTS picks.
+    """
     if fair_prob is None:
         return
     # Use best US book price if available (beats Pinnacle vig); fall back to Pinnacle
@@ -463,7 +573,7 @@ def _add_bet(bets, market, side, pick, fair_prob, pin_decimal, best_dec, best_bo
         # Preserve the raw Pinnacle devigged probability so the consensus
         # layer in picks.py can always blend with the market, even for
         # sports whose model path later overwrites fair_prob.
-        "pinnacle_prob": fair_prob,
+        "pinnacle_prob": pinnacle_prob if pinnacle_prob is not None else fair_prob,
         "pin_decimal": pin_decimal,
         "pin_american": decimal_to_american(pin_decimal) if pin_decimal else None,
         "book": use_source,
@@ -686,20 +796,23 @@ def build_sport_games(sport, model_prob_fn=None, use_us_books=True):
                          fu, u_dec, None, None)
 
         # ===== BTTS (soccer only) — Both Teams To Score =====
-        # Only produced for soccer sports that pass btts through the Odds API.
-        if sport.get("ml_outcomes") == 3 and books:
-            btts_by_book = {}
-            for bname, markets_dict in books.items():
-                btts_outcomes = markets_dict.get("btts") or []
-                for out_item in btts_outcomes:
-                    name = (out_item.get("name") or "").strip().lower()
-                    price = out_item.get("price")
-                    if name in ("yes", "no") and price:
-                        btts_by_book.setdefault(bname, {})[name] = price
-            if btts_by_book:
-                # Best book price per side
-                best_yes_dec = best_no_dec = None
-                best_yes_book = best_no_book = None
+        # Price sources (first match wins per side):
+        #   1. US books from Odds API (DK/FD/BetMGM/Caesars) when available
+        #   2. Pinnacle's own BTTS special market (free, parse_pinnacle_games
+        #      populates g["btts"]). This is the fallback that keeps BTTS +EV
+        #      picks alive when the Odds API key is missing or empty.
+        if sport.get("ml_outcomes") == 3:
+            best_yes_dec = best_no_dec = None
+            best_yes_book = best_no_book = None
+            if books:
+                btts_by_book = {}
+                for bname, markets_dict in books.items():
+                    btts_outcomes = markets_dict.get("btts") or []
+                    for out_item in btts_outcomes:
+                        name = (out_item.get("name") or "").strip().lower()
+                        price = out_item.get("price")
+                        if name in ("yes", "no") and price:
+                            btts_by_book.setdefault(bname, {})[name] = price
                 for bname, prices in btts_by_book.items():
                     y = prices.get("yes")
                     n = prices.get("no")
@@ -708,7 +821,37 @@ def build_sport_games(sport, model_prob_fn=None, use_us_books=True):
                     if n and (best_no_dec is None or n > best_no_dec):
                         best_no_dec, best_no_book = n, bname
 
-                # Model probability via soccer model (fall back to market devig)
+            # Pinnacle BTTS fallback — same decimal shape as the US books path
+            pin_btts = g.get("btts") or {}
+            pin_yes_am = pin_btts.get("yes_am")
+            pin_no_am  = pin_btts.get("no_am")
+            pin_yes_dec = american_to_decimal(pin_yes_am) if pin_yes_am is not None else None
+            pin_no_dec  = american_to_decimal(pin_no_am)  if pin_no_am  is not None else None
+            if best_yes_dec is None and pin_yes_dec:
+                best_yes_dec, best_yes_book = pin_yes_dec, "pinnacle"
+            if best_no_dec is None and pin_no_dec:
+                best_no_dec, best_no_book = pin_no_dec, "pinnacle"
+
+            if best_yes_dec and best_no_dec:
+                # Always compute Pinnacle's devigged fair separately — this
+                # is what the consensus blender in picks.py uses to pull EV
+                # back toward the market. Without a real pinnacle_prob the
+                # 60%-market weight collapses to 0 and the model's edge
+                # multiplies out to absurd EV numbers (+100%+).
+                pin_fair_yes = pin_fair_no = None
+                if pin_yes_dec and pin_no_dec:
+                    p_y_raw = 1.0 / pin_yes_dec
+                    p_n_raw = 1.0 / pin_no_dec
+                    pin_fair_yes, pin_fair_no = devig_two_sided(p_y_raw, p_n_raw)
+                if pin_fair_yes is None:
+                    # Books-only fallback (no Pinnacle BTTS line); naive devig
+                    p_y_raw = 1.0 / best_yes_dec
+                    p_n_raw = 1.0 / best_no_dec
+                    s = p_y_raw + p_n_raw
+                    pin_fair_yes = p_y_raw / s
+                    pin_fair_no = p_n_raw / s
+
+                # Model probability via soccer model (fall back to Pinnacle devig)
                 btts_fair_yes = btts_fair_no = None
                 if sport["slug"] in {"epl", "laliga", "ligamx"}:
                     try:
@@ -720,20 +863,18 @@ def build_sport_games(sport, model_prob_fn=None, use_us_books=True):
                         btts_fair_no = btts_p["no"]
                     except Exception:
                         pass
-                if btts_fair_yes is None and best_yes_dec and best_no_dec:
-                    # Market devig fallback
-                    p_y_raw = 1.0 / best_yes_dec
-                    p_n_raw = 1.0 / best_no_dec
-                    s = p_y_raw + p_n_raw
-                    btts_fair_yes = p_y_raw / s
-                    btts_fair_no = p_n_raw / s
+                if btts_fair_yes is None:
+                    btts_fair_yes = pin_fair_yes
+                    btts_fair_no = pin_fair_no
 
-                if best_yes_dec and btts_fair_yes is not None:
+                if btts_fair_yes is not None:
                     _add_bet(bets, "BTTS", "yes", "BTTS Yes",
-                             btts_fair_yes, None, best_yes_dec, best_yes_book)
-                if best_no_dec and btts_fair_no is not None:
+                             btts_fair_yes, pin_yes_dec, best_yes_dec, best_yes_book,
+                             pinnacle_prob=pin_fair_yes)
+                if btts_fair_no is not None:
                     _add_bet(bets, "BTTS", "no", "BTTS No",
-                             btts_fair_no, None, best_no_dec, best_no_book)
+                             btts_fair_no, pin_no_dec, best_no_dec, best_no_book,
+                             pinnacle_prob=pin_fair_no)
 
         out.append({**g, "bets": bets,
                     "fair": {"home": home_fair, "draw": draw_fair, "away": away_fair}})

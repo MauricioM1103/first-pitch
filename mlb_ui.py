@@ -1511,6 +1511,10 @@ def _sport_games_for_hub(sport, today_date):
             "total_alts": g.get("total_alts") or [],  # Pinnacle alt-total candidates
             "spread_alts": g.get("spread_alts") or [],
             "btts":       g.get("btts"),       # soccer Yes/No prices
+            "team_total_home": g.get("team_total_home") or [],
+            "team_total_away": g.get("team_total_away") or [],
+            "dnb":        g.get("dnb"),        # soccer Draw No Bet prices
+            "goes_distance": g.get("goes_distance"),  # UFC fight-goes-distance Yes/No
         })
     out.sort(key=lambda x: x["start_time"] or "")
     return out
@@ -2075,6 +2079,19 @@ PICKS_TEMPLATE = r"""<!doctype html>
 }
 .filter-chips .chip:hover { color: var(--ink); background: var(--card); }
 .filter-chips .chip.active { color: var(--ink); background: var(--card); border-color: var(--ink); }
+.filter-chips .chip-divider { display: inline-block; width: 1px; background: var(--rule); margin: 2px 4px; align-self: stretch; }
+.filter-chips .chip.strong-chip {
+  color: #f59e0b;
+  border-color: color-mix(in oklab, #f59e0b 50%, var(--rule));
+  background: color-mix(in oklab, #f59e0b 6%, transparent);
+}
+.filter-chips .chip.strong-chip:hover { background: color-mix(in oklab, #f59e0b 12%, transparent); }
+.filter-chips .chip.strong-chip.active {
+  color: #000;
+  background: #f59e0b;
+  border-color: #f59e0b;
+  font-weight: 600;
+}
 
 .board-wrap {
   background: var(--card); border: 1px solid var(--rule); border-radius: 10px;
@@ -2143,9 +2160,20 @@ PICKS_TEMPLATE = r"""<!doctype html>
 
 .pick-badge-row {
   display: flex; gap: 8px; align-items: center;
-  padding: 5px 0; font-size: 12px;
+  padding: 5px 6px; font-size: 12px;
+  border-left: 2px solid transparent;
+  border-radius: 4px;
+  transition: background 120ms;
 }
 .pick-badge-row + .pick-badge-row { border-top: 1px dashed var(--rule); margin-top: 2px; padding-top: 7px; }
+/* Strong picks get an amber tint + border + glow so they jump out
+   from the broader +EV list; the ★ star alone was easy to miss. */
+.pick-badge-row.strong {
+  background: color-mix(in oklab, #f59e0b 10%, transparent);
+  border-left-color: #f59e0b;
+}
+.pick-badge-row.strong .pick-lbl { color: var(--ink); font-weight: 600; }
+.pick-badge-row.strong .src-tag.ev { color: #000; background: #f59e0b; border-color: #f59e0b; font-weight: 700; }
 .pick-badge-row .pick-ico {
   display: inline-block; width: 18px; height: 18px; border-radius: 50%;
   text-align: center; line-height: 18px; font-size: 10px; font-weight: 700;
@@ -2163,12 +2191,16 @@ PICKS_TEMPLATE = r"""<!doctype html>
 .pick-badge-row .pick-ico.tt   { background: color-mix(in oklab, #fb923c 20%, var(--card)); color: #fb923c; border-color: color-mix(in oklab, #fb923c 40%, var(--rule)); font-size: 9px; }
 .pick-badge-row .pick-ico.h1   { background: color-mix(in oklab, #38bdf8 20%, var(--card)); color: #38bdf8; border-color: color-mix(in oklab, #38bdf8 40%, var(--rule)); font-size: 8.5px; }
 .pick-badge-row .pick-ico.nrfi { background: color-mix(in oklab, #fde047 25%, var(--card)); color: #ca8a04; border-color: color-mix(in oklab, #ca8a04 40%, var(--rule)); font-size: 9px; font-weight: 800; }
+.pick-badge-row .pick-ico.dnb  { background: color-mix(in oklab, #14b8a6 20%, var(--card)); color: #14b8a6; border-color: color-mix(in oklab, #14b8a6 40%, var(--rule)); font-size: 8.5px; font-weight: 700; }
+.pick-badge-row .pick-ico.dist { background: color-mix(in oklab, #f43f5e 20%, var(--card)); color: #f43f5e; border-color: color-mix(in oklab, #f43f5e 40%, var(--rule)); font-size: 8px; font-weight: 700; }
 .pick-badge-row .pick-lbl { color: var(--ink); font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .pick-badge-row .pick-conf {
   font-family: "JetBrains Mono", monospace; font-size: 10.5px;
   color: var(--muted); font-variant-numeric: tabular-nums;
   padding: 1px 7px; border-radius: 4px; background: var(--surface);
   border: 1px solid var(--rule);
+  min-width: 32px; text-align: center;
+  margin-left: auto;   /* pushes conf + EV to the right edge */
 }
 .pick-badge-row .pick-conf.c5 { color: var(--good); border-color: var(--good); background: color-mix(in oklab, var(--good) 12%, transparent); }
 .pick-badge-row .pick-conf.c4 { color: var(--good); }
@@ -2185,6 +2217,8 @@ PICKS_TEMPLATE = r"""<!doctype html>
   letter-spacing: 0.1em; font-weight: 600;
   padding: 2px 6px; border-radius: 3px;
   margin-left: 2px; white-space: nowrap;
+  min-width: 68px; text-align: center;   /* keeps EV column aligned across picks */
+  box-sizing: border-box;
 }
 .pick-badge-row .src-tag.ev    { color: var(--good);   background: color-mix(in oklab, var(--good) 14%, transparent); border: 1px solid color-mix(in oklab, var(--good) 50%, transparent); }
 .pick-badge-row .src-tag.model { color: var(--muted);  background: var(--surface); border: 1px solid var(--rule); }
@@ -2356,26 +2390,27 @@ PICKS_TEMPLATE = r"""<!doctype html>
     <p class="sub">
       <b>{{ total_games }}</b> games across <b>{{ sports_with_games }}</b> sports &middot;
       <b>{{ picks_count }}</b> picks ({{ ev_count }} EV-verified, {{ strong_count }} strong) &middot;
-      all times Central. Every pick's chip on the right shows its source:
+      all times Central. Every pick on this board is <b>+EV</b> &mdash; the model's
+      probability times the posted price exceeds 1.0, so the long-run edge is
+      positive. The right-hand chip shows the pick's source:
       <span class="src-tag ev" style="display:inline-block;margin:0 2px">EV</span>
-      cleared our expected-value bar,
-      <span class="src-tag model" style="display:inline-block;margin:0 2px">MODEL</span>
-      is our simulator's preferred side with no price filter, and
+      is a market-blended consensus pick,
+      <span class="src-tag model" style="display:inline-block;margin:0 2px">EV</span>
+      (same chip) with a sport sim probability vs. the Pinnacle price, and
       <span class="src-tag alt" style="display:inline-block;margin:0 2px">ALT</span>
-      is an alt-line candidate we don't have the book price for &mdash; verify at DK/FD.
+      is a non-main spread or total we priced off Pinnacle's own alt-line candidate
+      (or an NFL/NCAAF alt-line informational companion with no price &mdash; verify at DK/FD).
     </p>
     <div class="ev-callout">
       <strong>What's EV?</strong> <em>Expected value</em> &mdash; the long-run profit per
       $1 risked if you repeated the same bet forever. We compute it as
-      <code>consensus_prob &times; book_decimal &minus; 1</code> where the consensus
-      probability is a 40% model / 60% Pinnacle devig blend. <b>EV +3%</b> means
-      the model expects a 3-cent profit per dollar bet, long-run. A pick is tagged
-      <span class="src-tag ev" style="display:inline-block;margin:0 2px">EV</span>
-      only when it clears <b>+2% EV</b>, <b>&ge; 46% fair prob</b>, and odds <b>&ge; 1.60</b>.
-      Hitting both <b>60% consensus AND +4% EV</b> earns a &#9733; <b>Strong</b> badge.
-      <span class="src-tag alt" style="display:inline-block;margin:0 2px">ALT</span>
-      picks don't carry EV because we don't fetch alt-line prices &mdash; the fair prob
-      is still ours, but the stake is on you to size against the live DK number.
+      <code>fair_prob &times; book_decimal &minus; 1</code>. <b>EV +3%</b> means
+      the model expects a 3-cent profit per dollar bet, long-run.
+      Picks are gated: the model must stay within <b>12pp</b> of Pinnacle's own
+      devig (sanity cap against sim overconfidence), <b>EV must be positive</b>
+      (uniform filter &mdash; nothing below zero reaches the board), and the display
+      EV is capped at <b>+15%</b> so a bad sim read can't produce absurd numbers.
+      Hitting both <b>60% probability AND &ge; +4% EV</b> earns a &#9733; <b>Strong</b> badge.
     </div>
     <details class="model-explain">
       <summary>How each sport's model works &rsaquo;</summary>
@@ -2424,11 +2459,23 @@ PICKS_TEMPLATE = r"""<!doctype html>
   </div>
   {% endif %}
 
+  {# Preserve strong_only across sport-chip clicks and vice versa. #}
+  {% set strong_suffix = '&strong=1' if strong_only else '' %}
+  {% set sport_suffix  = ('&sport=' ~ sport_filter) if sport_filter != 'all' else '' %}
   <div class="filter-chips">
-    <a class="chip {% if sport_filter == 'all' %}active{% endif %}" href="/?date={{ date_str }}">All ({{ total_games }})</a>
+    <a class="chip {% if sport_filter == 'all' %}active{% endif %}" href="/?date={{ date_str }}{{ strong_suffix }}">All ({{ total_games }})</a>
     {% for s in sport_counts %}
-      <a class="chip {% if sport_filter == s.slug %}active{% endif %}" href="/?date={{ date_str }}&sport={{ s.slug }}">{{ s.name }} ({{ s.count }})</a>
+      <a class="chip {% if sport_filter == s.slug %}active{% endif %}" href="/?date={{ date_str }}&sport={{ s.slug }}{{ strong_suffix }}">{{ s.name }} ({{ s.count }})</a>
     {% endfor %}
+    <span class="chip-divider" aria-hidden="true"></span>
+    {# ★ Strong-only toggle: when active, href flips the filter off. #}
+    {% if strong_only %}
+      <a class="chip strong-chip active" href="/?date={{ date_str }}{{ sport_suffix }}"
+         title="Showing only ★ Strong picks (≥ 60% prob AND ≥ +4% EV). Click to clear.">&#9733; Strong only ({{ strong_count }})</a>
+    {% else %}
+      <a class="chip strong-chip" href="/?date={{ date_str }}{{ sport_suffix }}&strong=1"
+         title="Show only ★ Strong picks (≥ 60% prob AND ≥ +4% EV)">&#9733; Strong only</a>
+    {% endif %}
   </div>
 
   {% if board_rows %}
@@ -2490,7 +2537,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
           <td class="col-picks">
             {% if row.picks %}
               {% for p in row.picks %}
-                <div class="pick-badge-row {{ 'model-only' if p.model_only else '' }}" title="{{ 'Model-only preference (no EV filter)' if p.model_only else 'EV-verified pick' }}">
+                <div class="pick-badge-row {{ 'strong' if p.strong else '' }} {{ 'model-only' if p.model_only else '' }}" title="{{ 'Model-only preference (no EV filter)' if p.model_only else ('Strong +EV pick (≥60% prob AND ≥+4% EV)' if p.strong else 'EV-verified pick') }}">
                   <span class="pick-ico {{ p.icon_cls }}">{{ p.icon }}</span>
                   <span class="pick-lbl">{{ p.pick_short }}</span>
                   <span class="pick-conf c{{ p.conf }}">{{ p.conf }}/5</span>
@@ -2653,6 +2700,8 @@ def _pick_icon(market):
     if "team total" in m: return ("TT", "tt")
     if "win to nil" in m or "clean sheet" in m: return ("WN", "wtn")
     if "btts" in m or "both teams" in m: return ("B", "btts")
+    if "draw no bet" in m or m == "dnb": return ("DNB", "dnb")
+    if "fight distance" in m or "distance" in m: return ("DIST", "dist")
     if "double" in m or "dc" in m or "or draw" in m: return ("2x", "dc")
     if "spread" in m or "line" in m: return ("±", "spr")
     if "total" in m or "over" in m or "under" in m: return ("T", "tot")
@@ -2781,10 +2830,10 @@ def _format_total_line(total):
     return f"O/U {line:g}"
 
 
-_PICK_MARKET_ORDER = {"ML": 0, "DC": 1, "Spread": 2, "Total": 3,
-                      "TT": 4, "1H-Total": 5,
-                      "F5-ML": 6, "F5-Spread": 7, "F5-Total": 8,
-                      "NRFI": 9, "WTN": 10, "BTTS": 11}
+_PICK_MARKET_ORDER = {"ML": 0, "DNB": 1, "DC": 2, "Spread": 3, "Total": 4,
+                      "TT": 5, "1H-Total": 6,
+                      "F5-ML": 7, "F5-Spread": 8, "F5-Total": 9,
+                      "NRFI": 10, "WTN": 11, "BTTS": 12, "Distance": 13}
 
 
 # Market-category classifier lives in picks.py (one source of truth);
@@ -2796,7 +2845,8 @@ from picks import _market_category
 def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                        ml_outcomes, existing_cats, pin_total_h1=None,
                        pin_total_alts=None, pin_spread_alts=None,
-                       pin_btts=None):
+                       pin_btts=None, pin_tt_home=None, pin_tt_away=None,
+                       pin_dnb=None, pin_goes_dist=None):
     """Produce up to 3 model-opinion picks per game (ML + Spread + Total),
     skipping markets we already have an EV pick for. These are purely
     'which side does our model prefer' — no EV / price filtering, matched
@@ -2818,9 +2868,18 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
     # the Render dyno, and we specifically need its draw_pct + btts_yes_pct
     # for the Double-Chance and BTTS picks. For NHL / NFL / NCAAF we stay
     # cache-only — those sims are the memory-expensive ones.
+    #
+    # Cache-key fallback: _apply_consensus only threads market_total through
+    # for Total picks (NFL/NCAAF), so a game whose only EV pick was an ML
+    # or Spread caches the sim at (slug, home, away, None). Without the
+    # None fallback below, every model-fill pick for that game cache-missed
+    # the sim and silently fell back to Pinnacle devig — which collapsed
+    # every main-line Spread/Total EV calc to −vig.
     sim_cache = getattr(picks_mod, "_SIM_CACHE", {}) or {}
     sim_key = (sport_slug, home or "", away or "", total_line)
     sim = sim_cache.get(sim_key)
+    if sim is None:
+        sim = sim_cache.get((sport_slug, home or "", away or "", None))
     if sim is None and sport_slug in ("epl", "laliga", "ligamx", "ucl",
                                       "europa", "international"):
         try:
@@ -2834,12 +2893,15 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
     #        for the whole game, not just the favored side) ----
     if "ML" not in existing_cats:
         h_pct = a_pct = d_pct = 0.0
+        # Track whether these probabilities come from the sim (model opinion)
+        # or Pinnacle devig fallback. If they're straight Pinnacle devig,
+        # EV against Pinnacle decimal collapses to −vig and the pick will
+        # never clear the EV filter — fine, that's the point of the filter.
         if sim and sim.get("home_win_pct") is not None:
             h_pct = (sim.get("home_win_pct") or 0) / 100.0
             a_pct = (sim.get("away_win_pct") or 0) / 100.0
             d_pct = (sim.get("draw_pct") or 0) / 100.0
         elif pin_ml and pin_ml.get("home_am") is not None and pin_ml.get("away_am") is not None:
-            # Fallback: Pinnacle devig (not our model, but still a sharp signal)
             p_h = generic_odds.american_to_prob(pin_ml["home_am"])
             p_a = generic_odds.american_to_prob(pin_ml["away_am"])
             d_am = pin_ml.get("draw_am")
@@ -2848,22 +2910,54 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 h_pct, d_pct, a_pct = generic_odds.devig_three_way(p_h, p_d, p_a)
             else:
                 h_pct, a_pct = generic_odds.devig_two_sided(p_h, p_a)
+        # Pinnacle devigged fair for the sanity cap — model must be within
+        # 12pp of Pinnacle's own devig to be considered a real signal (same
+        # guard as alt-spread/alt-total). Prevents sim overconfidence from
+        # fabricating fake +EV on longshots.
+        pin_h_fair = pin_a_fair = pin_d_fair = None
+        if pin_ml and pin_ml.get("home_am") is not None and pin_ml.get("away_am") is not None:
+            p_h_raw = generic_odds.american_to_prob(pin_ml["home_am"])
+            p_a_raw = generic_odds.american_to_prob(pin_ml["away_am"])
+            d_am = pin_ml.get("draw_am")
+            if d_am is not None and ml_outcomes == 3:
+                p_d_raw = generic_odds.american_to_prob(d_am)
+                pin_h_fair, pin_d_fair, pin_a_fair = generic_odds.devig_three_way(
+                    p_h_raw, p_d_raw, p_a_raw)
+            else:
+                pin_h_fair, pin_a_fair = generic_odds.devig_two_sided(p_h_raw, p_a_raw)
         if max(h_pct, a_pct, d_pct) > 0:
-            # Order by confidence: favored side first, then dog, then draw.
-            # The N/5 badge on each row shows the model's absolute probability.
+            # Each side gets emitted ONLY when its EV against the Pinnacle
+            # price is positive AND the model stays within 12pp of Pinnacle's
+            # own devig. Without a sim, probs equal Pinnacle devig → EV ≈
+            # −vig → side gets filtered out. That's intentional: the EV
+            # filter should silence every pick we can't model.
             sides = [
-                (h_pct, home, (pin_ml or {}).get("home_am")),
-                (a_pct, away, (pin_ml or {}).get("away_am")),
+                (h_pct, home, (pin_ml or {}).get("home_am"), pin_h_fair),
+                (a_pct, away, (pin_ml or {}).get("away_am"), pin_a_fair),
             ]
             if ml_outcomes == 3 and d_pct > 0:
-                sides.append((d_pct, "Draw", (pin_ml or {}).get("draw_am")))
+                sides.append((d_pct, "Draw", (pin_ml or {}).get("draw_am"), pin_d_fair))
             sides.sort(key=lambda s: -s[0])
-            for prob, label, am in sides:
-                if prob <= 0:
+            for prob, label, am, pin_fair in sides:
+                if prob <= 0 or am is None:
                     continue
+                dec = mlb_odds.american_to_decimal(am)
+                if not dec or dec <= 1.0:
+                    continue
+                # Sanity cap vs Pinnacle devig
+                if pin_fair is not None and abs(prob - pin_fair) > 0.12:
+                    continue
+                ev_raw = (prob * dec - 1.0) * 100.0
+                # Require >= 1% EV so marginal picks that would display as
+                # "EV +0%" (ev in [0, 0.5]) don't clutter the board. Matches
+                # the alt-spread/alt-total emission policy.
+                if ev_raw < 1.0:
+                    continue
+                ev_capped = min(ev_raw, 15.0)
                 out.append({"category": "ML", "market": "ML",
                             "pick": label, "fair_prob": prob,
-                            "american": am})
+                            "american": am, "decimal": dec,
+                            "ev_pct": ev_capped, "source": "ev_model"})
 
     # ---- Spread (snapped to half-point to match Polymarket / DK / FD) ----
     # Fixed-line sports (NHL puck line ±1.5, MLB run line ±1.5) are a trap
@@ -2902,13 +2996,42 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
             else:
                 picks_pair.append((f"{away} {-line_h:+g}", 1 - p_home_cover, (pin_spread or {}).get("away_am")))
                 picks_pair.append((f"{home} {line_h:+g}", p_home_cover, (pin_spread or {}).get("home_am")))
-            top_label, top_prob, top_am = picks_pair[0]
-            out.append({"category": "Spread", "market": "Spread",
-                        "pick": top_label, "fair_prob": top_prob, "american": top_am})
-            if _conf_tier(top_prob) <= 1:
-                lbl, prob, am = picks_pair[1]
+            # EV against Pinnacle's own spread price. Only compute when the
+            # model's cover prob diverges meaningfully from Pinnacle's devigged
+            # fair for this line (otherwise EV collapses to −vig). The sanity
+            # cap (model within 12pp of Pinnacle devig) kills obvious artifacts.
+            pin_cover_fair = None
+            if (pin_spread and pin_spread.get("home_am") is not None
+                    and pin_spread.get("away_am") is not None):
+                p_h_raw = generic_odds.american_to_prob(pin_spread["home_am"])
+                p_a_raw = generic_odds.american_to_prob(pin_spread["away_am"])
+                fh, _fa = generic_odds.devig_two_sided(p_h_raw, p_a_raw)
+                pin_cover_fair = fh
+            # Apply the EV filter to BOTH sides of the spread. Emit a side
+            # only when its EV against the Pinnacle price is positive AND
+            # the model stays within 12pp of Pinnacle's own devig (sanity
+            # cap). Picks that would otherwise be "model-only directional"
+            # chalks are suppressed — the filter is uniform across the board.
+            for lbl, prob, am in picks_pair:
+                if am is None:
+                    continue
+                dec = mlb_odds.american_to_decimal(am)
+                if not dec or dec <= 1.0:
+                    continue
+                is_home_pick = lbl.startswith(home)
+                if pin_cover_fair is None:
+                    continue
+                pin_side_fair = pin_cover_fair if is_home_pick else (1 - pin_cover_fair)
+                if abs(prob - pin_side_fair) > 0.12:
+                    continue
+                ev_raw = (prob * dec - 1.0) * 100.0
+                if ev_raw < 1.0:
+                    continue
+                ev_capped = min(ev_raw, 15.0)
                 out.append({"category": "Spread", "market": "Spread",
-                            "pick": lbl, "fair_prob": prob, "american": am})
+                            "pick": lbl, "fair_prob": prob,
+                            "american": am, "decimal": dec,
+                            "ev_pct": ev_capped, "source": "ev_model"})
 
     # ---- Alternate Spread lines (every sport, Pinnacle-priced) ----
     # Same shape as Alt Total: iterate Pinnacle's spread_alts candidate list
@@ -3012,13 +3135,40 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 else:
                     picks_pair.append((f"Under {line:g}", 1 - p_over, (pin_total or {}).get("under_am")))
                     picks_pair.append((f"Over {line:g}",  p_over,     (pin_total or {}).get("over_am")))
-                top_label, top_prob, top_am = picks_pair[0]
-                out.append({"category": "Total", "market": "Total",
-                            "pick": top_label, "fair_prob": top_prob, "american": top_am})
-                if _conf_tier(top_prob) <= 1:
-                    lbl, prob, am = picks_pair[1]
+                # EV against Pinnacle's own total price. Only recognize EV
+                # when the model's P(over) diverges meaningfully from
+                # Pinnacle's own devigged fair AND within sanity bounds
+                # (12pp cap; same guard as alt-total logic).
+                pin_over_fair = None
+                if (pin_total.get("over_am") is not None
+                        and pin_total.get("under_am") is not None):
+                    p_o_raw = generic_odds.american_to_prob(pin_total["over_am"])
+                    p_u_raw = generic_odds.american_to_prob(pin_total["under_am"])
+                    fo, _fu = generic_odds.devig_two_sided(p_o_raw, p_u_raw)
+                    pin_over_fair = fo
+                # Uniform EV filter: emit each side only when EV > 0 and
+                # the model stays within 12pp of Pinnacle's devig. Totals
+                # that aren't model-vs-market disagreements are suppressed.
+                for lbl, prob, am in picks_pair:
+                    if am is None:
+                        continue
+                    dec = mlb_odds.american_to_decimal(am)
+                    if not dec or dec <= 1.0:
+                        continue
+                    if pin_over_fair is None:
+                        continue
+                    is_over = lbl.startswith("Over")
+                    pin_side_fair = pin_over_fair if is_over else (1 - pin_over_fair)
+                    if abs(prob - pin_side_fair) > 0.12:
+                        continue
+                    ev_raw = (prob * dec - 1.0) * 100.0
+                    if ev_raw < 1.0:
+                        continue
+                    ev_capped = min(ev_raw, 15.0)
                     out.append({"category": "Total", "market": "Total",
-                                "pick": lbl, "fair_prob": prob, "american": am})
+                                "pick": lbl, "fair_prob": prob,
+                                "american": am, "decimal": dec,
+                                "ev_pct": ev_capped, "source": "ev_model"})
 
     # ---- Alternate Total lines (every sport, Pinnacle-priced) ----
     # Pinnacle publishes a full candidate list for each spread + total market;
@@ -3166,9 +3316,10 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                             "pick": dc_label, "fair_prob": dc_prob})
 
         # Both Teams To Score — pulled straight from the Dixon-Coles sim's
-        # btts_yes_pct. When we have Pinnacle BTTS prices (from the special
-        # matchup parse in generic_odds), compute real EV against the book
-        # price. Otherwise the pick ships as model-only with no EV number.
+        # btts_yes_pct. Only emit when EV > 0 against Pinnacle AND the
+        # model stays within 12pp of Pinnacle's own BTTS devig (sanity cap).
+        # Without a Pinnacle BTTS price or without positive EV, the pick
+        # is suppressed by the uniform EV filter.
         if "BTTS" not in existing_cats and sim.get("btts_yes_pct") is not None:
             byes = float(sim["btts_yes_pct"]) / 100.0
             btts_yes_am = (pin_btts or {}).get("yes_am")
@@ -3182,10 +3333,21 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 prob = 1 - byes
                 label = "BTTS: No"
             dec = mlb_odds.american_to_decimal(am) if am is not None else None
-            ev_pct = (prob * dec - 1.0) * 100.0 if (dec and dec > 1.0) else None
-            out.append({"category": "BTTS", "market": "BTTS",
-                        "pick": label, "fair_prob": prob,
-                        "american": am, "ev_pct": ev_pct})
+            if (dec and dec > 1.0 and btts_yes_am is not None
+                    and btts_no_am is not None):
+                p_y_raw = generic_odds.american_to_prob(btts_yes_am)
+                p_n_raw = generic_odds.american_to_prob(btts_no_am)
+                pin_fy, pin_fn = generic_odds.devig_two_sided(p_y_raw, p_n_raw)
+                pin_side_fair = pin_fy if label == "BTTS: Yes" else pin_fn
+                if (pin_side_fair is not None
+                        and abs(prob - pin_side_fair) <= 0.12):
+                    ev_raw = (prob * dec - 1.0) * 100.0
+                    if ev_raw >= 1.0:
+                        ev_capped = min(ev_raw, 15.0)
+                        out.append({"category": "BTTS", "market": "BTTS",
+                                    "pick": label, "fair_prob": prob,
+                                    "american": am, "ev_pct": ev_capped,
+                                    "source": "ev_model"})
 
         # Win to Nil — favored side wins AND keeps a clean sheet. Derived
         # from the Dixon-Coles joint pmf (no extra sim needed). Books
@@ -3212,33 +3374,116 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                                 "pick": f"{away} to Win to Nil",
                                 "fair_prob": away_wn})
 
-        # Soccer Team Total — Dixon-Coles marginal gives us P(team goals
-        # over line) directly. Only surface this for leagues with a real
-        # DC fit (EPL, La Liga, Liga MX). UCL / Europa / international
-        # all fall back to a league-average λ ≈ 0.9 that makes "Under 1.5"
-        # read as strong across the entire slate (false positives).
+        # Soccer Team Total — Pinnacle serves per-side TT markets at
+        # multiple lines (0.5, 1.5, 2.5, 3.5, ...); iterate them and
+        # price via the Dixon-Coles marginal. Only EPL/LaLiga/LigaMX have
+        # a real DC fit — UCL/Europa/International fall back to league
+        # priors that make "Under 1.5" read as strong across every game.
         if "TT" not in existing_cats and sport_slug in ("epl", "laliga", "ligamx"):
             try:
                 import soccer_model as _sm
-                tt_home = _sm.predict_team_total(home, away, sport_slug, "home", 1.5)
-                tt_away = _sm.predict_team_total(home, away, sport_slug, "away", 1.5)
             except Exception:
-                tt_home = tt_away = None
-            best = None  # (prob, label)
-            for side_name, tt in (("home", tt_home), ("away", tt_away)):
-                if not tt:
-                    continue
+                _sm = None
+            MAX_EV_TT = 15.0
+            MAX_GAP_TT = 0.12   # model within 12pp of Pinnacle TT devig
+            candidates = []
+            for side_name, cands in (("home", pin_tt_home or []),
+                                      ("away", pin_tt_away or [])):
                 team = home if side_name == "home" else away
-                for direction, prob in (("Over", tt.get("over")),
-                                        ("Under", tt.get("under"))):
-                    if prob is None or prob < 0.60:
+                for cand in cands:
+                    try:
+                        line = float(cand.get("line"))
+                    except (TypeError, ValueError):
                         continue
-                    label = f"{team} Team Total {direction} 1.5"
-                    if best is None or prob > best[0]:
-                        best = (prob, label)
-            if best:
-                out.append({"category": "TT", "market": "Team Total",
-                            "pick": best[1], "fair_prob": best[0]})
+                    if cand.get("over_am") is None or cand.get("under_am") is None:
+                        continue
+                    if _sm is None:
+                        break
+                    try:
+                        tt = _sm.predict_team_total(home, away, sport_slug,
+                                                     side_name, line)
+                    except Exception:
+                        tt = None
+                    if not tt:
+                        continue
+                    p_o_raw = generic_odds.american_to_prob(cand["over_am"])
+                    p_u_raw = generic_odds.american_to_prob(cand["under_am"])
+                    pin_o_fair, _pin_u_fair = generic_odds.devig_two_sided(
+                        p_o_raw, p_u_raw)
+                    for direction, prob, am in (
+                        ("Over",  tt.get("over"),  cand.get("over_am")),
+                        ("Under", tt.get("under"), cand.get("under_am")),
+                    ):
+                        if prob is None or am is None:
+                            continue
+                        dec = mlb_odds.american_to_decimal(am)
+                        if not dec or dec <= 1.0:
+                            continue
+                        if pin_o_fair is not None:
+                            pin_side_fair = pin_o_fair if direction == "Over" else (1 - pin_o_fair)
+                            if abs(prob - pin_side_fair) > MAX_GAP_TT:
+                                continue
+                        ev_raw = (prob * dec - 1.0) * 100.0
+                        if ev_raw < 1.0:
+                            continue
+                        ev_capped = min(ev_raw, MAX_EV_TT)
+                        candidates.append({
+                            "category": "TT", "market": "Team Total",
+                            "pick":      f"{team} Team Total {direction} {line:g}",
+                            "fair_prob": prob,
+                            "american":  am, "decimal": dec,
+                            "ev_pct":    ev_capped, "source": "ev_model",
+                            "_ev_sort":  ev_raw,
+                        })
+            # Keep top 2 per game by raw EV so we don't flood the board
+            # with every TT line.
+            candidates.sort(key=lambda c: -c["_ev_sort"])
+            for c in candidates[:2]:
+                c.pop("_ev_sort", None)
+                out.append(c)
+
+        # Draw No Bet (soccer) — DNB wins if the picked side wins, pushes
+        # on a draw. Pinnacle serves it as a special market with 2 prices.
+        # Fair prob derived from DC sim's home_win / (home_win + away_win)
+        # — i.e. the ML conditional on "not a draw". Books tend to misprice
+        # DNB vs 3-way ML because the implied push rate confuses sharp bettors.
+        if ("DNB" not in existing_cats and pin_dnb
+                and sim and sim.get("home_win_pct") is not None):
+            dnb_home_am = pin_dnb.get("home_am")
+            dnb_away_am = pin_dnb.get("away_am")
+            if dnb_home_am is not None and dnb_away_am is not None:
+                h_win = (sim.get("home_win_pct") or 0) / 100.0
+                a_win = (sim.get("away_win_pct") or 0) / 100.0
+                denom = h_win + a_win
+                if denom > 0:
+                    home_dnb_fair = h_win / denom
+                    away_dnb_fair = a_win / denom
+                    # Pinnacle devig for sanity cap
+                    p_h_raw = generic_odds.american_to_prob(dnb_home_am)
+                    p_a_raw = generic_odds.american_to_prob(dnb_away_am)
+                    pin_h_fair, pin_a_fair = generic_odds.devig_two_sided(
+                        p_h_raw, p_a_raw)
+                    for side_name, prob, am, pin_fair in (
+                        ("home", home_dnb_fair, dnb_home_am, pin_h_fair),
+                        ("away", away_dnb_fair, dnb_away_am, pin_a_fair),
+                    ):
+                        dec = mlb_odds.american_to_decimal(am)
+                        if not dec or dec <= 1.0:
+                            continue
+                        if pin_fair is not None and abs(prob - pin_fair) > 0.12:
+                            continue
+                        ev_raw = (prob * dec - 1.0) * 100.0
+                        if ev_raw < 1.0:
+                            continue
+                        ev_capped = min(ev_raw, 15.0)
+                        team = home if side_name == "home" else away
+                        out.append({
+                            "category": "DNB", "market": "Draw No Bet",
+                            "pick":      f"{team} (DNB)",
+                            "fair_prob": prob,
+                            "american":  am, "decimal": dec,
+                            "ev_pct":    ev_capped, "source": "ev_model",
+                        })
 
     # ---- NFL / NCAAF 1H Total — Normal approx scaled from full-game sim ----
     # NFL 1H scoring averages ~48% of full-game (slight bump above half
@@ -3271,12 +3516,18 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 label = f"1H Under {line_h1:g}"
                 prob  = p_under
                 am    = pin_total_h1.get("under_am")
-            # EV against Pinnacle's own 1H price: prob × decimal − 1
+            # EV against Pinnacle's own 1H price: prob × decimal − 1.
+            # Uniform EV filter: only emit when ev_pct >= 1% so marginal
+            # picks don't display as "+0%".
             dec = mlb_odds.american_to_decimal(am) if am is not None else None
-            ev_pct = (prob * dec - 1.0) * 100.0 if (dec and dec > 1.0) else None
-            out.append({"category": "1H-Total", "market": "1H Total",
-                        "pick": label, "fair_prob": prob, "american": am,
-                        "ev_pct": ev_pct})
+            if dec and dec > 1.0:
+                ev_raw = (prob * dec - 1.0) * 100.0
+                if ev_raw >= 1.0:
+                    ev_capped = min(ev_raw, 15.0)
+                    out.append({"category": "1H-Total", "market": "1H Total",
+                                "pick": label, "fair_prob": prob,
+                                "american": am, "ev_pct": ev_capped,
+                                "source": "ev_model"})
 
     # ---- NHL Period 1 Total — Poisson on scaled-down full-game λ ----
     # NHL P1 scoring averages ~30% of full-game (goalies are fresh, teams
@@ -3307,54 +3558,229 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 label = f"P1 Under {line_p1:g}"
                 prob = 1.0 - p_over
                 am = pin_total_h1.get("under_am")
-            # EV against Pinnacle's P1 price
+            # EV against Pinnacle's P1 price.
+            # Uniform EV filter: only emit when ev_pct >= 1%.
             dec = mlb_odds.american_to_decimal(am) if am is not None else None
-            ev_pct = (prob * dec - 1.0) * 100.0 if (dec and dec > 1.0) else None
-            out.append({"category": "1H-Total", "market": "1H Total",
-                        "pick": label, "fair_prob": prob, "american": am,
-                        "ev_pct": ev_pct})
+            if dec and dec > 1.0:
+                ev_raw = (prob * dec - 1.0) * 100.0
+                if ev_raw >= 1.0:
+                    ev_capped = min(ev_raw, 15.0)
+                    out.append({"category": "1H-Total", "market": "1H Total",
+                                "pick": label, "fair_prob": prob,
+                                "american": am, "ev_pct": ev_capped,
+                                "source": "ev_model"})
 
-    # ---- NHL Team Total (model-only, Poisson from the sim's λ) ----
-    if sport_slug == "nhl" and sim and "TT" not in existing_cats:
-        # NHL sim exposes avg_home_goals / avg_away_goals — team-level
-        # Poisson expectations. Pinnacle doesn't give us a line (we don't
-        # fetch team totals), so we probe both sides at the standard
-        # 2.5-goal number and surface the single most confident direction.
-        from math import exp
+    # ---- NHL Team Total (Pinnacle-priced via Poisson from sim λ) ----
+    # Pinnacle serves per-side team_total markets at integer and half-point
+    # lines (0.5, 1.5, 2.5, 3.5). Iterate those lines, price via the sim's
+    # per-team Poisson λ, and compute EV against the Pinnacle price with
+    # the standard 12pp sanity cap and +15% EV ceiling.
+    if (sport_slug == "nhl" and sim and "TT" not in existing_cats
+            and (pin_tt_home or pin_tt_away)):
+        import math as _math
         try:
-            import math as _math
             lam_h = float(sim.get("avg_home_goals") or 0)
             lam_a = float(sim.get("avg_away_goals") or 0)
         except Exception:
             lam_h = lam_a = 0.0
         def _poisson_over(lam, line):
-            # P(X > line) where X ~ Poisson(lam). line = 2.5 → P(X >= 3)
             if lam <= 0:
                 return None
-            cutoff = int(_math.floor(line)) + 1   # smallest integer x counting as "over"
+            cutoff = int(_math.floor(line)) + 1
             cum = sum((_math.exp(-lam) * lam**k) / _math.factorial(k)
                       for k in range(cutoff))
             return 1.0 - cum
-        best = None
-        for side_name, lam in (("home", lam_h), ("away", lam_a)):
-            over_p = _poisson_over(lam, 2.5)
-            if over_p is None:
+        candidates = []
+        for side_name, lam, cands in (
+            ("home", lam_h, pin_tt_home or []),
+            ("away", lam_a, pin_tt_away or []),
+        ):
+            team = home if side_name == "home" else away
+            for cand in cands:
+                try:
+                    line = float(cand.get("line"))
+                except (TypeError, ValueError):
+                    continue
+                over_p = _poisson_over(lam, line)
+                if over_p is None:
+                    continue
+                if cand.get("over_am") is None or cand.get("under_am") is None:
+                    continue
+                p_o_raw = generic_odds.american_to_prob(cand["over_am"])
+                p_u_raw = generic_odds.american_to_prob(cand["under_am"])
+                pin_o_fair, _pin_u_fair = generic_odds.devig_two_sided(
+                    p_o_raw, p_u_raw)
+                for direction, prob, am in (
+                    ("Over",  over_p,       cand.get("over_am")),
+                    ("Under", 1.0 - over_p, cand.get("under_am")),
+                ):
+                    dec = mlb_odds.american_to_decimal(am)
+                    if not dec or dec <= 1.0:
+                        continue
+                    if pin_o_fair is not None:
+                        pin_side_fair = pin_o_fair if direction == "Over" else (1 - pin_o_fair)
+                        if abs(prob - pin_side_fair) > 0.12:
+                            continue
+                    ev_raw = (prob * dec - 1.0) * 100.0
+                    if ev_raw < 1.0:
+                        continue
+                    ev_capped = min(ev_raw, 15.0)
+                    candidates.append({
+                        "category": "TT", "market": "Team Total",
+                        "pick":      f"{team} Team Total {direction} {line:g}",
+                        "fair_prob": prob,
+                        "american":  am, "decimal": dec,
+                        "ev_pct":    ev_capped, "source": "ev_model",
+                        "_ev_sort":  ev_raw,
+                    })
+        candidates.sort(key=lambda c: -c["_ev_sort"])
+        for c in candidates[:2]:
+            c.pop("_ev_sort", None)
+            out.append(c)
+
+    # ---- NFL / NCAAF Team Total (Pinnacle-priced via Normal CDF on sim) ----
+    # NFL/NCAAF sims expose projected per-team points. Approximate P(team >
+    # line) with a Normal distribution centered on the projection; sport-
+    # specific per-team sigma (~8 for NFL, ~12 for NCAAF). Same guards as
+    # the other TT blocks: 12pp vs Pinnacle devig cap, ≥1% EV, ≤+15% cap,
+    # keep top 2 per game by EV.
+    if (sport_slug in ("nfl", "ncaaf") and sim and "TT" not in existing_cats
+            and (pin_tt_home or pin_tt_away)):
+        import math as _m
+        proj_h = (sim.get("proj_home_pts")
+                   or sim.get("avg_home_points"))
+        proj_a = (sim.get("proj_away_pts")
+                   or sim.get("avg_away_points"))
+        try:
+            proj_h = float(proj_h) if proj_h is not None else None
+            proj_a = float(proj_a) if proj_a is not None else None
+        except (TypeError, ValueError):
+            proj_h = proj_a = None
+        team_sigma = 8.0 if sport_slug == "nfl" else 12.0
+        def _normal_over(mu, line, sigma):
+            if mu is None or sigma <= 0:
+                return None
+            z = (line - mu) / sigma
+            p_under = 0.5 * (1.0 + _m.erf(z / _m.sqrt(2.0)))
+            return 1.0 - p_under
+        candidates = []
+        for side_name, mu, cands in (
+            ("home", proj_h, pin_tt_home or []),
+            ("away", proj_a, pin_tt_away or []),
+        ):
+            if mu is None:
                 continue
             team = home if side_name == "home" else away
-            for direction, prob in (("Over", over_p), ("Under", 1.0 - over_p)):
-                if prob < 0.60:
+            for cand in cands:
+                try:
+                    line = float(cand.get("line"))
+                except (TypeError, ValueError):
                     continue
-                label = f"{team} Team Total {direction} 2.5"
-                if best is None or prob > best[0]:
-                    best = (prob, label)
-        if best:
-            out.append({"category": "TT", "market": "Team Total",
-                        "pick": best[1], "fair_prob": best[0]})
+                over_p = _normal_over(mu, line, team_sigma)
+                if over_p is None:
+                    continue
+                if cand.get("over_am") is None or cand.get("under_am") is None:
+                    continue
+                p_o_raw = generic_odds.american_to_prob(cand["over_am"])
+                p_u_raw = generic_odds.american_to_prob(cand["under_am"])
+                pin_o_fair, _pin_u_fair = generic_odds.devig_two_sided(
+                    p_o_raw, p_u_raw)
+                for direction, prob, am in (
+                    ("Over",  over_p,       cand.get("over_am")),
+                    ("Under", 1.0 - over_p, cand.get("under_am")),
+                ):
+                    dec = mlb_odds.american_to_decimal(am)
+                    if not dec or dec <= 1.0:
+                        continue
+                    if pin_o_fair is not None:
+                        pin_side_fair = pin_o_fair if direction == "Over" else (1 - pin_o_fair)
+                        if abs(prob - pin_side_fair) > 0.12:
+                            continue
+                    ev_raw = (prob * dec - 1.0) * 100.0
+                    if ev_raw < 1.0:
+                        continue
+                    ev_capped = min(ev_raw, 15.0)
+                    candidates.append({
+                        "category": "TT", "market": "Team Total",
+                        "pick":      f"{team} Team Total {direction} {line:g}",
+                        "fair_prob": prob,
+                        "american":  am, "decimal": dec,
+                        "ev_pct":    ev_capped, "source": "ev_model",
+                        "_ev_sort":  ev_raw,
+                    })
+        candidates.sort(key=lambda c: -c["_ev_sort"])
+        for c in candidates[:2]:
+            c.pop("_ev_sort", None)
+            out.append(c)
 
-    return out
+    # ---- UFC "Fight Goes to Distance" (Yes/No) ----
+    # Model prob = sum of both fighters' decision wins from the UFC sim's
+    # method-of-victory breakdown. Books tend to overbet finishes, so the
+    # "Yes" side is historically where the edge sits on even-ish matchups.
+    if (sport_slug == "ufc" and "Distance" not in existing_cats
+            and pin_goes_dist):
+        yes_am = pin_goes_dist.get("yes_am")
+        no_am  = pin_goes_dist.get("no_am")
+        if yes_am is not None and no_am is not None:
+            try:
+                import ufc_model
+                ufc_sim = ufc_model.simulate_fight(home, away, n=2500)
+                method = ufc_sim.get("method") or {}
+                p_dist_yes = float(method.get("a_dec", 0)) + float(method.get("b_dec", 0))
+            except Exception:
+                p_dist_yes = None
+            if p_dist_yes is not None and 0 < p_dist_yes < 1:
+                p_dist_no = 1.0 - p_dist_yes
+                # Pinnacle devig for sanity cap
+                p_y_raw = generic_odds.american_to_prob(yes_am)
+                p_n_raw = generic_odds.american_to_prob(no_am)
+                pin_y_fair, pin_n_fair = generic_odds.devig_two_sided(
+                    p_y_raw, p_n_raw)
+                for label, prob, am, pin_fair in (
+                    ("Distance: Yes", p_dist_yes, yes_am, pin_y_fair),
+                    ("Distance: No",  p_dist_no,  no_am,  pin_n_fair),
+                ):
+                    dec = mlb_odds.american_to_decimal(am)
+                    if not dec or dec <= 1.0:
+                        continue
+                    if pin_fair is not None and abs(prob - pin_fair) > 0.12:
+                        continue
+                    ev_raw = (prob * dec - 1.0) * 100.0
+                    if ev_raw < 1.0:
+                        continue
+                    ev_capped = min(ev_raw, 15.0)
+                    out.append({
+                        "category": "Distance", "market": "Fight Distance",
+                        "pick":      label, "fair_prob": prob,
+                        "american":  am, "decimal": dec,
+                        "ev_pct":    ev_capped, "source": "ev_model",
+                    })
+
+    # ---- Uniform EV filter -----------------------------------------------
+    # Every emitted pick must have ev_pct >= 1% against a book price.
+    # Alt-line picks (alt_line_flag) and model-only props without a book
+    # price (DC, WTN, Team Total) can't be EV-verified against the market,
+    # so they're suppressed here. 1% minimum eliminates picks that would
+    # display as "+0%" from rounding and matches the alt-line policy.
+    filtered = []
+    for p in out:
+        if p.get("source") == "alt":
+            # Alt-line picks already enforce ev >= 1% at their own emission
+            # site; keep them through the filter.
+            filtered.append(p)
+            continue
+        ev = p.get("ev_pct")
+        if ev is None:
+            continue
+        try:
+            if float(ev) >= 1.0:
+                filtered.append(p)
+        except (TypeError, ValueError):
+            continue
+    return filtered
 
 
-def _build_board_rows(date_str, today_date, sport_filter):
+def _build_board_rows(date_str, today_date, sport_filter, strong_only=False):
     """Return the unified board: one row per game with picks nested.
 
     `date_str` is YYYY-MM-DD being viewed. `today_date` is the CT reference
@@ -3393,6 +3819,10 @@ def _build_board_rows(date_str, today_date, sport_filter):
                 "_total_alts": g.get("total_alts") or [],
                 "_spread_alts": g.get("spread_alts") or [],
                 "_btts":       g.get("btts"),
+                "_tt_home":    g.get("team_total_home") or [],
+                "_tt_away":    g.get("team_total_away") or [],
+                "_dnb":        g.get("dnb"),
+                "_goes_dist":  g.get("goes_distance"),
                 "picks":       [],
                 "score_home":  None,
                 "score_away":  None,
@@ -3435,6 +3865,8 @@ def _build_board_rows(date_str, today_date, sport_filter):
                 "start_time":  p.get("start_time"),
                 "_ml": None, "_spread": None, "_total": None, "_total_h1": None,
                 "_total_alts": [], "_spread_alts": [], "_btts": None,
+                "_tt_home": [], "_tt_away": [], "_dnb": None,
+                "_goes_dist": None,
                 "picks": [], "score_home": None, "score_away": None,
             }
             rows_by_key[key] = row
@@ -3493,6 +3925,10 @@ def _build_board_rows(date_str, today_date, sport_filter):
             pin_total_alts=row.get("_total_alts") or [],
             pin_spread_alts=row.get("_spread_alts") or [],
             pin_btts=row.get("_btts"),
+            pin_tt_home=row.get("_tt_home") or [],
+            pin_tt_away=row.get("_tt_away") or [],
+            pin_dnb=row.get("_dnb"),
+            pin_goes_dist=row.get("_goes_dist"),
         )
         existing_labels = {(_market_category(p.get("market")),
                             (p.get("pick") or "").strip().lower())
@@ -3512,6 +3948,7 @@ def _build_board_rows(date_str, today_date, sport_filter):
             # distinct ids for grading / DOM collection.
             pick_hash = hex(abs(hash(mp["pick"])))[2:10]
             is_alt = (mp.get("source") == "alt")
+            is_ev_model = (mp.get("source") == "ev_model")
             # Honor an EV% the fill branch computed (alt totals now carry it
             # when Pinnacle had the alt line in its candidate set); fall back
             # to None for picks without a book price.
@@ -3523,6 +3960,11 @@ def _build_board_rows(date_str, today_date, sport_filter):
                 q = 1.0 - mp["fair_prob"]
                 k = ((mp["fair_prob"] * b - q) / b) * 0.25 * 100.0 if b > 0 else 0.0
                 kelly_pct = max(0.0, k)
+            # A main-line Spread or Total model-fill pick with a real positive
+            # EV against Pinnacle is a bona fide +EV pick, not a model-only
+            # chalk — flag it accordingly so the +EV tracker on /logged
+            # counts it alongside the collect_picks EV output.
+            is_evable = is_ev_model and mp_ev is not None and mp_ev > 0
             row["picks"].append({
                 "id":            f"model-{row['sport_slug']}-{key}-{mp['category'].lower()}-{pick_hash}",
                 "sport":         row["sport_name"],
@@ -3537,14 +3979,28 @@ def _build_board_rows(date_str, today_date, sport_filter):
                 "american":      am,
                 "kelly_pct":     kelly_pct,
                 "book":          "pinnacle" if am is not None else ("verify at DK/FD" if is_alt else None),
-                "strong":        False,
-                "bulletin":      ("Alt-total candidate — model's fair prob at a non-main line. "
-                                  "We don't fetch alt-total odds; compare the live DK/FD price "
-                                  "against our fair prob to decide." if is_alt
-                                  else "Model-only pick — our simulator's preferred side at the posted line, no price filter applied."),
-                "model_source":  "model only (no EV filter)" if not is_alt else "alt-total from sim distribution",
-                "model_only":    not is_alt,
-                "source":        mp.get("source"),           # propagates "alt" or None
+                # Strong tier: consensus_prob >= 60% AND EV >= +4%. Mirrors
+                # the picks.py threshold so model-fill ev_model picks get the
+                # same ★ badge as collect_picks EV picks. Alt-line picks
+                # are informational-only — never strong.
+                "strong":        bool((not is_alt)
+                                      and (mp.get("fair_prob") or 0) >= 0.60
+                                      and (mp_ev or 0) >= 4.0),
+                "bulletin":      (
+                    "Alt-total candidate — model's fair prob at a non-main line. "
+                    "We don't fetch alt-total odds; compare the live DK/FD price "
+                    "against our fair prob to decide." if is_alt else
+                    "Model's probability at the posted line disagrees with Pinnacle "
+                    "devig by enough to produce positive EV against the book price "
+                    "(stays within the 12pp sanity cap, EV display capped at +15%)."
+                    if is_evable else
+                    "Model-only pick — our simulator's preferred side at the posted line, no price filter applied."
+                ),
+                "model_source":  ("model vs Pinnacle devig (main-line EV)" if is_evable
+                                   else "alt-total from sim distribution" if is_alt
+                                   else "model only (no EV filter)"),
+                "model_only":    not (is_alt or is_evable),
+                "source":        mp.get("source"),           # propagates "alt", "ev_model", or None
                 "alt_line_flag": is_alt,
                 "home_team":     row["home"],
                 "away_team":     row["away"],
@@ -3564,8 +4020,16 @@ def _build_board_rows(date_str, today_date, sport_filter):
         ))
 
     # 6) Finalize each row — status, countdown, line/close text, sort key.
+    # Apply strong-only filter: keep only ★ Strong picks on each row, then
+    # drop rows with no picks left. Strong = model prob >= 60% AND ev >= 4%.
+    if strong_only:
+        for row in rows_by_key.values():
+            row["picks"] = [p for p in row["picks"] if p.get("strong")]
+
     rows = []
     for row in rows_by_key.values():
+        if strong_only and not row["picks"]:
+            continue
         has_score = row["score_home"] is not None
         row["status"]    = _derive_status(row["start_time"], now_dt, has_score)
         row["countdown"] = _countdown_str(row["start_time"], now_dt) if row["status"] == "upcoming" else None
@@ -3597,6 +4061,8 @@ def _build_board_rows(date_str, today_date, sport_filter):
 def picks_landing():
     date_str = request.args.get("date") or datetime.now(CENTRAL).date().isoformat()
     sport_filter = (request.args.get("sport") or "all").lower()
+    # ?strong=1 trims the board to only ★ Strong picks (≥60% prob AND ≥4% EV).
+    strong_only = request.args.get("strong") in ("1", "true", "on", "yes")
     try:
         d = datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
@@ -3605,7 +4071,8 @@ def picks_landing():
 
     t0 = time.time()
     try:
-        board_rows, all_picks = _build_board_rows(date_str, d, sport_filter)
+        board_rows, all_picks = _build_board_rows(date_str, d, sport_filter,
+                                                   strong_only=strong_only)
     except Exception:
         board_rows, all_picks = [], []
     scan_time_ms = int((time.time() - t0) * 1000)
@@ -3635,13 +4102,28 @@ def picks_landing():
         # alt totals to distinguish them from model-only chalks).
         for row in board_rows:
             for p in row["picks"]:
-                # Skip EV picks (already captured above via all_picks).
-                is_ev = (not p.get("model_only")) and p.get("source") != "alt"
-                if is_ev:
-                    continue
-                if p.get("conf", 0) < 4:
-                    continue
+                # Skip picks already captured via all_picks (collect_picks EV
+                # output). Those arrive with model_only=False, source != "alt",
+                # and an id that's already in seen_ids. Model-fill picks live
+                # on the board but NOT in all_picks — we need to save them
+                # here. Previously the "skip EV picks" early-out dropped
+                # model-fill picks tagged as EV (source=="ev_model") too,
+                # which hid every main-line Spread/Total +EV pick from the
+                # +EV tracker on /logged.
                 if p.get("id") in seen_ids:
+                    continue
+                # Save when EITHER the pick is high-conviction (conf 4+) OR
+                # it carries a real positive EV number against a book price
+                # (model-fill alt-total/alt-spread/BTTS/1H totals, and now
+                # main-line Spread/Total via ev_model). Picks without either
+                # signal aren't worth logging.
+                has_ev = False
+                try:
+                    ev = p.get("ev_pct")
+                    has_ev = ev is not None and float(ev) > 0.0
+                except (TypeError, ValueError):
+                    has_ev = False
+                if p.get("conf", 0) < 4 and not has_ev:
                     continue
                 confident.append(p)
                 seen_ids.add(p.get("id"))
@@ -3694,6 +4176,7 @@ def picks_landing():
         board_rows=board_rows,
         sport_counts=sport_counts,
         sport_filter=sport_filter,
+        strong_only=strong_only,
         picks_count=picks_count,
         ev_count=ev_count,
         strong_count=strong_count,
@@ -9033,9 +9516,12 @@ main.logged-page { max-width: 1040px; }
     {% endif %}
   </div>
 
-  <div class="persist-status {{ 'ok' if grader_status.odds_api_enabled else 'warn' }}">
+  <div class="persist-status {{ 'ok' if (grader_status.odds_api_enabled or grader_status.espn_enabled) else 'warn' }}">
     {% if grader_status.odds_api_enabled %}
-      <strong>Grading:</strong> enabled &middot; Odds API scores (all sports) + MLB statsapi (free fallback).
+      <strong>Grading:</strong> enabled &middot; Odds API scores (all sports) + ESPN scoreboard + MLB statsapi fallback.
+    {% elif grader_status.espn_enabled %}
+      <strong>Grading:</strong> enabled &middot; ESPN scoreboard (free, no key) for every sport, plus MLB statsapi.
+      <code>ODDS_API_KEY</code> isn't set — ESPN handles grading on its own, so picks will still settle without it.
     {% else %}
       <strong>Grading:</strong> MLB only (statsapi fallback is live).
       <code>ODDS_API_KEY</code> is not set, so NFL / NCAAF / NHL / soccer / UFC picks will stay pending
@@ -9705,6 +10191,16 @@ def logged_plays():
     pipeline reads back any recommended per-sport consensus weight shifts.
     """
     import plays_log, log_persist, model_analytics
+    # Backfill: any date in the last 14 days with pending picks whose games
+    # are >= 4h past start gets a forced re-grade. Catches picks the grader
+    # couldn't settle on its first pass (ESPN returned empty, game hadn't
+    # ended, etc.) so the records stop showing stale "pending" for ended
+    # games. Non-fatal — the next step still runs even if this blows up.
+    backfill_summary = None
+    try:
+        backfill_summary = plays_log.grade_pending_backfill(days_back=14)
+    except Exception:
+        backfill_summary = None
     try:
         graded_by_date = plays_log.grade_all(limit_dates=120)
     except Exception:

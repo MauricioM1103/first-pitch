@@ -181,7 +181,9 @@ def _sport_bets(sport):
 # ============================================================================
 
 MIN_FAIR_PROB      = 0.46   # fair/sharp AND model probability threshold
-MIN_DECIMAL        = 1.60   # don't show short-favorite picks (-167+)
+MIN_DECIMAL        = 1.50   # don't show short-favorite picks (-200+); dropped
+                            # from 1.60 to admit heavier chalk when the model
+                            # has it priced as +EV
 MIN_EV_PCT         = 2.0    # require real edge after market blend — 0% EV is not a pick
 SOCCER_DRAW_MAX_DEC = 3.70  # soccer draws only when market has them in reach
 STRONG_PROB_TIER   = 0.60   # "strong" badge for high-conviction picks
@@ -208,6 +210,8 @@ def _market_category(market):
     if "TEAM TOTAL" in m: return "TT"
     if "WIN TO NIL" in m or "CLEAN SHEET" in m: return "WTN"
     if "BTTS" in m or "BOTH TEAMS" in m: return "BTTS"
+    if "DRAW NO BET" in m or m == "DNB": return "DNB"
+    if "FIGHT DISTANCE" in m or "DISTANCE" in m or m == "DISTANCE": return "Distance"
     if "DOUBLE CHANCE" in m or " OR DRAW" in m or m == "DC": return "DC"
     if "SPREAD" in m or "RUNLINE" in m or "RL" in m or "PUCK LINE" in m: return "Spread"
     if "TOTAL" in m or "O/U" in m or "OVER" in m or "UNDER" in m: return "Total"
@@ -290,15 +294,18 @@ def _passes_filter(p):
 
 
 def _passes_ev_filter(p):
-    """Final EV check — only run after consensus has blended with the market.
-    A pick with 55% fair at -118 (implied 54%) is +1pp of edge, not a bet.
-    Alt-line picks (alt_line_flag) are informational and bypass the EV
-    gate; they get surfaced for their fair probability only."""
+    """Uniform EV filter: every pick must have a positive EV against a book
+    price to appear on the board. Picks without a computed ev_pct (NRFI,
+    pure model-only props without a Pinnacle price) are dropped — the user
+    wants the board to only surface picks we can actually verify as +EV.
+
+    Alt-line picks (alt_line_flag) bypass the gate because they were
+    already filtered at emission with their own EV / fair-prob band."""
     if p.get("alt_line_flag"):
         return True
     ev = p.get("ev_pct")
     if ev is None:
-        return True
+        return False
     return ev >= MIN_EV_PCT
 
 
@@ -412,7 +419,8 @@ def _sim_for(sport_slug, home, away, market_total=None):
             sim = cfb_model.simulate_match(home, away, n=CONSENSUS_SIM_TRIALS,
                                            market_total=market_total)
         elif sport_slug == "nfl":
-            sim = _nfl_quick_sim(home, away, CONSENSUS_SIM_TRIALS)
+            sim = _nfl_quick_sim(home, away, CONSENSUS_SIM_TRIALS,
+                                 market_total=market_total)
         elif sport_slug == "ufc":
             import ufc_model
             # For UFC the "home" / "away" fields carry the fighter names
@@ -433,8 +441,15 @@ def _sim_for(sport_slug, home, away, market_total=None):
     return sim
 
 
-def _nfl_quick_sim(home_name, away_name, n):
-    """Empirical-margin NFL sim for picks consensus. Mirrors _mc_run_simulation NFL branch."""
+def _nfl_quick_sim(home_name, away_name, n, market_total=None):
+    """Empirical-margin NFL sim for picks consensus. Mirrors _mc_run_simulation NFL branch.
+
+    market_total: if provided (Pinnacle's main-line O/U), anchor the sim's
+    totals distribution to it instead of the league-wide 45. Without this
+    anchor every NFL Total pick was priced against a 45-point sim regardless
+    of the actual spread of the game, which systematically mislabeled Overs
+    on high-total matchups as Unders.
+    """
     try:
         import nfl_model, nfl_margin_dist, random
         state = nfl_model.get_final_state()
@@ -446,7 +461,13 @@ def _nfl_quick_sim(home_name, away_name, n):
         diff = (h_elo + 65) - a_elo
         edge = diff / 25.0
         proj_margin = edge
-        proj_total  = 45.0  # NFL avg total; we draw it independently of margin for V1
+        # Anchor the projected total to Pinnacle's main-line O/U (if given) —
+        # Pinnacle is sharper than any league-wide prior. Blend 70% market
+        # / 30% league to keep a small nudge toward the mean on extreme lines.
+        if market_total and market_total > 0:
+            proj_total = 0.7 * float(market_total) + 0.3 * 45.0
+        else:
+            proj_total = 45.0
         rng = random.Random()
         h_wins = a_wins = 0
         margins = []
@@ -559,9 +580,34 @@ def _sim_prob_for_pick(sim, pick):
             return None
         return over_pct if side_dir == "over" else (1 - over_pct)
 
-    # Spread / Puck Line / Run Line / 1H / 1P Spread — need per-sim margins
-    # (which simulate_match doesn't surface in its summary). Skip the consensus
-    # check for spreads; the line-shape filter already removes the worst noise.
+    # Spread / Puck Line / Run Line / 1H / 1P Spread — read from the sim's
+    # margins list when available (NFL/NCAAF/NHL expose it). The pick text
+    # carries the SIDE's line (e.g. "Chiefs -3.5" or "Falcons +7.5"); home
+    # cover ⇔ margin > -line, away cover ⇔ margin < +line.
+    if ("Spread" in market or market in ("Run Line", "Puck Line")
+            or market in ("1H Spread", "1P Spread")):
+        margins = sim.get("margins") or []
+        if not margins:
+            return None
+        import re as _re
+        m = _re.search(r"([+-]?\d+(?:\.\d+)?)", text)
+        if not m:
+            return None
+        try:
+            line = float(m.group(1))
+        except ValueError:
+            return None
+        is_home_side = home_norm and home_norm in pick_norm
+        is_away_side = away_norm and away_norm in pick_norm
+        if not (is_home_side or is_away_side):
+            return None
+        n = len(margins)
+        if is_home_side:
+            # Home side covers at `line` iff margin > -line (home - away > -line)
+            return sum(1 for mm in margins if mm > -line) / n
+        # Away side covers at `line` iff margin < line (home - away < line)
+        return sum(1 for mm in margins if mm < line) / n
+
     return None
 
 
@@ -595,11 +641,12 @@ def _apply_consensus(picks):
         # Drop market types the analyzer flagged as deeply unprofitable.
         if p.get("market") in market_blacklist:
             continue
-        # For NCAAF totals, extract the line from the pick text and pass to
-        # the sim so it can anchor its scoring projection against the market
-        # (fixes the Over bias where every total was 62-64%).
+        # For NFL/NCAAF totals, extract the line from the pick text and pass
+        # to the sim so it can anchor its scoring projection against the
+        # market (fixes the systematic over/under bias where every total
+        # was priced against a fixed league-average 45 for NFL, 62 for NCAAF).
         market_total = None
-        if p.get("sport_slug") == "ncaaf" and "Total" in (p.get("market") or ""):
+        if p.get("sport_slug") in ("ncaaf", "nfl") and "Total" in (p.get("market") or ""):
             m = _re.search(r"(?i)(?:over|under)\s+([\d.]+)", p.get("pick") or "")
             if m:
                 try: market_total = float(m.group(1))

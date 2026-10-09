@@ -344,20 +344,23 @@ def _parse_espn_events(data):
     return events_out
 
 
-def fetch_scores_espn(paths, days_back=3):
+def fetch_scores_espn(paths, days_back=3, ref_date=None):
     """Fetch final scores from ESPN's public scoreboard JSON. `paths` is a
     sport-path string ("football/nfl") or a list of them (for aggregated
     sports like international soccer).
 
     No API key, no rate-limit meter, no monthly cap. Caches in-process for
-    10 min. Walks the last `days_back` calendar days (ESPN's default
-    scoreboard returns today only, so we hit `?dates=YYYYMMDD` per day).
+    10 min. Walks `days_back` calendar days backward from `ref_date`
+    (default: today), hitting `?dates=YYYYMMDD` per day. Pass `ref_date`
+    when backfilling grades for older pending picks whose game date falls
+    outside the default today-anchored window.
     """
     if not paths:
         return []
     if isinstance(paths, str):
         paths = [paths]
-    cache_key = ("espn", tuple(paths), days_back)
+    ref_date = ref_date or date.today()
+    cache_key = ("espn", tuple(paths), days_back, ref_date.isoformat())
     now = time.time()
     hit = _ESPN_CACHE.get(cache_key)
     if hit:
@@ -367,7 +370,7 @@ def fetch_scores_espn(paths, days_back=3):
             return events
     all_events = []
     seen_ids = set()
-    cutoff_dates = [(date.today() - timedelta(days=d)).strftime("%Y%m%d")
+    cutoff_dates = [(ref_date - timedelta(days=d)).strftime("%Y%m%d")
                     for d in range(days_back + 1)]
     for path in paths:
         for d in cutoff_dates:
@@ -499,11 +502,18 @@ def grader_status():
     many events each one is currently returning. Previously only reported
     whether the ODDS_API_KEY env var was set — which hid the common failure
     mode where the key is set but the API returns empty for a given sport
-    (match not in the fetched league, API coverage gap, rate-limited, etc)."""
+    (match not in the fetched league, API coverage gap, rate-limited, etc).
+
+    `espn_enabled` is True when any configured sport has an ESPN scoreboard
+    path — ESPN covers every sport in sports.py as of the ESPN switch, so
+    the user's "ODDS_API_KEY not set" warning is now obsolete even when the
+    key is missing. The UI banner uses this to say "ESPN primary" instead
+    of warning that NFL/NCAAF/NHL picks will stay pending."""
     import sports as _sports
     out = {
         "odds_api_enabled": bool(os.environ.get("ODDS_API_KEY")),
         "mlb_statsapi":     True,
+        "espn_enabled":     any(sp.get("espn_scoreboard") for sp in _sports.SPORTS),
         "per_sport":        {},
     }
     # Count events currently cached per sport key (reflects last fetch).
@@ -538,7 +548,11 @@ def grader_status():
                         break
             except Exception as e:
                 last_err = last_err or f"{type(e).__name__}: {e}"
-        if n_events == 0 and key and not last_err:
+        # Only surface an Odds API error when ESPN isn't covering this
+        # sport (i.e. no espn_scoreboard configured). ESPN is the primary
+        # grader for every sport in sports.py, so "ODDS_API_KEY not set"
+        # is noise, not a real failure, whenever ESPN exists for the sport.
+        if n_events == 0 and key and not last_err and not espn:
             last_err = _RESULTS_LAST_ERROR.get(key)
         out["per_sport"][slug] = {
             "source":     source,
@@ -911,6 +925,12 @@ def grade_date(date_str, sport_key_by_slug, force=False):
     # every sport); Odds API only runs when ESPN returns nothing AND an
     # Odds API key is configured. MLB keeps statsapi as its first source
     # because statsapi has richer inning data than ESPN does for baseball.
+    # Anchor the ESPN query at the date we are grading so a backfill run
+    # for picks that are 5+ days old reaches the right scoreboard day.
+    try:
+        ref_d = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        ref_d = date.today()
     import sports as _sports
     sport_entry_by_slug = {s["slug"]: s for s in _sports.SPORTS}
     need_sports = {p["sport_slug"] for p in raw["picks"]}
@@ -922,7 +942,7 @@ def grade_date(date_str, sport_key_by_slug, force=False):
             events.extend(fetch_scores_mlb(date_str))
         espn_path = sp.get("espn_scoreboard")
         if espn_path:
-            events.extend(fetch_scores_espn(espn_path))
+            events.extend(fetch_scores_espn(espn_path, ref_date=ref_d))
         if not events:
             key = sport_key_by_slug.get(slug)
             if key:
@@ -990,6 +1010,67 @@ def grade_date(date_str, sport_key_by_slug, force=False):
     graded = {"date": date_str, "picks": graded_picks}
     write_graded(date_str, graded)
     return graded
+
+
+def grade_pending_backfill(days_back=14, grace_hours=4, force_rescan=False):
+    """Walk logged dates in the last `days_back` days and re-grade any
+    date that still has pending picks whose games finished (start_time +
+    `grace_hours` ago). This catches picks that were pending when first
+    graded — common on dates when the grader ran before the game ended,
+    or when a sport's scoreboard query returned empty on the first pass.
+
+    Returns {"dates_scanned": int, "resettled": int, "still_pending": int}.
+    `force_rescan=True` ignores the "all settled" early-exit in grade_date.
+    """
+    import sports as _sports
+    sport_key_by_slug = {s["slug"]: s.get("odds_api_key") for s in _sports.SPORTS}
+    today_d = date.today()
+    scanned = resettled = still_pending = 0
+    now = datetime.utcnow()
+    for ds in all_logged_dates(days_back + 7):
+        try:
+            d = datetime.strptime(ds, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if d > today_d or (today_d - d).days > days_back:
+            continue
+        existing = read_graded(ds)
+        if existing:
+            pending = [p for p in existing.get("picks", [])
+                       if p.get("result") not in ("W", "L", "P")]
+            if not pending and not force_rescan:
+                continue
+            # Only re-grade when at least one pending pick's game is well
+            # past its start_time — otherwise we're just hammering ESPN
+            # for a game that isn't done yet.
+            any_ended = False
+            for p in pending:
+                st = p.get("start_time")
+                if not st:
+                    any_ended = True
+                    break
+                try:
+                    pst = datetime.fromisoformat(st.replace("Z", "+00:00"))
+                except (TypeError, ValueError):
+                    continue
+                hours_past = (now - pst.replace(tzinfo=None)).total_seconds() / 3600.0
+                if hours_past >= grace_hours:
+                    any_ended = True
+                    break
+            if not any_ended and not force_rescan:
+                continue
+        scanned += 1
+        prev_pending = (len([p for p in (existing or {}).get("picks", [])
+                             if p.get("result") not in ("W", "L", "P")])
+                        if existing else 0)
+        g = grade_date(ds, sport_key_by_slug, force=True)
+        if g:
+            now_pending = len([p for p in g.get("picks", [])
+                               if p.get("result") not in ("W", "L", "P")])
+            resettled += max(0, prev_pending - now_pending)
+            still_pending += now_pending
+    return {"dates_scanned": scanned, "resettled": resettled,
+            "still_pending": still_pending}
 
 
 def grade_all(limit_dates=90):
