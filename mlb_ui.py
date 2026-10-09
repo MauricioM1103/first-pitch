@@ -3529,6 +3529,61 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                                 "american": am, "ev_pct": ev_capped,
                                 "source": "ev_model"})
 
+    # ---- Soccer 1H Total — scaled Poisson from DC sim λ ----
+    # Soccer 1st-half scoring averages ~45% of full-game (slightly below
+    # even because stoppage time pads 2nd halves and late tactics open the
+    # game up). Model P(1H goals > line) via Poisson on sum(home_lam, away_lam)
+    # scaled by 0.45, since full-time match goals are already Poisson-ish.
+    # Pinnacle serves these at 0.5 / 1.5 / 2.5 typically.
+    if (is_soccer and sim and "1H-Total" not in existing_cats
+            and pin_total_h1 and pin_total_h1.get("line") is not None):
+        try:
+            line_h1 = float(pin_total_h1["line"])
+            lam_full = (float(sim.get("avg_home_goals") or 0)
+                        + float(sim.get("avg_away_goals") or 0))
+        except (TypeError, ValueError):
+            line_h1 = None
+            lam_full = 0.0
+        if line_h1 is not None and lam_full > 0:
+            import math as _m
+            lam_1h = lam_full * 0.45
+            # P(X > line) where X ~ Poisson(lam_1h). line = 1.5 → P(X >= 2).
+            cutoff = int(_m.floor(line_h1)) + 1
+            cum_le = sum((_m.exp(-lam_1h) * lam_1h**k) / _m.factorial(k)
+                         for k in range(cutoff))
+            p_over = 1.0 - cum_le
+            o_am = pin_total_h1.get("over_am")
+            u_am = pin_total_h1.get("under_am")
+            # Pinnacle devig for sanity cap on each side
+            pin_o_fair = None
+            if o_am is not None and u_am is not None:
+                p_o_raw = generic_odds.american_to_prob(o_am)
+                p_u_raw = generic_odds.american_to_prob(u_am)
+                pin_o_fair, _pin_u_fair = generic_odds.devig_two_sided(
+                    p_o_raw, p_u_raw)
+            for direction, prob, am in (
+                ("Over",  p_over,       o_am),
+                ("Under", 1.0 - p_over, u_am),
+            ):
+                if am is None:
+                    continue
+                dec = mlb_odds.american_to_decimal(am)
+                if not dec or dec <= 1.0:
+                    continue
+                if pin_o_fair is not None:
+                    pin_side_fair = pin_o_fair if direction == "Over" else (1 - pin_o_fair)
+                    if abs(prob - pin_side_fair) > 0.12:
+                        continue
+                ev_raw = (prob * dec - 1.0) * 100.0
+                if ev_raw < 1.0:
+                    continue
+                ev_capped = min(ev_raw, 15.0)
+                out.append({"category": "1H-Total", "market": "1H Total",
+                            "pick": f"1H {direction} {line_h1:g}",
+                            "fair_prob": prob,
+                            "american": am, "decimal": dec,
+                            "ev_pct": ev_capped, "source": "ev_model"})
+
     # ---- NHL Period 1 Total — Poisson on scaled-down full-game λ ----
     # NHL P1 scoring averages ~30% of full-game (goalies are fresh, teams
     # play structured for the first ~5 min). Pinnacle usually posts P1

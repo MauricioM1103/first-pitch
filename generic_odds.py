@@ -851,7 +851,12 @@ def build_sport_games(sport, model_prob_fn=None, use_us_books=True):
                     pin_fair_yes = p_y_raw / s
                     pin_fair_no = p_n_raw / s
 
-                # Model probability via soccer model (fall back to Pinnacle devig)
+                # Model probability via soccer model (fall back to Pinnacle
+                # devig). UCL/Europa/International don't have a bespoke
+                # Dixon-Coles fit — use the EPL-prior sim as a stand-in so
+                # those leagues' BTTS prices still get a model-vs-market
+                # signal (previously they fell straight back to pin_fair
+                # which produced EV ≈ 0 and never cleared the filter).
                 btts_fair_yes = btts_fair_no = None
                 if sport["slug"] in {"epl", "laliga", "ligamx"}:
                     try:
@@ -861,6 +866,26 @@ def build_sport_games(sport, model_prob_fn=None, use_us_books=True):
                         )
                         btts_fair_yes = btts_p["yes"]
                         btts_fair_no = btts_p["no"]
+                    except Exception:
+                        pass
+                elif sport["slug"] in {"ucl", "europa", "international"}:
+                    try:
+                        import soccer_model
+                        # Priors: EPL fit for UCL/Europa, league-neutral
+                        # (predict_international_match) for Int'l friendlies
+                        # when both sides are in the national-team ratings.
+                        sim_btts = None
+                        if sport["slug"] == "international":
+                            sim_btts = soccer_model.predict_international_match(
+                                home_name, away_name, is_friendly=False,
+                            )
+                        if sim_btts is None:
+                            sim_btts = soccer_model.simulate_match(
+                                home_name, away_name, "epl", n=1500,
+                            )
+                        if sim_btts and sim_btts.get("btts_yes_pct") is not None:
+                            btts_fair_yes = float(sim_btts["btts_yes_pct"]) / 100.0
+                            btts_fair_no  = 1.0 - btts_fair_yes
                     except Exception:
                         pass
                 if btts_fair_yes is None:
