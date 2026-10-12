@@ -4004,12 +4004,25 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
         # — the pin_total anchor fix helps but recent history is bad enough
         # that we hold off until more samples prove the fix worked.
         ("nfl", "Total"),      # 3-10, -55%
+        # NFL Alt Spread: 6-10, -37% ROI. Alt spread lines for NFL are
+        # mostly key-number variants (±3, ±7) that Pinnacle prices correctly;
+        # the model doesn't beat the market here.
+        ("nfl", "Alt Spread"), # 6-10, -37% ROI
+        # NCAAF Alt Total: huge sample (n=68), consistently 48.5% / -17.9%.
+        # NCAAF totals are volatile and our model's edge disappears on
+        # alt lines where sample variance dominates.
+        ("ncaaf", "Alt Total"), # 33-35, -18% ROI
+        # La Liga ML: 2-7, -23% ROI. Draws kill ML picks; our 3-way DC
+        # draw estimate is too low for La Liga specifically.
+        ("laliga", "ML"),      # 2-7, -23% ROI
     }
     # Per-sport confidence floors — raise above the global 0.46 when a
-    # sport's low-confidence tier is giving back EV. NHL is net-negative
-    # across every tier so require model prob >= 55% for anything we show.
+    # sport's low-confidence tier is giving back EV. Set per observed
+    # calibration (the 55-60% bin consistently misses in NFL/NCAAF).
     _SPORT_CONF_FLOOR = {
         "nhl":   0.55,  # overall 44.7%, bad across all tiers
+        "nfl":   0.60,  # tier 2/5 (18% hit, -64% ROI), tier 3/5 (20%, -62%)
+        "ncaaf": 0.57,  # tier 2/5 (31%, -39%) — raise to tier 3+
     }
 
     # ---- Uniform EV filter -----------------------------------------------
