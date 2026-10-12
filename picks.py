@@ -186,7 +186,8 @@ MIN_DECIMAL        = 1.50   # don't show short-favorite picks (-200+); dropped
                             # has it priced as +EV
 MIN_EV_PCT         = 2.0    # require real edge after market blend — 0% EV is not a pick
 SOCCER_DRAW_MAX_DEC = 3.70  # soccer draws only when market has them in reach
-STRONG_PROB_TIER   = 0.60   # "strong" badge for high-conviction picks
+STRONG_PROB_TIER   = 0.68   # "strong" badge for high-conviction picks
+                            # (5/5 confidence tier only — raised from 0.60)
 MAX_PICKS          = 30     # cap list length (concise board, not firehose)
 
 
@@ -210,6 +211,7 @@ def _market_category(market):
     if "TEAM TOTAL" in m: return "TT"
     if "WIN TO NIL" in m or "CLEAN SHEET" in m: return "WTN"
     if "BTTS & TOTAL" in m or "BTTS AND TOTAL" in m or "BTTS & " in m: return "BTTS-TG"
+    if "CORRECT SCORE" in m or m == "CS": return "CS"
     if "BTTS" in m or "BOTH TEAMS" in m: return "BTTS"
     if "DRAW NO BET" in m or m == "DNB": return "DNB"
     if "FIGHT DISTANCE" in m or "DISTANCE" in m or m == "DISTANCE": return "Distance"

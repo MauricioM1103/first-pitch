@@ -1516,6 +1516,7 @@ def _sport_games_for_hub(sport, today_date):
             "dnb":        g.get("dnb"),        # soccer Draw No Bet prices
             "goes_distance": g.get("goes_distance"),  # UFC fight-goes-distance Yes/No
             "btts_tg":    g.get("btts_tg"),    # soccer BTTS + Over/Under 2.5 combo
+            "correct_score": g.get("correct_score"),  # soccer exact-score odds dict
         })
     out.sort(key=lambda x: x["start_time"] or "")
     return out
@@ -2195,6 +2196,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
 .pick-badge-row .pick-ico.dnb  { background: color-mix(in oklab, #14b8a6 20%, var(--card)); color: #14b8a6; border-color: color-mix(in oklab, #14b8a6 40%, var(--rule)); font-size: 8.5px; font-weight: 700; }
 .pick-badge-row .pick-ico.dist { background: color-mix(in oklab, #f43f5e 20%, var(--card)); color: #f43f5e; border-color: color-mix(in oklab, #f43f5e 40%, var(--rule)); font-size: 8px; font-weight: 700; }
 .pick-badge-row .pick-ico.bttstg { background: color-mix(in oklab, #d946ef 20%, var(--card)); color: #d946ef; border-color: color-mix(in oklab, #d946ef 40%, var(--rule)); font-size: 8.5px; font-weight: 700; }
+.pick-badge-row .pick-ico.cs { background: color-mix(in oklab, #a855f7 20%, var(--card)); color: #a855f7; border-color: color-mix(in oklab, #a855f7 40%, var(--rule)); font-size: 8.5px; font-weight: 700; }
 .pick-badge-row .pick-lbl { color: var(--ink); font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .pick-badge-row .pick-conf {
   font-family: "JetBrains Mono", monospace; font-size: 10.5px;
@@ -2412,7 +2414,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
       devig (sanity cap against sim overconfidence), <b>EV must be positive</b>
       (uniform filter &mdash; nothing below zero reaches the board), and the display
       EV is capped at <b>+15%</b> so a bad sim read can't produce absurd numbers.
-      Hitting both <b>60% probability AND &ge; +4% EV</b> earns a &#9733; <b>Strong</b> badge.
+      Hitting both <b>68% probability AND &ge; +4% EV</b> (5/5 confidence tier) earns a &#9733; <b>Strong</b> badge.
     </div>
     <details class="model-explain">
       <summary>How each sport's model works &rsaquo;</summary>
@@ -2439,8 +2441,8 @@ PICKS_TEMPLATE = r"""<!doctype html>
       <div class="model-explain-foot">
         Each candidate is scored against a <b>40% model / 60% Pinnacle devig</b> consensus.
         EV-verified picks must clear <b>+2% EV</b>, fair prob &ge; 46%, odds &ge; 1.60.
-        Strong (&starf;) picks clear <b>60% consensus AND +4% EV</b>. Model-only picks fill
-        the remaining ML / spread / total slots regardless of price.
+        Strong (&starf;) picks clear <b>68% consensus (5/5 tier) AND +4% EV</b>. Picks below
+        3/5 confidence (fair_prob &lt; 57%) are hidden entirely.
       </div>
     </details>
   </div>
@@ -2550,7 +2552,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
                   {% else %}
                     <span class="src-tag ev" title="EV-verified: cleared the +2% expected-value bar after model + Pinnacle devig consensus">EV{% if p.ev_pct and p.ev_pct > 0 %} +{{ '%.0f'|format(p.ev_pct) }}%{% endif %}</span>
                   {% endif %}
-                  {% if p.strong %}<span class="strong-star" title="Model &ge; 60% AND EV &ge; +4%">&#9733;</span>{% endif %}
+                  {% if p.strong %}<span class="strong-star" title="Model &ge; 68% (5/5) AND EV &ge; +4%">&#9733;</span>{% endif %}
                   {% if p.result %}<span class="pick-res {{ p.result }}" title="{{ p.result }}">{{ '✓' if p.result == 'W' else ('✗' if p.result == 'L' else '—') }}</span>{% endif %}
                 </div>
               {% endfor %}
@@ -2702,6 +2704,7 @@ def _pick_icon(market):
     if "team total" in m: return ("TT", "tt")
     if "win to nil" in m or "clean sheet" in m: return ("WN", "wtn")
     if "btts & " in m or "btts and " in m: return ("B+", "bttstg")
+    if "correct score" in m: return ("CS", "cs")
     if "btts" in m or "both teams" in m: return ("B", "btts")
     if "draw no bet" in m or m == "dnb": return ("DNB", "dnb")
     if "fight distance" in m or "distance" in m: return ("DIST", "dist")
@@ -2837,7 +2840,7 @@ _PICK_MARKET_ORDER = {"ML": 0, "DNB": 1, "DC": 2, "Spread": 3, "Total": 4,
                       "TT": 5, "1H-Total": 6,
                       "F5-ML": 7, "F5-Spread": 8, "F5-Total": 9,
                       "NRFI": 10, "WTN": 11, "BTTS": 12, "BTTS-TG": 12,
-                      "Distance": 13}
+                      "CS": 13, "Distance": 14}
 
 
 # Market-category classifier lives in picks.py (one source of truth);
@@ -2850,7 +2853,8 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                        ml_outcomes, existing_cats, pin_total_h1=None,
                        pin_total_alts=None, pin_spread_alts=None,
                        pin_btts=None, pin_tt_home=None, pin_tt_away=None,
-                       pin_dnb=None, pin_goes_dist=None, pin_btts_tg=None):
+                       pin_dnb=None, pin_goes_dist=None, pin_btts_tg=None,
+                       pin_correct_score=None):
     """Produce up to 3 model-opinion picks per game (ML + Spread + Total),
     skipping markets we already have an EV pick for. These are purely
     'which side does our model prefer' — no EV / price filtering, matched
@@ -3474,6 +3478,54 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                             "source":   "ev_model",
                         })
 
+        # Correct Score top-N — DC joint matrix gives P(h, a). Pinnacle
+        # serves a long-odds exact-score market; emit only when EV against
+        # the Pinnacle price clears a bigger bar (combo-like variance,
+        # like BTTS+TG). Only consider the top-3 scores by model prob to
+        # avoid shotgun betting across 20+ long-odds cells.
+        if ("CS" not in existing_cats and pin_correct_score
+                and sport_slug in ("epl", "laliga", "ligamx", "ucl",
+                                    "europa", "international")):
+            try:
+                import soccer_model as _sm
+                score_probs = _sm.predict_score_probs(home, away, sport_slug)
+            except Exception:
+                score_probs = None
+            if score_probs:
+                top_scores = sorted(score_probs.items(),
+                                     key=lambda kv: -kv[1])[:3]
+                best = None   # (ev_raw, (h, a), prob, am, dec)
+                for (h_g, a_g), prob in top_scores:
+                    am = pin_correct_score.get((h_g, a_g))
+                    if am is None or prob <= 0:
+                        continue
+                    dec = mlb_odds.american_to_decimal(am)
+                    if not dec or dec <= 1.0:
+                        continue
+                    ev_raw = (prob * dec - 1.0) * 100.0
+                    # Correct score needs a MUCH bigger edge than main-line
+                    # markets — long odds amplify sim error. 5% EV floor.
+                    if ev_raw < 5.0:
+                        continue
+                    if best is None or ev_raw > best[0]:
+                        best = (ev_raw, (h_g, a_g), prob, am, dec)
+                if best:
+                    ev_raw, (h_g, a_g), prob, am, dec = best
+                    ev_capped = min(ev_raw, 15.0)
+                    # No sibling-side devig to work with (49 outcomes),
+                    # so skip the market-blend here and use raw model prob
+                    # as consensus. User sees Model % = Consensus % only
+                    # for Correct Score — explained in bulletin.
+                    out.append({
+                        "category": "CS",
+                        "market":   "Correct Score",
+                        "pick":     f"Correct Score {h_g}-{a_g}",
+                        "fair_prob": prob,
+                        "american": am, "decimal": dec,
+                        "ev_pct":   ev_capped,
+                        "source":   "ev_model",
+                    })
+
         # Win to Nil — favored side wins AND keeps a clean sheet. Derived
         # from the Dixon-Coles joint pmf (no extra sim needed). Books
         # overprice the "win AND CS" conjunction on dominant home sides,
@@ -4025,21 +4077,27 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
         "ncaaf": 0.57,  # tier 2/5 (31%, -39%) — raise to tier 3+
     }
 
-    # ---- Uniform EV filter -----------------------------------------------
-    # Every emitted pick must have ev_pct >= 1% against a book price.
-    # Alt-line picks (alt_line_flag) and model-only props without a book
-    # price (DC, WTN, Team Total) can't be EV-verified against the market,
-    # so they're suppressed here. 1% minimum eliminates picks that would
-    # display as "+0%" from rounding and matches the alt-line policy.
+    # ---- Uniform filters -------------------------------------------------
+    # Every emitted pick must:
+    #   1. Not be in the trend-based (sport, market) blacklist
+    #   2. Have fair_prob >= 0.57 (3/5 confidence — anything below is noise)
+    #   3. Clear the per-sport confidence floor
+    #   4. Have ev_pct >= 1% (alts enforce their own threshold at emission)
+    # Correct Score and other long-odds markets are inherently low-prob
+    # so they're exempted from the 3/5 floor — they get their own 5% EV
+    # floor at their emission site.
+    CONF_FLOOR_GLOBAL = 0.57
+    _LOW_PROB_MARKETS = {"Correct Score"}
     conf_floor = _SPORT_CONF_FLOOR.get(sport_slug, 0.0)
     filtered = []
     for p in out:
         if (sport_slug, p.get("market")) in _KNOWN_LOSERS:
             continue
-        # Per-sport confidence floor applies to ALL picks (even alts) —
-        # if the sport is net-negative across tiers, every low-prob pick
-        # drains ROI regardless of EV calc.
-        if (p.get("fair_prob") or 0) < conf_floor:
+        fp = p.get("fair_prob") or 0
+        if fp < conf_floor:
+            continue
+        if (p.get("market") not in _LOW_PROB_MARKETS
+                and fp < CONF_FLOOR_GLOBAL):
             continue
         if p.get("source") == "alt":
             # Alt-line picks already enforce ev >= 1% at their own emission
@@ -4101,6 +4159,7 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False):
                 "_dnb":        g.get("dnb"),
                 "_goes_dist":  g.get("goes_distance"),
                 "_btts_tg":    g.get("btts_tg"),
+                "_cs":         g.get("correct_score"),
                 "picks":       [],
                 "score_home":  None,
                 "score_away":  None,
@@ -4144,7 +4203,7 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False):
                 "_ml": None, "_spread": None, "_total": None, "_total_h1": None,
                 "_total_alts": [], "_spread_alts": [], "_btts": None,
                 "_tt_home": [], "_tt_away": [], "_dnb": None,
-                "_goes_dist": None, "_btts_tg": None,
+                "_goes_dist": None, "_btts_tg": None, "_cs": None,
                 "picks": [], "score_home": None, "score_away": None,
             }
             rows_by_key[key] = row
@@ -4208,6 +4267,7 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False):
             pin_dnb=row.get("_dnb"),
             pin_goes_dist=row.get("_goes_dist"),
             pin_btts_tg=row.get("_btts_tg"),
+            pin_correct_score=row.get("_cs"),
         )
         existing_labels = {(_market_category(p.get("market")),
                             (p.get("pick") or "").strip().lower())
@@ -4264,12 +4324,12 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False):
                 "american":      am,
                 "kelly_pct":     kelly_pct,
                 "book":          "pinnacle" if am is not None else ("verify at DK/FD" if is_alt else None),
-                # Strong tier: consensus_prob >= 60% AND EV >= +4%. Mirrors
-                # the picks.py threshold so model-fill ev_model picks get the
-                # same ★ badge as collect_picks EV picks. Alt-line picks
-                # are informational-only — never strong.
+                # Strong tier: fair_prob >= 68% (5/5 confidence) AND EV >= +4%.
+                # Raised from 60% to 68% so Strong = 5/5 only. Mirrors the
+                # picks.py STRONG_PROB_TIER. Alt-line picks are
+                # informational-only — never strong.
                 "strong":        bool((not is_alt)
-                                      and (mp.get("fair_prob") or 0) >= 0.60
+                                      and (mp.get("fair_prob") or 0) >= 0.68
                                       and (mp_ev or 0) >= 4.0),
                 "bulletin":      (
                     "Alt-total candidate — model's fair prob at a non-main line. "
@@ -4296,6 +4356,14 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False):
                 "conf":          _conf_tier(mp["fair_prob"]),
                 "result":        None,
             })
+
+        # Hide any pick whose model probability is below 3/5 confidence
+        # (fair_prob < 0.57). This applies uniformly to collect_picks EV
+        # picks AND model-fill picks on the row. Correct Score is exempt
+        # (its market is inherently sub-30% per outcome).
+        row["picks"] = [p for p in row["picks"]
+                        if (p.get("market") in ("Correct Score",)
+                            or (p.get("fair_prob") or 0) >= 0.57)]
 
         # Order picks within a game: ML → Spread → Total → anything else,
         # EV picks before model-only picks within the same category.
@@ -9898,7 +9966,7 @@ main.logged-page { max-width: 1040px; }
 
   <section class="records-section">
     <h2>Strong Picks Only <span style="color:var(--good);text-shadow:var(--ev-strong-glow);font-size:16px">★</span></h2>
-    <div class="sub">Both &ge; 60% consensus AND &ge; +4% EV. Separated so you can tell if the strong tier is the real signal (the way the reference pickers package their best plays).</div>
+    <div class="sub">Both &ge; <b>68% consensus</b> (5/5 tier) AND &ge; +4% EV. The top-conviction plays only; everything below is noise.</div>
     <div class="records-grid">
       {% for key, label in [('strong_7d','Last 7 days'),('strong_30d','Last 30 days'),('strong_90d','Last 90 days')] %}
       {% set r = summary[key] %}
@@ -9918,67 +9986,15 @@ main.logged-page { max-width: 1040px; }
   </section>
 
   <section class="records-section">
-    <h2>5/5 Confidence Picks <span style="color:var(--good);font-size:13px">consensus &ge; 68%</span></h2>
+    <h2>High-EV Picks <span style="color:var(--accent);font-size:13px">ev_pct &ge; +9%</span></h2>
     <div class="sub">
-      The highest conviction tier. ML / spread / total picks the model gave at
-      least 68% consensus probability. Graded at the price captured when the
-      pick posted. Any source (EV-verified, model-only, or alt).
+      Picks where the model's probability × posted price produced at least
+      +9% expected value — the top of the EV distribution. Longer odds, more
+      variance per pick, but the biggest sample-size-weighted edge if the
+      model's probability estimates are honest at this tier.
     </div>
     <div class="records-grid">
-      {% for key, label in [('conf5_7d','Last 7 days'),('conf5_30d','Last 30 days'),('conf5_90d','Last 90 days')] %}
-      {% set r = summary[key] %}
-      <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
-        <div class="lbl">{{ label }}</div>
-        {% if r.settled %}
-        <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
-        <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
-        {% else %}
-        <div class="wl" style="color:var(--muted)">&mdash;</div>
-        <span class="units" style="color:var(--muted)">&mdash;</span>
-        {% endif %}
-        <div class="meta">{{ r.settled }} settled{% if r.pending %} &middot; {{ r.pending }} pending{% endif %}</div>
-      </div>
-      {% endfor %}
-    </div>
-  </section>
-
-  <section class="records-section">
-    <h2>4/5 Confidence Picks <span style="color:var(--muted);font-size:13px">consensus 62&ndash;68%</span></h2>
-    <div class="sub">
-      Second-highest conviction tier. The gap between 4/5 and 5/5 ROI is the
-      cleanest read on whether the model's absolute probability bucketing is
-      calibrated — if 5/5 crushes 4/5, the model is honestly identifying its
-      best plays. If they're similar, the tier split isn't informative.
-    </div>
-    <div class="records-grid">
-      {% for key, label in [('conf4_7d','Last 7 days'),('conf4_30d','Last 30 days'),('conf4_90d','Last 90 days')] %}
-      {% set r = summary[key] %}
-      <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
-        <div class="lbl">{{ label }}</div>
-        {% if r.settled %}
-        <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
-        <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
-        {% else %}
-        <div class="wl" style="color:var(--muted)">&mdash;</div>
-        <span class="units" style="color:var(--muted)">&mdash;</span>
-        {% endif %}
-        <div class="meta">{{ r.settled }} settled{% if r.pending %} &middot; {{ r.pending }} pending{% endif %}</div>
-      </div>
-      {% endfor %}
-    </div>
-  </section>
-
-  <section class="records-section">
-    <h2>Positive-EV Picks <span style="color:var(--accent);font-size:13px">any ev_pct &gt; 0</span></h2>
-    <div class="sub">
-      Any pick where the model's consensus probability × the posted price
-      exceeded 1.0 — i.e. positive expected value, no matter the confidence
-      tier. Looser than the EV-tagged picks (which require +2% EV); captures
-      every small edge the model flagged. Over a large sample this is the
-      "did we actually find +EV at the book?" record.
-    </div>
-    <div class="records-grid">
-      {% for key, label in [('plusev_7d','Last 7 days'),('plusev_30d','Last 30 days'),('plusev_90d','Last 90 days')] %}
+      {% for key, label in [('plusev9_7d','Last 7 days'),('plusev9_30d','Last 30 days'),('plusev9_90d','Last 90 days')] %}
       {% set r = summary[key] %}
       <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
         <div class="lbl">{{ label }}</div>

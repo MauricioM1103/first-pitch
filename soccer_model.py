@@ -977,6 +977,22 @@ def predict_btts(home_team, away_team, league_slug, rho=DC_RHO_DEFAULT):
     return {"yes": p_yes, "no": 1.0 - p_yes}
 
 
+def predict_score_probs(home_team, away_team, league_slug,
+                         rho=DC_RHO_DEFAULT, max_goals=6):
+    """Return {(h, a): prob} for every exact score up to max_goals × max_goals
+    using the Dixon-Coles joint pmf. Soccer correct-score markets at
+    Pinnacle quote scores up to 6-6 plus "Any Other"; the top ~5 by prob
+    account for 55-70% of the mass on normal matches.
+    """
+    lam_h, lam_a = _project_lambdas(home_team, away_team, league_slug)
+    mat = dixon_coles_matrix(lam_h, lam_a, rho)
+    out = {}
+    for h in range(min(max_goals, DC_MAX_GOALS) + 1):
+        for a in range(min(max_goals, DC_MAX_GOALS) + 1):
+            out[(h, a)] = mat[h][a]
+    return out
+
+
 def predict_btts_and_total(home_team, away_team, league_slug, line=2.5,
                             rho=DC_RHO_DEFAULT):
     """Joint BTTS × Total goals combo probabilities (Pinnacle combo market).

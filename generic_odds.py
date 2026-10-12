@@ -481,6 +481,56 @@ def parse_pinnacle_games(league_id, ml_outcomes=2, has_halves=False):
                 "no_u25_am":  prices_am["no_u25"],
             }
 
+    # Overlay soccer "Correct Score" special. Participants are named
+    # "Home Name X, Away Name Y" for each exact score 0-0 .. 6-6 plus an
+    # "Any Other" catch-all. Model: DC joint matrix gives P(h, a) directly
+    # for each cell; pick the top-3 by model probability and emit the one
+    # with best EV against Pinnacle's correct-score price.
+    import re as _re_cs
+    for mu in matchups:
+        if mu.get("type") == "matchup":
+            continue
+        special = mu.get("special") or {}
+        desc = (special.get("description") or "").lower() if isinstance(special, dict) else ""
+        if "correct score" not in desc or "1st half" in desc:
+            continue
+        parent = mu.get("parent") or {}
+        parent_id = parent.get("id") if isinstance(parent, dict) else (mu.get("parentId") or mu.get("parentMatchupId"))
+        if parent_id not in games_by_mu:
+            continue
+        parent_g = games_by_mu[parent_id]
+        p_home = (parent_g.get("home_name") or "").strip()
+        p_away = (parent_g.get("away_name") or "").strip()
+        # Build id → (home_goals, away_goals) map by parsing participant names
+        pid_to_score = {}
+        parts = mu.get("participants") or []
+        for p in parts:
+            name = (p.get("name") or "").strip()
+            # Match "Home 0, Away 1" / "Home 2, Away 2" / etc.
+            m = _re_cs.match(r"^(.+?)\s+(\d+),\s+(.+?)\s+(\d+)$", name)
+            if not m:
+                continue
+            try:
+                h_goals = int(m.group(2))
+                a_goals = int(m.group(4))
+            except ValueError:
+                continue
+            pid_to_score[p.get("id")] = (h_goals, a_goals)
+        score_prices = {}
+        mu_sid = mu.get("id")
+        for mk in by_mu.get(mu_sid, []):
+            if mk.get("type") != "moneyline":
+                continue
+            for pr in mk.get("prices") or []:
+                pid = pr.get("participantId")
+                am = pr.get("price")
+                sc = pid_to_score.get(pid)
+                if sc is None or am is None:
+                    continue
+                score_prices[sc] = am
+        if score_prices:
+            parent_g["correct_score"] = score_prices
+
     games.sort(key=lambda g: g.get("start_time") or "")
     return games
 
