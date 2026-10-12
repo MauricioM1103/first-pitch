@@ -642,10 +642,14 @@ def get_team_goal_rates(league_slug, as_of_date=None):
     return rates
 
 
-# League average goals per team per match — fallback when a team has no data
+# League average goals per team per match — fallback when a team has no data.
+# UCL / Europa / international priors added from historical competition
+# averages: UCL ~2.8 total gpg (1.40/side), Europa ~2.7 (1.35/side), friendlies
+# ~2.6 (1.30/side).
 _LEAGUE_GOAL_PRIORS = {
     "epl": 1.40, "laliga": 1.25, "ligamx": 1.45, "bundesliga": 1.50,
     "seriea": 1.35, "ligue1": 1.30,
+    "ucl": 1.40, "europa": 1.35, "international": 1.30,
 }
 
 
@@ -706,12 +710,40 @@ def _project_lambdas(home_team, away_team, league_slug):
     When xG per-match rates are available (soccer_xg snapshot), blend them
     60/40 with the realized goals rate: xG is sharper (removes finishing
     variance) but goals are the actual outcome and shouldn't be ignored.
+
+    UCL / Europa / International: no football-data.co.uk feed for these
+    competitions. Instead cross-reference team rates across the six
+    domestic leagues we DO have (EPL, La Liga, Liga MX, Bundesliga, Serie A,
+    Ligue 1) and fall back to the UCL/Europa-specific competition prior
+    for teams we can't find. This gives us a bespoke DC projection per
+    UCL/Europa matchup instead of the previous blanket EPL-prior fallback.
     """
     rates = get_team_goal_rates(league_slug)
     prior = _LEAGUE_GOAL_PRIORS.get(league_slug, 1.35)
     default = {"gs_per_match": prior, "ga_per_match": prior, "matches": 0}
-    hr = rates.get(home_team, default)
-    ar = rates.get(away_team, default)
+
+    # Cross-league team-rate lookup for UCL / Europa / International.
+    # Try each domestic league until we find the team; break out of the
+    # loop as soon as a match is found. Caches via get_team_goal_rates.
+    _CROSS_LEAGUES = ("epl", "laliga", "bundesliga", "seriea", "ligue1", "ligamx")
+    def _cross_rate(team_name):
+        if league_slug not in ("ucl", "europa", "international"):
+            return None
+        for cross in _CROSS_LEAGUES:
+            try:
+                cross_rates = get_team_goal_rates(cross)
+            except Exception:
+                continue
+            if team_name in cross_rates and cross_rates[team_name]["matches"] > 0:
+                return cross_rates[team_name]
+            # Try case-insensitive fallback
+            for t, r in cross_rates.items():
+                if t.lower() == (team_name or "").lower() and r["matches"] > 0:
+                    return r
+        return None
+
+    hr = rates.get(home_team) or _cross_rate(home_team) or default
+    ar = rates.get(away_team) or _cross_rate(away_team) or default
 
     # xG blend when snapshot has both teams
     try:
@@ -943,6 +975,30 @@ def predict_btts(home_team, away_team, league_slug, rho=DC_RHO_DEFAULT):
     p_yes = sum(mat[h][a] for h in range(1, DC_MAX_GOALS + 1)
                              for a in range(1, DC_MAX_GOALS + 1))
     return {"yes": p_yes, "no": 1.0 - p_yes}
+
+
+def predict_btts_and_total(home_team, away_team, league_slug, line=2.5,
+                            rho=DC_RHO_DEFAULT):
+    """Joint BTTS × Total goals combo probabilities (Pinnacle combo market).
+
+    Returns {yes_over, yes_under, no_over, no_under} where each is
+    P(BTTS=yes/no AND total >/< line) summed over the Dixon-Coles joint
+    matrix cells. All four sum to 1.0.
+    """
+    lam_h, lam_a = _project_lambdas(home_team, away_team, league_slug)
+    mat = dixon_coles_matrix(lam_h, lam_a, rho)
+    out = {"yes_over": 0.0, "yes_under": 0.0,
+           "no_over": 0.0, "no_under": 0.0}
+    for h in range(DC_MAX_GOALS + 1):
+        for a in range(DC_MAX_GOALS + 1):
+            p = mat[h][a]
+            if p <= 0:
+                continue
+            btts_yes = (h >= 1 and a >= 1)
+            over = (h + a) > line
+            key = ("yes" if btts_yes else "no") + ("_over" if over else "_under")
+            out[key] += p
+    return out
 
 
 def _pick_season():

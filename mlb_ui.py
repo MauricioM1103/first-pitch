@@ -1515,6 +1515,7 @@ def _sport_games_for_hub(sport, today_date):
             "team_total_away": g.get("team_total_away") or [],
             "dnb":        g.get("dnb"),        # soccer Draw No Bet prices
             "goes_distance": g.get("goes_distance"),  # UFC fight-goes-distance Yes/No
+            "btts_tg":    g.get("btts_tg"),    # soccer BTTS + Over/Under 2.5 combo
         })
     out.sort(key=lambda x: x["start_time"] or "")
     return out
@@ -2193,6 +2194,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
 .pick-badge-row .pick-ico.nrfi { background: color-mix(in oklab, #fde047 25%, var(--card)); color: #ca8a04; border-color: color-mix(in oklab, #ca8a04 40%, var(--rule)); font-size: 9px; font-weight: 800; }
 .pick-badge-row .pick-ico.dnb  { background: color-mix(in oklab, #14b8a6 20%, var(--card)); color: #14b8a6; border-color: color-mix(in oklab, #14b8a6 40%, var(--rule)); font-size: 8.5px; font-weight: 700; }
 .pick-badge-row .pick-ico.dist { background: color-mix(in oklab, #f43f5e 20%, var(--card)); color: #f43f5e; border-color: color-mix(in oklab, #f43f5e 40%, var(--rule)); font-size: 8px; font-weight: 700; }
+.pick-badge-row .pick-ico.bttstg { background: color-mix(in oklab, #d946ef 20%, var(--card)); color: #d946ef; border-color: color-mix(in oklab, #d946ef 40%, var(--rule)); font-size: 8.5px; font-weight: 700; }
 .pick-badge-row .pick-lbl { color: var(--ink); font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .pick-badge-row .pick-conf {
   font-family: "JetBrains Mono", monospace; font-size: 10.5px;
@@ -2699,6 +2701,7 @@ def _pick_icon(market):
     if "1h" in m or "first half" in m or "first-half" in m: return ("1H", "h1")
     if "team total" in m: return ("TT", "tt")
     if "win to nil" in m or "clean sheet" in m: return ("WN", "wtn")
+    if "btts & " in m or "btts and " in m: return ("B+", "bttstg")
     if "btts" in m or "both teams" in m: return ("B", "btts")
     if "draw no bet" in m or m == "dnb": return ("DNB", "dnb")
     if "fight distance" in m or "distance" in m: return ("DIST", "dist")
@@ -2833,7 +2836,8 @@ def _format_total_line(total):
 _PICK_MARKET_ORDER = {"ML": 0, "DNB": 1, "DC": 2, "Spread": 3, "Total": 4,
                       "TT": 5, "1H-Total": 6,
                       "F5-ML": 7, "F5-Spread": 8, "F5-Total": 9,
-                      "NRFI": 10, "WTN": 11, "BTTS": 12, "Distance": 13}
+                      "NRFI": 10, "WTN": 11, "BTTS": 12, "BTTS-TG": 12,
+                      "Distance": 13}
 
 
 # Market-category classifier lives in picks.py (one source of truth);
@@ -2846,7 +2850,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                        ml_outcomes, existing_cats, pin_total_h1=None,
                        pin_total_alts=None, pin_spread_alts=None,
                        pin_btts=None, pin_tt_home=None, pin_tt_away=None,
-                       pin_dnb=None, pin_goes_dist=None):
+                       pin_dnb=None, pin_goes_dist=None, pin_btts_tg=None):
     """Produce up to 3 model-opinion picks per game (ML + Spread + Total),
     skipping markets we already have an EV pick for. These are purely
     'which side does our model prefer' — no EV / price filtering, matched
@@ -2897,6 +2901,20 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
         if pin_side_fair is None:
             return fair, None
         return 0.4 * fair + 0.6 * pin_side_fair, pin_side_fair
+
+    # Half-point gate: Pinnacle serves Asian handicap lines in 0.25 steps
+    # (1.25, 1.75, 2.25, 2.75, ...) but every US retail book (DK, FD,
+    # BetMGM, Caesars) only trades on 0.5 multiples. A pick for "Over 1.25"
+    # or "Spread +0.25" is useless to the bettor — there's no matching DK
+    # line to take it at. Only emit alts whose line snaps to .0 or .5.
+    def _is_half_point(line):
+        if line is None:
+            return False
+        try:
+            frac = abs(float(line) - int(float(line)))
+        except (TypeError, ValueError):
+            return False
+        return frac < 1e-9 or abs(frac - 0.5) < 1e-9
 
     # ---- ML (ALWAYS emit both sides so the reader sees the model's lean
     #        for the whole game, not just the favored side) ----
@@ -3075,6 +3093,8 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     continue
                 if abs(alt_h - main_line_h) < 0.01:
                     continue
+                if not _is_half_point(alt_h):
+                    continue   # DK/FD only trade .5 multiples
                 home_cover = sum(1 for m in numeric_margins if m > -alt_h) / n
                 # Pinnacle's own devigged fair prob for this alt line
                 pin_home_fair = None
@@ -3102,8 +3122,11 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                         continue
                     if ev_pct > MAX_EV_PCT:
                         ev_pct = MAX_EV_PCT
+                    # Snap the main-line reference to .5 so the label never
+                    # shows a quarter-point spread the user's book can't trade.
+                    main_disp_h = _snap_to_half(main_line_h) or main_line_h
                     label = (f"{team} {sign:+g} (ALT · from main "
-                             f"{home} {main_line_h:+g})")
+                             f"{home} {main_disp_h:+g})")
                     side_pin_fair = (pin_home_fair if side == "home"
                                       else (1 - pin_home_fair)) if pin_home_fair is not None else None
                     candidates.append((ev_pct, prob, label, am, dec, side_pin_fair))
@@ -3268,6 +3291,8 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 # Skip the main line itself
                 if abs(alt_line - main_line) < 0.01:
                     continue
+                if not _is_half_point(alt_line):
+                    continue   # DK/FD only trade .5 multiples
                 p_over = _p_total_over(alt_line)
                 if p_over is None:
                     continue
@@ -3304,10 +3329,14 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
             candidates.sort(key=lambda c: -c[0])   # highest EV first
             for ev_pct, prob, direction, alt_line, am, dec, side_pin_fair in candidates[:2]:
                 cons, pin_p = _cons(prob, side_pin_fair)
+                # Display reference: snap main to .5 so the label never shows
+                # a quarter-point (Pinnacle serves 2.75 / 3.25 Asian lines
+                # that confuse readers whose book trades .5 only).
+                main_disp = _snap_to_half(main_line)
                 out.append({
                     "category":  "Total",
                     "market":    "Alt Total",
-                    "pick":      f"{direction} {alt_line:g} (ALT · from main O/U {main_line:g})",
+                    "pick":      f"{direction} {alt_line:g} (ALT · from main O/U {main_disp:g})",
                     "fair_prob": prob,
                     "consensus_prob": cons,
                     "pinnacle_prob": pin_p,
@@ -3376,6 +3405,75 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                                     "american": am, "ev_pct": ev_capped,
                                     "source": "ev_model"})
 
+        # BTTS + Over 2.5 combo (Pinnacle 4-way special).
+        # Market has 4 mutually-exclusive outcomes:
+        #   Yes & Over 2.5, Yes & Under 2.5, No & Over 2.5, No & Under 2.5
+        # DC joint matrix gives P(each cell); we devig all 4 prices to get
+        # Pinnacle's own fair, then compare per-side. Only emit the top-EV
+        # side (combo markets at long odds amplify sim error, so one at a
+        # time is enough).
+        if ("BTTS-TG" not in existing_cats and pin_btts_tg
+                and sport_slug in ("epl", "laliga", "ligamx", "ucl",
+                                    "europa", "international")):
+            try:
+                import soccer_model as _sm
+                # Use the actual league slug — _project_lambdas handles
+                # UCL/Europa/International via cross-league lookup now.
+                probs = _sm.predict_btts_and_total(home, away, sport_slug, 2.5)
+            except Exception:
+                probs = None
+            if probs:
+                # Devig all 4 Pinnacle prices
+                side_defs = [
+                    ("Yes & Over 2.5",  "yes_over",  pin_btts_tg.get("yes_o25_am")),
+                    ("Yes & Under 2.5", "yes_under", pin_btts_tg.get("yes_u25_am")),
+                    ("No & Over 2.5",   "no_over",   pin_btts_tg.get("no_o25_am")),
+                    ("No & Under 2.5",  "no_under",  pin_btts_tg.get("no_u25_am")),
+                ]
+                raw_probs = []
+                for _lbl, _key, am in side_defs:
+                    if am is None:
+                        raw_probs = None
+                        break
+                    raw_probs.append(generic_odds.american_to_prob(am))
+                if raw_probs:
+                    total_raw = sum(raw_probs)
+                    pin_fairs = ([p / total_raw for p in raw_probs]
+                                 if 0.95 < total_raw < 1.25 else [None] * 4)
+                    best = None  # (ev_raw, label, prob, am, dec, pin_fair)
+                    for i, (lbl, key, am) in enumerate(side_defs):
+                        prob = probs[key]
+                        if prob <= 0:
+                            continue
+                        dec = mlb_odds.american_to_decimal(am)
+                        if not dec or dec <= 1.0:
+                            continue
+                        pin_fair = pin_fairs[i] if pin_fairs else None
+                        # 15pp cap for combo (bigger allowance than straight
+                        # BTTS because combo variance is higher).
+                        if pin_fair is not None and abs(prob - pin_fair) > 0.15:
+                            continue
+                        ev_raw = (prob * dec - 1.0) * 100.0
+                        if ev_raw < 2.0:  # combo markets need bigger edge
+                            continue
+                        if best is None or ev_raw > best[0]:
+                            best = (ev_raw, lbl, prob, am, dec, pin_fair)
+                    if best:
+                        ev_raw, lbl, prob, am, dec, pin_fair = best
+                        ev_capped = min(ev_raw, 15.0)
+                        cons, pin_p = _cons(prob, pin_fair)
+                        out.append({
+                            "category": "BTTS-TG",
+                            "market":   "BTTS & Total",
+                            "pick":     f"BTTS {lbl}",
+                            "fair_prob": prob,
+                            "consensus_prob": cons,
+                            "pinnacle_prob":  pin_p,
+                            "american": am, "decimal": dec,
+                            "ev_pct":   ev_capped,
+                            "source":   "ev_model",
+                        })
+
         # Win to Nil — favored side wins AND keeps a clean sheet. Derived
         # from the Dixon-Coles joint pmf (no extra sim needed). Books
         # overprice the "win AND CS" conjunction on dominant home sides,
@@ -3422,6 +3520,8 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                         line = float(cand.get("line"))
                     except (TypeError, ValueError):
                         continue
+                    if not _is_half_point(line):
+                        continue   # DK/FD only trade .5 multiples
                     if cand.get("over_am") is None or cand.get("under_am") is None:
                         continue
                     if _sm is None:
@@ -3528,6 +3628,8 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
             line_h1 = float(pin_total_h1["line"])
         except (TypeError, ValueError):
             line_h1 = None
+        if line_h1 is not None and not _is_half_point(line_h1):
+            line_h1 = None   # DK/FD only trade .5 multiples
         exp_full = sim.get("expected_total")
         if line_h1 is not None and isinstance(exp_full, (int, float)) and exp_full > 0:
             import math as _m
@@ -3585,6 +3687,8 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                         + float(sim.get("avg_away_goals") or 0))
         except (TypeError, ValueError):
             line_h1 = None
+        if line_h1 is not None and not _is_half_point(line_h1):
+            line_h1 = None   # DK/FD only trade .5 multiples
             lam_full = 0.0
         if line_h1 is not None and lam_full > 0:
             import math as _m
@@ -3639,6 +3743,8 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
             line_p1 = float(pin_total_h1["line"])
             lam_h_full = float(sim.get("avg_home_goals") or 0)
             lam_a_full = float(sim.get("avg_away_goals") or 0)
+            if not _is_half_point(line_p1):
+                line_p1 = None   # DK/FD only trade .5 multiples
         except (TypeError, ValueError):
             line_p1 = None
             lam_h_full = lam_a_full = 0.0
@@ -3711,6 +3817,8 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     line = float(cand.get("line"))
                 except (TypeError, ValueError):
                     continue
+                if not _is_half_point(line):
+                    continue   # DK/FD only trade .5 multiples
                 over_p = _poisson_over(lam, line)
                 if over_p is None:
                     continue
@@ -3789,6 +3897,8 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     line = float(cand.get("line"))
                 except (TypeError, ValueError):
                     continue
+                if not _is_half_point(line):
+                    continue   # DK/FD only trade .5 multiples
                 over_p = _normal_over(mu, line, team_sigma)
                 if over_p is None:
                     continue
@@ -3977,6 +4087,7 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False):
                 "_tt_away":    g.get("team_total_away") or [],
                 "_dnb":        g.get("dnb"),
                 "_goes_dist":  g.get("goes_distance"),
+                "_btts_tg":    g.get("btts_tg"),
                 "picks":       [],
                 "score_home":  None,
                 "score_away":  None,
@@ -4020,7 +4131,7 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False):
                 "_ml": None, "_spread": None, "_total": None, "_total_h1": None,
                 "_total_alts": [], "_spread_alts": [], "_btts": None,
                 "_tt_home": [], "_tt_away": [], "_dnb": None,
-                "_goes_dist": None,
+                "_goes_dist": None, "_btts_tg": None,
                 "picks": [], "score_home": None, "score_away": None,
             }
             rows_by_key[key] = row
@@ -4083,6 +4194,7 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False):
             pin_tt_away=row.get("_tt_away") or [],
             pin_dnb=row.get("_dnb"),
             pin_goes_dist=row.get("_goes_dist"),
+            pin_btts_tg=row.get("_btts_tg"),
         )
         existing_labels = {(_market_category(p.get("market")),
                             (p.get("pick") or "").strip().lower())

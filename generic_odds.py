@@ -429,6 +429,58 @@ def parse_pinnacle_games(league_id, ml_outcomes=2, has_halves=False):
                 "yes_am": yes_am, "no_am": no_am,
             }
 
+    # Overlay soccer "Both Teams To Score / Total Goals" combo (BTTS+TG).
+    # Pinnacle serves a special market with 4 participants:
+    #   "Yes & Over 2.5", "Yes & Under 2.5", "No & Over 2.5", "No & Under 2.5"
+    # Model: Dixon-Coles joint pmf gives P(BTTS=yes/no AND total > line)
+    # directly from the joint matrix. Books tend to misprice the "Yes &
+    # Over 2.5" favorite when it's the obvious outcome.
+    for mu in matchups:
+        if mu.get("type") == "matchup":
+            continue
+        special = mu.get("special") or {}
+        desc = (special.get("description") or "").lower() if isinstance(special, dict) else ""
+        # Match the full-game variant; skip 1st-half version for now.
+        if "both teams to score/total goals" not in desc or "1st half" in desc:
+            continue
+        parent = mu.get("parent") or {}
+        parent_id = parent.get("id") if isinstance(parent, dict) else (mu.get("parentId") or mu.get("parentMatchupId"))
+        if parent_id not in games_by_mu:
+            continue
+        parts = mu.get("participants") or []
+        pid_by_label = {}
+        for p in parts:
+            name = (p.get("name") or "").strip().lower()
+            # Normalize: "Yes & Over 2.5" → "yes_o25"
+            if "yes" in name and "over" in name:
+                pid_by_label["yes_o25"] = p.get("id")
+            elif "yes" in name and "under" in name:
+                pid_by_label["yes_u25"] = p.get("id")
+            elif "no" in name and "over" in name:
+                pid_by_label["no_o25"] = p.get("id")
+            elif "no" in name and "under" in name:
+                pid_by_label["no_u25"] = p.get("id")
+        mu_sid = mu.get("id")
+        prices_am = {}
+        for mk in by_mu.get(mu_sid, []):
+            if mk.get("type") != "moneyline":
+                continue
+            price_list = mk.get("prices") or []
+            for label, pid in pid_by_label.items():
+                if pid is not None:
+                    v = _price_participant(price_list, pid)
+                    if v is not None:
+                        prices_am[label] = v
+        # Need all 4 to compute the devig cleanly. Partial markets are rare
+        # and we'd rather skip than attach half the data.
+        if len(prices_am) == 4:
+            games_by_mu[parent_id]["btts_tg"] = {
+                "yes_o25_am": prices_am["yes_o25"],
+                "yes_u25_am": prices_am["yes_u25"],
+                "no_o25_am":  prices_am["no_o25"],
+                "no_u25_am":  prices_am["no_u25"],
+            }
+
     games.sort(key=lambda g: g.get("start_time") or "")
     return games
 
@@ -880,8 +932,12 @@ def build_sport_games(sport, model_prob_fn=None, use_us_books=True):
                                 home_name, away_name, is_friendly=False,
                             )
                         if sim_btts is None:
+                            # Pass the actual competition slug so
+                            # _project_lambdas uses the UCL/Europa prior +
+                            # cross-domestic-league team-rate lookup rather
+                            # than defaulting to EPL priors.
                             sim_btts = soccer_model.simulate_match(
-                                home_name, away_name, "epl", n=1500,
+                                home_name, away_name, sport["slug"], n=1500,
                             )
                         if sim_btts and sim_btts.get("btts_yes_pct") is not None:
                             btts_fair_yes = float(sim_btts["btts_yes_pct"]) / 100.0

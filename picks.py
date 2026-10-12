@@ -209,6 +209,7 @@ def _market_category(market):
         if "TOTAL" in m or "O/U" in m: return "1H-Total"
     if "TEAM TOTAL" in m: return "TT"
     if "WIN TO NIL" in m or "CLEAN SHEET" in m: return "WTN"
+    if "BTTS & TOTAL" in m or "BTTS AND TOTAL" in m or "BTTS & " in m: return "BTTS-TG"
     if "BTTS" in m or "BOTH TEAMS" in m: return "BTTS"
     if "DRAW NO BET" in m or m == "DNB": return "DNB"
     if "FIGHT DISTANCE" in m or "DISTANCE" in m or m == "DISTANCE": return "Distance"
@@ -409,8 +410,13 @@ def _sim_for(sport_slug, home, away, market_total=None):
                     home, away, is_friendly=False,
                 )
             if not sim:
-                model_slug = sport_slug if sport_slug in ("epl", "laliga", "ligamx") else "epl"
-                sim = soccer_model.simulate_match(home, away, model_slug, n=CONSENSUS_SIM_TRIALS)
+                # Pass the actual competition slug — soccer_model's
+                # _project_lambdas now handles UCL/Europa/International via
+                # cross-domestic-league team-rate lookup + competition-
+                # specific priors (previously the fallback was "epl" prior
+                # applied to every unknown team, which under-fit UCL/Europa).
+                sim = soccer_model.simulate_match(home, away, sport_slug,
+                                                   n=CONSENSUS_SIM_TRIALS)
         elif sport_slug == "nhl":
             import nhl_model
             sim = nhl_model.simulate_match(home, away, n=CONSENSUS_SIM_TRIALS)

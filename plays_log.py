@@ -885,6 +885,30 @@ def grade_pick(pick, event):
         if "no" in pick_norm:
             return "W" if (home == 0 or away == 0) else "L"
 
+    # ---- BTTS + Total combo (BTTS & Over/Under 2.5) ----
+    # Pick text is "BTTS Yes & Over 2.5" (or Under / No variants).
+    # Wins only when BOTH the BTTS side AND the total side resolve the
+    # bettor's way. Pick label contains both halves — parse them.
+    if ("btts & total" in market.lower() or "btts & " in market.lower()
+            or market == "BTTS & Total"):
+        wants_yes = "yes" in pick_norm
+        wants_over = "over" in pick_norm
+        m = re.search(r"(over|under)\s*([\d.]+)", text_lc)
+        if not m:
+            return "pending"
+        try:
+            line = float(m.group(2))
+        except ValueError:
+            return "pending"
+        btts_yes = (home > 0 and away > 0)
+        tot = home + away
+        total_over = tot > line
+        want_btts_hit = (btts_yes == wants_yes)
+        want_total_hit = (total_over == wants_over)
+        if abs(tot - line) < 1e-6:
+            return "P"
+        return "W" if (want_btts_hit and want_total_hit) else "L"
+
     # ---- Spread / Run Line / Puck Line (incl. Alt Spread, 1H/1P Spread) ----
     # Substring match catches "Alt Spread", "Alt Run Line", "1H Spread",
     # "1P Spread", etc. — the previous exact-list check missed Alt Spread
