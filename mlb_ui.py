@@ -4179,6 +4179,35 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False):
             1 if p.get("model_only") else 0,
         ))
 
+        # Cap NFL / NCAAF alt-line picks at 2 per game. These are the
+        # noisy ones — _expand_alt_line_picks adds up to 2 per side for
+        # main Spread + up to 2 more for 1H Spread, and _model_fill_picks
+        # adds up to 2 Alt Spread + 2 Alt Total. That can stack to 8 alt
+        # chips on one game card. Keep the 2 strongest (by EV, then by
+        # model's fair prob); drop the rest. Non-alt picks are untouched.
+        if row.get("sport_slug") in ("nfl", "ncaaf"):
+            alt_picks = [p for p in row["picks"] if p.get("source") == "alt"]
+            non_alt   = [p for p in row["picks"] if p.get("source") != "alt"]
+            if len(alt_picks) > 2:
+                # Sort DESC by (ev_pct present and value, then fair_prob).
+                # EV-bearing alts (Alt Spread + Alt Total from model-fill)
+                # outrank the informational alts (NFL/NCAAF expand path)
+                # that have ev_pct = None.
+                def _alt_key(p):
+                    ev = p.get("ev_pct")
+                    ev_val = float(ev) if ev is not None else -1.0
+                    fp = p.get("fair_prob") or 0.0
+                    return (-ev_val, -fp)
+                alt_picks.sort(key=_alt_key)
+                alt_picks = alt_picks[:2]
+                # Rebuild row["picks"] with the trimmed alt set, keeping
+                # the original ordering key (market order, model_only).
+                row["picks"] = non_alt + alt_picks
+                row["picks"].sort(key=lambda p: (
+                    _PICK_MARKET_ORDER.get(_market_category(p.get("market")), 9),
+                    1 if p.get("model_only") else 0,
+                ))
+
     # 6) Finalize each row — status, countdown, line/close text, sort key.
     # Apply strong-only filter: keep only ★ Strong picks on each row, then
     # drop rows with no picks left. Strong = model prob >= 60% AND ev >= 4%.
