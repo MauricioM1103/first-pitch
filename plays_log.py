@@ -747,12 +747,45 @@ def grade_pick(pick, event):
             return "W" if no_runs_1st else "L"
         return "L" if no_runs_1st else "W"
 
-    # ---- 1H / P1 Total (NFL / NCAAF / NHL) ----
-    # Our schedule-fetch doesn't carry halftime / period-1 scores for these
-    # sports (The Odds API only returns final). Mark pending — tracked but
-    # not graded until we add a scoreboard source that gives period data.
+    # ---- 1H / P1 Total (NFL / NCAAF / NHL / soccer) ----
+    # ESPN linescores are parsed into event["innings"] = [{num, home, away}].
+    # For NFL/NCAAF, "1H Total" = Q1 + Q2 for both teams.
+    # For NHL, "P1 Total" = period 1 goals (both teams).
+    # For soccer, "1H Total" = half 1 goals (both teams).
     if is_1h and ("total" in market.lower()):
-        return "pending"
+        innings_ls = event.get("innings") or []
+        if not innings_ls:
+            return "pending"
+        slug = (pick.get("sport_slug") or "").lower()
+        if slug in ("nfl", "ncaaf"):
+            # 4 quarters — need the first two
+            q1 = next((inn for inn in innings_ls if inn.get("num") == 1), None)
+            q2 = next((inn for inn in innings_ls if inn.get("num") == 2), None)
+            if q1 is None or q2 is None:
+                return "pending"
+            h_1h = (q1.get("home") or 0) + (q2.get("home") or 0)
+            a_1h = (q1.get("away") or 0) + (q2.get("away") or 0)
+        else:
+            # NHL period 1 OR soccer half 1 — just the first linescore entry
+            p1 = next((inn for inn in innings_ls if inn.get("num") == 1), None)
+            if p1 is None or p1.get("home") is None:
+                return "pending"
+            h_1h = p1.get("home") or 0
+            a_1h = p1.get("away") or 0
+        tot_1h = h_1h + a_1h
+        m = re.search(r"(over|under)\s*([\d.]+)", text_lc)
+        if not m:
+            return "pending"
+        side = m.group(1)
+        try:
+            line = float(m.group(2))
+        except ValueError:
+            return "pending"
+        if abs(tot_1h - line) < 1e-6:
+            return "P"
+        if side == "over":
+            return "W" if tot_1h > line else "L"
+        return "W" if tot_1h < line else "L"
 
     # ---- F5 ML / F5 Total ----
     if is_f5:
@@ -852,21 +885,69 @@ def grade_pick(pick, event):
         if "no" in pick_norm:
             return "W" if (home == 0 or away == 0) else "L"
 
-    # ---- Spread / Run Line / Puck Line ----
-    if market in ("Spread", "Run Line", "Puck Line", "1H Spread", "1P Spread"):
-        m = re.search(r"([+-][\d.]+)", text)
-        if not m:
-            return "pending"
-        try:
-            line = float(m.group(1))
-        except ValueError:
-            return "pending"
+    # ---- Spread / Run Line / Puck Line (incl. Alt Spread, 1H/1P Spread) ----
+    # Substring match catches "Alt Spread", "Alt Run Line", "1H Spread",
+    # "1P Spread", etc. — the previous exact-list check missed Alt Spread
+    # and left all those picks pending indefinitely.
+    _mlo = market.lower()
+    if ("spread" in _mlo or "run line" in _mlo or "puck line" in _mlo
+            or "runline" in _mlo or "puckline" in _mlo):
+        # Extract the signed line that follows the TEAM name in the pick
+        # text. The previous regex grabbed the FIRST signed number which,
+        # for alt-line labels like "Giants +7.0 (ALT · +3.0 pts easier
+        # vs main Giants +4.0)", would still work (first number = the
+        # alt line itself) — but it's safer to look for a +/-number that
+        # immediately follows a team name. Fall back to first-signed.
+        line = None
+        if home_name:
+            mh = re.search(r"(?:" + re.escape(home_name) + r")\s*([+-][\d.]+)",
+                           text_lc)
+            if mh:
+                try: line = float(mh.group(1))
+                except ValueError: pass
+        if line is None and away_name:
+            ma = re.search(r"(?:" + re.escape(away_name) + r")\s*([+-][\d.]+)",
+                           text_lc)
+            if ma:
+                try: line = float(ma.group(1))
+                except ValueError: pass
+        if line is None:
+            m = re.search(r"([+-][\d.]+)", text)
+            if not m:
+                return "pending"
+            try:
+                line = float(m.group(1))
+            except ValueError:
+                return "pending"
         if home_name and home_name in pick_norm:
             margin = (home - away) + line
         elif away_name and away_name in pick_norm:
             margin = (away - home) + line
         else:
             return "pending"
+        # For a 1H / P1 spread, use first-period margin instead of final.
+        if "1h" in _mlo or "1p" in _mlo:
+            innings_ls = event.get("innings") or []
+            slug = (pick.get("sport_slug") or "").lower()
+            if slug in ("nfl", "ncaaf"):
+                q1 = next((inn for inn in innings_ls if inn.get("num") == 1), None)
+                q2 = next((inn for inn in innings_ls if inn.get("num") == 2), None)
+                if q1 and q2:
+                    h_1h = (q1.get("home") or 0) + (q2.get("home") or 0)
+                    a_1h = (q1.get("away") or 0) + (q2.get("away") or 0)
+                    if home_name and home_name in pick_norm:
+                        margin = (h_1h - a_1h) + line
+                    elif away_name and away_name in pick_norm:
+                        margin = (a_1h - h_1h) + line
+            else:
+                p1 = next((inn for inn in innings_ls if inn.get("num") == 1), None)
+                if p1 and p1.get("home") is not None:
+                    h1 = p1.get("home") or 0
+                    a1 = p1.get("away") or 0
+                    if home_name and home_name in pick_norm:
+                        margin = (h1 - a1) + line
+                    elif away_name and away_name in pick_norm:
+                        margin = (a1 - h1) + line
         if abs(margin) < 1e-6:
             return "P"
         return "W" if margin > 0 else "L"

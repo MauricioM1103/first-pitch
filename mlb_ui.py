@@ -2889,6 +2889,15 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
             sim = None
     out = []
 
+    # Shared helper: 40%-model / 60%-market blended consensus prob, mirroring
+    # picks._apply_consensus. Returns (consensus_prob, pinnacle_prob) that
+    # each emission block attaches to its pick dict so the detail panel can
+    # show the three distinct numbers (Model / Pinnacle / Consensus).
+    def _cons(fair, pin_side_fair):
+        if pin_side_fair is None:
+            return fair, None
+        return 0.4 * fair + 0.6 * pin_side_fair, pin_side_fair
+
     # ---- ML (ALWAYS emit both sides so the reader sees the model's lean
     #        for the whole game, not just the favored side) ----
     if "ML" not in existing_cats:
@@ -2954,8 +2963,10 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 if ev_raw < 1.0:
                     continue
                 ev_capped = min(ev_raw, 15.0)
+                cons, pin_p = _cons(prob, pin_fair)
                 out.append({"category": "ML", "market": "ML",
                             "pick": label, "fair_prob": prob,
+                            "consensus_prob": cons, "pinnacle_prob": pin_p,
                             "american": am, "decimal": dec,
                             "ev_pct": ev_capped, "source": "ev_model"})
 
@@ -3028,8 +3039,10 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 if ev_raw < 1.0:
                     continue
                 ev_capped = min(ev_raw, 15.0)
+                cons, pin_p = _cons(prob, pin_side_fair)
                 out.append({"category": "Spread", "market": "Spread",
                             "pick": lbl, "fair_prob": prob,
+                            "consensus_prob": cons, "pinnacle_prob": pin_p,
                             "american": am, "decimal": dec,
                             "ev_pct": ev_capped, "source": "ev_model"})
 
@@ -3091,14 +3104,19 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                         ev_pct = MAX_EV_PCT
                     label = (f"{team} {sign:+g} (ALT · from main "
                              f"{home} {main_line_h:+g})")
-                    candidates.append((ev_pct, prob, label, am, dec))
+                    side_pin_fair = (pin_home_fair if side == "home"
+                                      else (1 - pin_home_fair)) if pin_home_fair is not None else None
+                    candidates.append((ev_pct, prob, label, am, dec, side_pin_fair))
             candidates.sort(key=lambda c: -c[0])
-            for ev_pct, prob, label, am, dec in candidates[:2]:
+            for ev_pct, prob, label, am, dec, side_pin_fair in candidates[:2]:
+                cons, pin_p = _cons(prob, side_pin_fair)
                 out.append({
                     "category":  "Spread",
                     "market":    "Alt Spread",
                     "pick":      label,
                     "fair_prob": prob,
+                    "consensus_prob": cons,
+                    "pinnacle_prob": pin_p,
                     "source":    "alt",
                     "american":  am,
                     "decimal":   dec,
@@ -3165,8 +3183,10 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     if ev_raw < 1.0:
                         continue
                     ev_capped = min(ev_raw, 15.0)
+                    cons, pin_p = _cons(prob, pin_side_fair)
                     out.append({"category": "Total", "market": "Total",
                                 "pick": lbl, "fair_prob": prob,
+                                "consensus_prob": cons, "pinnacle_prob": pin_p,
                                 "american": am, "decimal": dec,
                                 "ev_pct": ev_capped, "source": "ev_model"})
 
@@ -3278,14 +3298,19 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                         continue
                     if ev_pct > MAX_EV_PCT:
                         ev_pct = MAX_EV_PCT   # cap display
-                    candidates.append((ev_pct, prob, direction, alt_line, am, dec))
+                    side_pin_fair = (pin_over_fair if direction == "Over"
+                                      else (1 - pin_over_fair)) if pin_over_fair is not None else None
+                    candidates.append((ev_pct, prob, direction, alt_line, am, dec, side_pin_fair))
             candidates.sort(key=lambda c: -c[0])   # highest EV first
-            for ev_pct, prob, direction, alt_line, am, dec in candidates[:2]:
+            for ev_pct, prob, direction, alt_line, am, dec, side_pin_fair in candidates[:2]:
+                cons, pin_p = _cons(prob, side_pin_fair)
                 out.append({
                     "category":  "Total",
                     "market":    "Alt Total",
                     "pick":      f"{direction} {alt_line:g} (ALT · from main O/U {main_line:g})",
                     "fair_prob": prob,
+                    "consensus_prob": cons,
+                    "pinnacle_prob": pin_p,
                     "source":    "alt",
                     "american":  am,
                     "decimal":   dec,
@@ -3344,8 +3369,10 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     ev_raw = (prob * dec - 1.0) * 100.0
                     if ev_raw >= 1.0:
                         ev_capped = min(ev_raw, 15.0)
+                        cons, pin_p = _cons(prob, pin_side_fair)
                         out.append({"category": "BTTS", "market": "BTTS",
                                     "pick": label, "fair_prob": prob,
+                                    "consensus_prob": cons, "pinnacle_prob": pin_p,
                                     "american": am, "ev_pct": ev_capped,
                                     "source": "ev_model"})
 
@@ -3427,10 +3454,12 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                         if ev_raw < 1.0:
                             continue
                         ev_capped = min(ev_raw, MAX_EV_TT)
+                        cons, pin_p = _cons(prob, pin_side_fair if pin_o_fair is not None else None)
                         candidates.append({
                             "category": "TT", "market": "Team Total",
                             "pick":      f"{team} Team Total {direction} {line:g}",
                             "fair_prob": prob,
+                            "consensus_prob": cons, "pinnacle_prob": pin_p,
                             "american":  am, "decimal": dec,
                             "ev_pct":    ev_capped, "source": "ev_model",
                             "_ev_sort":  ev_raw,
@@ -3477,10 +3506,12 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                             continue
                         ev_capped = min(ev_raw, 15.0)
                         team = home if side_name == "home" else away
+                        cons, pin_p = _cons(prob, pin_fair)
                         out.append({
                             "category": "DNB", "market": "Draw No Bet",
                             "pick":      f"{team} (DNB)",
                             "fair_prob": prob,
+                            "consensus_prob": cons, "pinnacle_prob": pin_p,
                             "american":  am, "decimal": dec,
                             "ev_pct":    ev_capped, "source": "ev_model",
                         })
@@ -3524,8 +3555,19 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 ev_raw = (prob * dec - 1.0) * 100.0
                 if ev_raw >= 1.0:
                     ev_capped = min(ev_raw, 15.0)
+                    # Pinnacle devig on 1H total for the picked side
+                    pin_side_fair = None
+                    if (pin_total_h1.get("over_am") is not None
+                            and pin_total_h1.get("under_am") is not None):
+                        p_o_raw = generic_odds.american_to_prob(pin_total_h1["over_am"])
+                        p_u_raw = generic_odds.american_to_prob(pin_total_h1["under_am"])
+                        fo, _fu = generic_odds.devig_two_sided(p_o_raw, p_u_raw)
+                        if fo is not None:
+                            pin_side_fair = fo if label.startswith("1H Over") else (1 - fo)
+                    cons, pin_p = _cons(prob, pin_side_fair)
                     out.append({"category": "1H-Total", "market": "1H Total",
                                 "pick": label, "fair_prob": prob,
+                                "consensus_prob": cons, "pinnacle_prob": pin_p,
                                 "american": am, "ev_pct": ev_capped,
                                 "source": "ev_model"})
 
@@ -3570,17 +3612,20 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 dec = mlb_odds.american_to_decimal(am)
                 if not dec or dec <= 1.0:
                     continue
+                side_pin_fair = None
                 if pin_o_fair is not None:
-                    pin_side_fair = pin_o_fair if direction == "Over" else (1 - pin_o_fair)
-                    if abs(prob - pin_side_fair) > 0.12:
+                    side_pin_fair = pin_o_fair if direction == "Over" else (1 - pin_o_fair)
+                    if abs(prob - side_pin_fair) > 0.12:
                         continue
                 ev_raw = (prob * dec - 1.0) * 100.0
                 if ev_raw < 1.0:
                     continue
                 ev_capped = min(ev_raw, 15.0)
+                cons, pin_p = _cons(prob, side_pin_fair)
                 out.append({"category": "1H-Total", "market": "1H Total",
                             "pick": f"1H {direction} {line_h1:g}",
                             "fair_prob": prob,
+                            "consensus_prob": cons, "pinnacle_prob": pin_p,
                             "american": am, "decimal": dec,
                             "ev_pct": ev_capped, "source": "ev_model"})
 
@@ -3620,8 +3665,18 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 ev_raw = (prob * dec - 1.0) * 100.0
                 if ev_raw >= 1.0:
                     ev_capped = min(ev_raw, 15.0)
+                    pin_side_fair = None
+                    if (pin_total_h1.get("over_am") is not None
+                            and pin_total_h1.get("under_am") is not None):
+                        p_o_raw = generic_odds.american_to_prob(pin_total_h1["over_am"])
+                        p_u_raw = generic_odds.american_to_prob(pin_total_h1["under_am"])
+                        fo, _fu = generic_odds.devig_two_sided(p_o_raw, p_u_raw)
+                        if fo is not None:
+                            pin_side_fair = fo if label.startswith("P1 Over") else (1 - fo)
+                    cons, pin_p = _cons(prob, pin_side_fair)
                     out.append({"category": "1H-Total", "market": "1H Total",
                                 "pick": label, "fair_prob": prob,
+                                "consensus_prob": cons, "pinnacle_prob": pin_p,
                                 "american": am, "ev_pct": ev_capped,
                                 "source": "ev_model"})
 
@@ -3672,18 +3727,21 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     dec = mlb_odds.american_to_decimal(am)
                     if not dec or dec <= 1.0:
                         continue
+                    side_pin_fair = None
                     if pin_o_fair is not None:
-                        pin_side_fair = pin_o_fair if direction == "Over" else (1 - pin_o_fair)
-                        if abs(prob - pin_side_fair) > 0.12:
+                        side_pin_fair = pin_o_fair if direction == "Over" else (1 - pin_o_fair)
+                        if abs(prob - side_pin_fair) > 0.12:
                             continue
                     ev_raw = (prob * dec - 1.0) * 100.0
                     if ev_raw < 1.0:
                         continue
                     ev_capped = min(ev_raw, 15.0)
+                    cons, pin_p = _cons(prob, side_pin_fair)
                     candidates.append({
                         "category": "TT", "market": "Team Total",
                         "pick":      f"{team} Team Total {direction} {line:g}",
                         "fair_prob": prob,
+                        "consensus_prob": cons, "pinnacle_prob": pin_p,
                         "american":  am, "decimal": dec,
                         "ev_pct":    ev_capped, "source": "ev_model",
                         "_ev_sort":  ev_raw,
@@ -3747,18 +3805,21 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     dec = mlb_odds.american_to_decimal(am)
                     if not dec or dec <= 1.0:
                         continue
+                    side_pin_fair = None
                     if pin_o_fair is not None:
-                        pin_side_fair = pin_o_fair if direction == "Over" else (1 - pin_o_fair)
-                        if abs(prob - pin_side_fair) > 0.12:
+                        side_pin_fair = pin_o_fair if direction == "Over" else (1 - pin_o_fair)
+                        if abs(prob - side_pin_fair) > 0.12:
                             continue
                     ev_raw = (prob * dec - 1.0) * 100.0
                     if ev_raw < 1.0:
                         continue
                     ev_capped = min(ev_raw, 15.0)
+                    cons, pin_p = _cons(prob, side_pin_fair)
                     candidates.append({
                         "category": "TT", "market": "Team Total",
                         "pick":      f"{team} Team Total {direction} {line:g}",
                         "fair_prob": prob,
+                        "consensus_prob": cons, "pinnacle_prob": pin_p,
                         "american":  am, "decimal": dec,
                         "ev_pct":    ev_capped, "source": "ev_model",
                         "_ev_sort":  ev_raw,
@@ -3804,12 +3865,42 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     if ev_raw < 1.0:
                         continue
                     ev_capped = min(ev_raw, 15.0)
+                    cons, pin_p = _cons(prob, pin_fair)
                     out.append({
                         "category": "Distance", "market": "Fight Distance",
                         "pick":      label, "fair_prob": prob,
+                        "consensus_prob": cons, "pinnacle_prob": pin_p,
                         "american":  am, "decimal": dec,
                         "ev_pct":    ev_capped, "source": "ev_model",
                     })
+
+    # ---- Trend-based (sport, market) suppression ------------------------
+    # These combos are deeply underwater in the 90-day historical log, well
+    # past what sample size could explain by variance. Rather than wait for
+    # model_analytics to auto-blacklist them (needs 100+ settled picks per
+    # bucket), hardcode the known losers here. Numbers next to each entry
+    # are W-L and ROI over the lookback window as of the last trends scan;
+    # revisit when the sample doubles.
+    _KNOWN_LOSERS = {
+        # NHL puck line and NHL ML are structural losers — puck line pricing
+        # already prices in the ~65% +1.5 cover rate, so the model's +EV
+        # looks real on paper but doesn't hit (2-11, -75% ROI).
+        ("nhl", "ML"),         # 2-11, -75% ROI
+        ("nhl", "Spread"),     # 1-4, -70% ROI (puck line structural)
+        # NFL Alt Total was 0-5, -100% ROI — model's total projection vs
+        # Pinnacle alt line has been consistently wrong on the direction.
+        ("nfl", "Alt Total"),  # 0-5, -100%
+        # NFL Total main: 3-10, -55% ROI. Mostly Unders that aren't hitting
+        # — the pin_total anchor fix helps but recent history is bad enough
+        # that we hold off until more samples prove the fix worked.
+        ("nfl", "Total"),      # 3-10, -55%
+    }
+    # Per-sport confidence floors — raise above the global 0.46 when a
+    # sport's low-confidence tier is giving back EV. NHL is net-negative
+    # across every tier so require model prob >= 55% for anything we show.
+    _SPORT_CONF_FLOOR = {
+        "nhl":   0.55,  # overall 44.7%, bad across all tiers
+    }
 
     # ---- Uniform EV filter -----------------------------------------------
     # Every emitted pick must have ev_pct >= 1% against a book price.
@@ -3817,8 +3908,16 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
     # price (DC, WTN, Team Total) can't be EV-verified against the market,
     # so they're suppressed here. 1% minimum eliminates picks that would
     # display as "+0%" from rounding and matches the alt-line policy.
+    conf_floor = _SPORT_CONF_FLOOR.get(sport_slug, 0.0)
     filtered = []
     for p in out:
+        if (sport_slug, p.get("market")) in _KNOWN_LOSERS:
+            continue
+        # Per-sport confidence floor applies to ALL picks (even alts) —
+        # if the sport is net-negative across tiers, every low-prob pick
+        # drains ROI regardless of EV calc.
+        if (p.get("fair_prob") or 0) < conf_floor:
+            continue
         if p.get("source") == "alt":
             # Alt-line picks already enforce ev >= 1% at their own emission
             # site; keep them through the filter.
@@ -4027,8 +4126,14 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False):
                 "market":        mp["market"],
                 "pick":          mp["pick"],
                 "fair_prob":     mp["fair_prob"],
-                "consensus_prob": mp["fair_prob"],  # same for model-only (no market blend)
-                "pinnacle_prob": None,
+                # Model-fill picks compute their own 40/60 market-blend
+                # consensus and expose the Pinnacle devig they used for the
+                # sanity cap — propagate both so the detail panel shows the
+                # three distinct numbers (Model / Pinnacle / Consensus).
+                # Model-only picks without a market signal fall back to the
+                # raw model prob for consensus.
+                "consensus_prob": mp.get("consensus_prob", mp["fair_prob"]),
+                "pinnacle_prob": mp.get("pinnacle_prob"),
                 "ev_pct":        mp_ev,
                 "decimal":       dec,
                 "american":      am,
