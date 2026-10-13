@@ -130,11 +130,29 @@ def get_or_fetch_team_stats():
     return out
 
 
+def _shrink_rate(rate, games, league_mean=LEAGUE_AVG_GPG, prior_games=20.0):
+    """Regress a team's observed goal rate toward the league mean using an
+    empirical-Bayes shrinkage with pseudo-prior of `prior_games` games at
+    the league rate. In October (5-10 GP) a hot team's 3.4 GF/G shrinks to
+    ~3.03; by midseason (41 GP) it's effectively unchanged. Removes the
+    early-season noise amplification that was pushing non-equilibrium rate
+    projections through to EV."""
+    if not rate or rate <= 0 or not games or games <= 0:
+        return league_mean
+    return (rate * games + league_mean * prior_games) / (games + prior_games)
+
+
 def project_lambdas(home_name, away_name, stats=None, elo=None,
                      goalie_adj=None):
     """Return (λ_home_goals, λ_away_goals) blending team season averages
     with team Elo differential (so a hot team's recent form pushes the
     projection without needing a mid-season rate recompute).
+
+    Research-ask (Phase 2): layer in special-teams manpower via PP%/PK%
+    cross-product. A top PP (e.g. 28%) against a bottom PK (e.g. 72%) is
+    a real-goal edge that plain GF/G blending misses, especially in
+    low-sample games early in the season where season averages are noisy.
+    GF/GA are also shrunk toward league mean until the sample is adult.
     """
     if stats is None:
         stats = get_or_fetch_team_stats()
@@ -142,10 +160,12 @@ def project_lambdas(home_name, away_name, stats=None, elo=None,
         elo = get_or_fit_final_elo()
     h = stats.get(home_name) or {}
     a = stats.get(away_name) or {}
-    h_gf = h.get("gf_per") or LEAGUE_AVG_GPG
-    h_ga = h.get("ga_per") or LEAGUE_AVG_GPG
-    a_gf = a.get("gf_per") or LEAGUE_AVG_GPG
-    a_ga = a.get("ga_per") or LEAGUE_AVG_GPG
+    h_gp = h.get("games") or 0
+    a_gp = a.get("games") or 0
+    h_gf = _shrink_rate(h.get("gf_per"), h_gp)
+    h_ga = _shrink_rate(h.get("ga_per"), h_gp)
+    a_gf = _shrink_rate(a.get("gf_per"), a_gp)
+    a_ga = _shrink_rate(a.get("ga_per"), a_gp)
     base_h = ((h_gf + a_ga) / 2.0) + NHL_HFA_GOALS / 2
     base_a = ((a_gf + h_ga) / 2.0) - NHL_HFA_GOALS / 2
     # Elo blend: 100 Elo diff ≈ 0.25 goal shift
@@ -155,6 +175,29 @@ def project_lambdas(home_name, away_name, stats=None, elo=None,
     shift = diff / 400.0  # 100 Elo → 0.25 goal
     lam_h = base_h + shift / 2
     lam_a = base_a - shift / 2
+    # Special-teams manpower adjustment. ~3.0 power plays per team per game
+    # on average, each ~2.0 minutes. A team scoring on 25% vs an average 20%
+    # PK is +0.09 goal; a league-average PP vs top PK (85%) is -0.05 goal.
+    # League-average PP ~0.20, PK ~0.80. Shrink team rates toward those
+    # until we have enough samples, same reasoning as GF/GA shrink.
+    LEAGUE_PP = 0.205
+    LEAGUE_PK = 0.795
+    h_pp = _shrink_rate(h.get("pp_pct"), h_gp, LEAGUE_PP, 15.0)
+    h_pk = _shrink_rate(h.get("pk_pct"), h_gp, LEAGUE_PK, 15.0)
+    a_pp = _shrink_rate(a.get("pp_pct"), a_gp, LEAGUE_PP, 15.0)
+    a_pk = _shrink_rate(a.get("pk_pct"), a_gp, LEAGUE_PK, 15.0)
+    # Rate differential vs league baseline: how many expected goals the
+    # power-play edge adds (positive) or takes away. Capped so a tiny
+    # sample can't swing the base rate by more than 0.25 goals.
+    PP_GOALS_PER_UNIT = 3.0  # 3 PP/game × opportunity → roughly 1 goal per unit of pp%
+    h_st = max(-0.25, min(0.25,
+        (h_pp - LEAGUE_PP) * PP_GOALS_PER_UNIT - (1 - a_pk - (1 - LEAGUE_PK)) * PP_GOALS_PER_UNIT
+    ))
+    a_st = max(-0.25, min(0.25,
+        (a_pp - LEAGUE_PP) * PP_GOALS_PER_UNIT - (1 - h_pk - (1 - LEAGUE_PK)) * PP_GOALS_PER_UNIT
+    ))
+    lam_h += h_st
+    lam_a += a_st
     # Confirmed-goalie adjustment: scales opponent's expected goals by the
     # defending team's projected starter save %. Elite goaltending (>0.925)
     # suppresses opponent λ by ~15%; shaky goaltending (<0.890) raises it.

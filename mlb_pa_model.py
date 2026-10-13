@@ -90,25 +90,45 @@ def team_pa_rates(hitting_stats):
 
 
 def pitcher_pa_rates(pitcher_stat):
-    """Per-PA rates against this pitcher from his season stats dict."""
+    """Per-PA rates against this pitcher from his season stats dict.
+
+    FIP/SIERA-style treatment of BABIP: K% / BB% / HR% are high-skill
+    (year-over-year r ~0.65) so we trust them with light shrinkage;
+    singles% is the biggest BABIP luck component (year-over-year r ~0.20
+    for a single season) so we shrink it hard toward the league mean.
+    This stops a pitcher with a lucky-defense half-season from pricing
+    totals as if his bloated low-BABIP was repeatable."""
     bf = _rate(pitcher_stat.get("battersFaced") if pitcher_stat else None, 0)
     if bf <= 0:
         return dict(LEAGUE_PA)
-    def _r(field, default_key):
+
+    # Empirical-Bayes shrinkage: observed_rate is pulled toward league_mean
+    # with pseudo-prior of `prior_bf` BF at league rate. Different stats
+    # get different priors reflecting how fast they stabilize.
+    def _shrink(observed, league_mean, prior_bf):
+        return (observed * bf + league_mean * prior_bf) / (bf + prior_bf)
+
+    def _r(field, default_key, prior_bf):
         n = _rate((pitcher_stat or {}).get(field), 0)
-        return n / bf if n > 0 else LEAGUE_PA[default_key]
-    k   = _r("strikeOuts", "k")
-    bb  = _r("baseOnBalls", "bb")
-    hbp = _rate((pitcher_stat or {}).get("hitBatsmen"), 0) / bf
-    walks = bb + hbp
-    doubles = _r("doubles", "2b")
-    triples = _r("triples", "3b")
-    hr      = _r("homeRuns", "hr")
+        obs = n / bf if n > 0 else LEAGUE_PA[default_key]
+        return _shrink(obs, LEAGUE_PA[default_key], prior_bf)
+
+    # Stabilization points (approx. BF for r=0.5 year-over-year): K ~70,
+    # BB ~170, HR ~1300, singles-on-BIP ~2000. Capped so a 150-BF reliever
+    # gets shrunk ~90% to league on singles but only ~30% on strikeouts.
+    k   = _r("strikeOuts",  "k",  70)
+    bb_obs = _rate((pitcher_stat or {}).get("baseOnBalls"), 0) / bf
+    hbp    = _rate((pitcher_stat or {}).get("hitBatsmen"), 0) / bf
+    walks  = _shrink(bb_obs + hbp, LEAGUE_PA["bb"], 170)
+    doubles = _r("doubles", "2b", 400)
+    triples = _r("triples", "3b", 400)
+    hr      = _r("homeRuns","hr", 1300)
     singles_abs = (_rate((pitcher_stat or {}).get("hits"), 0)
                    - _rate((pitcher_stat or {}).get("doubles"), 0)
                    - _rate((pitcher_stat or {}).get("triples"), 0)
                    - _rate((pitcher_stat or {}).get("homeRuns"), 0))
-    singles = singles_abs / bf if singles_abs > 0 else LEAGUE_PA["1b"]
+    singles_obs = singles_abs / bf if singles_abs > 0 else LEAGUE_PA["1b"]
+    singles     = _shrink(singles_obs, LEAGUE_PA["1b"], 2000)
     bip_out = max(0.0, 1.0 - k - walks - singles - doubles - triples - hr)
     return {
         "k":   k,
@@ -249,6 +269,28 @@ def simulate_game(home_hitting, home_sp_stat, away_hitting, away_sp_stat,
     # away batting vs home SP, then home bullpen
     away_vs_sp  = project_pa_rates(away_bat, home_sp)
     away_vs_pen = project_pa_rates(away_bat, home_pen)
+
+    # Small MLB home-field advantage via per-PA rate nudges. MLB HFA is
+    # the smallest of any major sport (~0.04 win prob). We bake in that
+    # ~2% hitting bump + ~2% strikeout suppression for the home team so
+    # equal-skill projections aren't exactly 50/50.
+    MLB_HFA_BAT   = 1.015  # home batting rates get a 1.5% positive scalar
+    MLB_HFA_K     = 0.985  # home batters strike out 1.5% less
+    def _apply_hfa(rates, bat_mult, k_mult):
+        out = dict(rates)
+        for k in ("1b", "2b", "3b", "hr", "bb"):
+            if k in out:
+                out[k] = out[k] * bat_mult
+        if "k" in out:
+            out["k"] = out["k"] * k_mult
+        # Renormalize so probabilities still sum to 1
+        s = sum(out.values())
+        if s > 0:
+            for k in out:
+                out[k] = out[k] / s
+        return out
+    home_vs_sp  = _apply_hfa(home_vs_sp,  MLB_HFA_BAT, MLB_HFA_K)
+    home_vs_pen = _apply_hfa(home_vs_pen, MLB_HFA_BAT, MLB_HFA_K)
 
     home_wins = away_wins = 0
     totals = []
