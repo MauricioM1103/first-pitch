@@ -4331,6 +4331,18 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False):
                 # raw model prob for consensus.
                 "consensus_prob": mp.get("consensus_prob", mp["fair_prob"]),
                 "pinnacle_prob": mp.get("pinnacle_prob"),
+                # Model-fill picks' fair_prob IS the Monte Carlo sim's
+                # output (home_win_pct, margins distribution, totals bins,
+                # etc.). Store it under mc_prob too so model_analytics /
+                # calibration analysis has full coverage — previously only
+                # collect_picks ML/Spread/Total picks (routed via
+                # _apply_consensus) had mc_prob set, leaving every alt /
+                # team-total / BTTS / DNB / 1H / CS pick with mc_prob = None.
+                "mc_prob":       mp.get("fair_prob"),
+                # pricing_prob is the model's raw probability (same as
+                # fair_prob for model-fill since there's no separate
+                # Elo-based pricing path for these markets).
+                "pricing_prob":  mp.get("fair_prob"),
                 "ev_pct":        mp_ev,
                 "decimal":       dec,
                 "american":      am,

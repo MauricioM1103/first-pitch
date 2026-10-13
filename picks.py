@@ -700,10 +700,14 @@ def _apply_consensus(picks):
         mw_sport, market_w = _weights_for(p.get("sport"))
 
         if sim_prob is None:
-            # No MC coverage for this market (e.g. MLB bets path, which has
-            # its own model). Still blend with market so MLB picks go through
-            # the same EV discipline as everything else.
-            p["mc_prob"] = None
+            # No generic MC coverage for this market (e.g. MLB bets path,
+            # which has its own sport-specific model). Store the model's
+            # own probability under mc_prob too so calibration analysis
+            # has coverage — previously MLB (and any market _sim_prob_for_pick
+            # couldn't map, like NRFI/F5/alt-lines going through the EV
+            # path) saved mc_prob=None, leaving them out of per-market
+            # MC calibration.
+            p["mc_prob"] = fair
             p["divergence"] = None
             p["pricing_prob"] = fair
             pinnacle = p.get("pinnacle_prob")
