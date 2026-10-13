@@ -386,6 +386,36 @@ CONSENSUS_SIM_TRIALS     = 1500   # smaller sims for consensus — memory + spee
 MARKET_WEIGHT            = 0.60
 MODEL_WEIGHT             = 0.40
 
+# Per-sport MODEL_WEIGHT override. Default is 0.40 (trust Pinnacle more).
+# Soccer models (EPL/La Liga/Liga MX/UCL/Europa/Int'l) are UNDER-confident
+# per calibration: our 55-60% picks hit 75-83% in the 90-day log. Raising
+# the model weight to 0.60 lets confident soccer picks pull consensus
+# closer to the model's probability instead of being dragged down by
+# Pinnacle's devig. NFL/NCAAF/NHL stay at default — they're already
+# overconfident and need the market anchor.
+_SPORT_MODEL_WEIGHT = {
+    "epl":            0.60,
+    "laliga":         0.60,
+    "ligamx":         0.60,
+    "ucl":            0.55,  # slightly less (DC uses cross-league team rates)
+    "europa":         0.55,
+    "international":  0.55,
+}
+
+
+def _weights_for(sport_name):
+    """Return (model_weight, market_weight) for a sport name. Falls back
+    to the global MODEL_WEIGHT / MARKET_WEIGHT when sport isn't overridden.
+    sport_name is the display name ("EPL", "La Liga", ...) OR sport_slug."""
+    # Try display-name mapping first
+    name_to_slug = {
+        "EPL": "epl", "La Liga": "laliga", "Liga MX": "ligamx",
+        "Champions Lg": "ucl", "Europa Lg": "europa", "Int'l": "international",
+    }
+    slug = name_to_slug.get(sport_name, (sport_name or "").lower())
+    mw = _SPORT_MODEL_WEIGHT.get(slug, MODEL_WEIGHT)
+    return mw, 1.0 - mw
+
 _SIM_CACHE = {}
 
 
@@ -664,16 +694,21 @@ def _apply_consensus(picks):
         sim_prob = _sim_prob_for_pick(sim, p)
         fair = p.get("fair_prob") or 0.0
 
+        # Per-sport weight for the model/market blend. Soccer models are
+        # UNDER-confident per calibration, so they get a 0.60 model weight;
+        # defaults to 0.40 for everything else.
+        mw_sport, market_w = _weights_for(p.get("sport"))
+
         if sim_prob is None:
             # No MC coverage for this market (e.g. MLB bets path, which has
             # its own model). Still blend with market so MLB picks go through
-            # the same 40/60 EV discipline as everything else.
+            # the same EV discipline as everything else.
             p["mc_prob"] = None
             p["divergence"] = None
             p["pricing_prob"] = fair
             pinnacle = p.get("pinnacle_prob")
             if pinnacle is not None and pinnacle > 0:
-                blended = MODEL_WEIGHT * fair + MARKET_WEIGHT * pinnacle
+                blended = mw_sport * fair + market_w * pinnacle
                 p["model_consensus"] = fair
                 p["consensus_prob"] = blended
                 p["fair_prob"] = blended
@@ -701,13 +736,14 @@ def _apply_consensus(picks):
         p["pricing_prob"] = fair
         p["model_consensus"] = model_consensus
 
-        # Final fair = 40% our model's view + 60% Pinnacle's devigged market
-        # price. The market is sharp; our models earn their weight only
-        # where they consistently beat the no-vig line. This also means EV
-        # genuinely reflects a market disagreement, not model self-confidence.
+        # Final fair = per-sport-weighted blend of our model's view and
+        # Pinnacle's devigged market price. Default is 40% model / 60%
+        # market (Pinnacle is sharp); soccer uses 60% model / 40% market
+        # because the model is calibrated or UNDER-confident on soccer
+        # (see _SPORT_MODEL_WEIGHT comment).
         pinnacle = p.get("pinnacle_prob")
         if pinnacle is not None and pinnacle > 0:
-            consensus = MODEL_WEIGHT * model_consensus + MARKET_WEIGHT * pinnacle
+            consensus = mw_sport * model_consensus + market_w * pinnacle
             p["pinnacle_prob"] = pinnacle
         else:
             consensus = model_consensus

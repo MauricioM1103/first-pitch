@@ -2897,14 +2897,17 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
             sim = None
     out = []
 
-    # Shared helper: 40%-model / 60%-market blended consensus prob, mirroring
-    # picks._apply_consensus. Returns (consensus_prob, pinnacle_prob) that
-    # each emission block attaches to its pick dict so the detail panel can
-    # show the three distinct numbers (Model / Pinnacle / Consensus).
+    # Shared helper: per-sport-weighted model / market blended consensus
+    # prob, mirroring picks._apply_consensus. Default blend is 40% model /
+    # 60% market; soccer uses 60% model / 40% market because the soccer DC
+    # fits are under-confident per calibration (55% picks hit 75-83%).
+    _SOCCER_SET = {"epl", "laliga", "ligamx", "ucl", "europa", "international"}
+    _mw = 0.60 if sport_slug in _SOCCER_SET else 0.40
+    _market_w = 1.0 - _mw
     def _cons(fair, pin_side_fair):
         if pin_side_fair is None:
             return fair, None
-        return 0.4 * fair + 0.6 * pin_side_fair, pin_side_fair
+        return _mw * fair + _market_w * pin_side_fair, pin_side_fair
 
     # Half-point gate: Pinnacle serves Asian handicap lines in 0.25 steps
     # (1.25, 1.75, 2.25, 2.75, ...) but every US retail book (DK, FD,
