@@ -1253,8 +1253,19 @@ def record_in_window(graded_by_date, days_back, strong_only=False, today=None,
         if d < cutoff or d > today:
             continue
         for pk in picks:
-            if strong_only and not pk.get("strong"):
-                continue
+            if strong_only:
+                # Recompute "strong" at read time instead of trusting the
+                # saved pk["strong"] flag. Historical picks were tagged
+                # under the old 60% threshold; the new definition is 68%
+                # (5/5 tier) AND +4% EV. This retro-applies the stricter
+                # filter to the entire 90-day log without touching the
+                # stored files.
+                base_prob = pk.get("consensus_prob") or pk.get("fair_prob") or 0
+                ev_v = pk.get("ev_pct")
+                try: ev_v = float(ev_v) if ev_v is not None else 0.0
+                except (TypeError, ValueError): ev_v = 0.0
+                if not (base_prob >= 0.68 and ev_v >= 4.0):
+                    continue
             if source is not None:
                 pk_source = pk.get("source") or ("model" if pk.get("model_only") else "ev")
                 if pk_source != source:
