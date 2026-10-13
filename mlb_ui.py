@@ -4059,10 +4059,6 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
         # — the pin_total anchor fix helps but recent history is bad enough
         # that we hold off until more samples prove the fix worked.
         ("nfl", "Total"),      # 3-10, -55%
-        # NFL Alt Spread: 6-10, -37% ROI. Alt spread lines for NFL are
-        # mostly key-number variants (±3, ±7) that Pinnacle prices correctly;
-        # the model doesn't beat the market here.
-        ("nfl", "Alt Spread"), # 6-10, -37% ROI
         # NCAAF Alt Total: huge sample (n=68), consistently 48.5% / -17.9%.
         # NCAAF totals are volatile and our model's edge disappears on
         # alt lines where sample variance dominates.
