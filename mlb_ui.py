@@ -4070,6 +4070,10 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
         # La Liga ML: 2-7, -23% ROI. Draws kill ML picks; our 3-way DC
         # draw estimate is too low for La Liga specifically.
         ("laliga", "ML"),      # 2-7, -23% ROI
+        # NFL 1H Total: 1-3, -53% ROI (n=4). Only sport whose 1H Total
+        # is net-negative — NHL 1H Total is +28%, NCAAF 1H Total is +6%.
+        # Our 48% full-game multiplier is too generous for NFL 1H scoring.
+        ("nfl", "1H Total"),   # 1-3, -53% ROI
     }
     # Per-sport confidence floors — raise above the global 0.46 when a
     # sport's low-confidence tier is giving back EV.
