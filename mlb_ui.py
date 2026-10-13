@@ -4069,12 +4069,21 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
         ("laliga", "ML"),      # 2-7, -23% ROI
     }
     # Per-sport confidence floors — raise above the global 0.46 when a
-    # sport's low-confidence tier is giving back EV. Set per observed
-    # calibration (the 55-60% bin consistently misses in NFL/NCAAF).
+    # sport's low-confidence tier is giving back EV.
+    #
+    # Latest calibration scan (90-day log, Oct 2026):
+    #   NFL   55-57% bin: expected 55%, ACTUAL 18%  (-64% ROI, n=22)
+    #   NFL   57-60% bin: expected 57%, ACTUAL 29%  (-46% ROI, n=7)
+    #   NFL   62-65% bin: expected 62%, ACTUAL 60%  ( -0% ROI, n=10)  ← profitable floor
+    #   NCAAF 55-57%:     expected 55%, ACTUAL 37%  (-29% ROI, n=19)
+    #   NCAAF 57-60%:     expected 57%, ACTUAL 12%  (-79% ROI, n=17)  ← disaster band
+    #   NCAAF 62-65%:     expected 62%, ACTUAL 58%  (+0% ROI, n=48)   ← profitable floor
+    # Soccer / Int'l / Liga MX all show shrink > 1 (model under-confident,
+    # picks beat expected). No raise needed.
     _SPORT_CONF_FLOOR = {
         "nhl":   0.55,  # overall 44.7%, bad across all tiers
-        "nfl":   0.60,  # tier 2/5 (18% hit, -64% ROI), tier 3/5 (20%, -62%)
-        "ncaaf": 0.57,  # tier 2/5 (31%, -39%) — raise to tier 3+
+        "nfl":   0.62,  # 55-62% was deeply negative; 62-65% breaks even
+        "ncaaf": 0.62,  # 55-62% was -17% to -79% ROI; 62%+ breaks even
     }
 
     # ---- Uniform filters -------------------------------------------------
@@ -4357,13 +4366,16 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False):
                 "result":        None,
             })
 
-        # Hide any pick whose model probability is below 3/5 confidence
-        # (fair_prob < 0.57). This applies uniformly to collect_picks EV
-        # picks AND model-fill picks on the row. Correct Score is exempt
-        # (its market is inherently sub-30% per outcome).
+        # Hide any pick whose model probability is below the sport's
+        # calibrated floor. The global floor is 3/5 (0.57); specific
+        # sports with observed overconfidence (NFL, NCAAF, NHL) have
+        # their own tighter floors. Correct Score is exempt — its market
+        # is inherently sub-30% per outcome.
+        _ROW_SPORT_FLOOR = {"nhl": 0.55, "nfl": 0.62, "ncaaf": 0.62}
+        _row_floor = max(0.57, _ROW_SPORT_FLOOR.get(row.get("sport_slug", ""), 0.0))
         row["picks"] = [p for p in row["picks"]
                         if (p.get("market") in ("Correct Score",)
-                            or (p.get("fair_prob") or 0) >= 0.57)]
+                            or (p.get("fair_prob") or 0) >= _row_floor)]
 
         # Order picks within a game: ML → Spread → Total → anything else,
         # EV picks before model-only picks within the same category.
@@ -4512,9 +4524,7 @@ def picks_landing():
         if confident:
             plays_log.save_daily_picks(date_str, confident)
             # Re-grade yesterday + today so the /logged record updates the
-            # moment picks save, not only when /logged is opened. Yesterday's
-            # late games are the common case where results trickle in after
-            # the daily board was already fetched.
+            # moment picks save, not only when /logged is opened.
             try:
                 import sports as _sports
                 sport_key_by_slug = {s["slug"]: s.get("odds_api_key") for s in _sports.SPORTS}
@@ -4523,6 +4533,15 @@ def picks_landing():
                     plays_log.grade_date(ds, sport_key_by_slug)
             except Exception:
                 pass
+        # Fast-cycle backfill: any pick in the last 3 days whose game is
+        # 4h+ past kickoff and still pending gets a forced re-grade on
+        # every /picks view. This settles games right after they end
+        # instead of waiting for the next /logged visit (which runs the
+        # full 14-day backfill but may not happen until much later).
+        try:
+            plays_log.grade_pending_backfill(days_back=3)
+        except Exception:
+            pass
     except Exception:
         pass
 
