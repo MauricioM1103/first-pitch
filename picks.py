@@ -184,7 +184,10 @@ MIN_FAIR_PROB      = 0.46   # fair/sharp AND model probability threshold
 MIN_DECIMAL        = 1.50   # don't show short-favorite picks (-200+); dropped
                             # from 1.60 to admit heavier chalk when the model
                             # has it priced as +EV
-MIN_EV_PCT         = 2.0    # require real edge after market blend — 0% EV is not a pick
+MIN_EV_PCT         = 3.0    # require real edge after market blend. Research
+                            # (arXiv 2511.17733): MLB PA-Markov study betting
+                            # every perceived edge returned -15.5% ROI; a 3%
+                            # cushion flipped it to +9.1%. Raised from 2.0.
 SOCCER_DRAW_MAX_DEC = 3.70  # soccer draws only when market has them in reach
 STRONG_PROB_TIER   = 0.68   # "strong" badge for high-conviction picks
                             # (5/5 confidence tier only — raised from 0.60)
@@ -386,20 +389,22 @@ CONSENSUS_SIM_TRIALS     = 1500   # smaller sims for consensus — memory + spee
 MARKET_WEIGHT            = 0.60
 MODEL_WEIGHT             = 0.40
 
-# Per-sport MODEL_WEIGHT override. Default is 0.40 (trust Pinnacle more).
-# Soccer models (EPL/La Liga/Liga MX/UCL/Europa/Int'l) are UNDER-confident
-# per calibration: our 55-60% picks hit 75-83% in the 90-day log. Raising
-# the model weight to 0.60 lets confident soccer picks pull consensus
-# closer to the model's probability instead of being dragged down by
-# Pinnacle's devig. NFL/NCAAF/NHL stay at default — they're already
-# overconfident and need the market anchor.
+# Per-sport MODEL_WEIGHT override. Default is 0.40 (65% market / 35% model
+# per nfelo's maximum-accuracy blend).
+#
+# Earlier soccer boost to 0.60 was based on n=12 samples (EPL 55% picks
+# hitting 83%); the 2017 Soccer Prediction Challenge showed NO model beats
+# the sharp close, so the under-confidence we observed was almost
+# certainly variance. Walked back to 0.45 — slight pro-model tilt that
+# reflects soccer's lower-liquidity book pricing, but still keeps the
+# market as the dominant anchor.
 _SPORT_MODEL_WEIGHT = {
-    "epl":            0.60,
-    "laliga":         0.60,
-    "ligamx":         0.60,
-    "ucl":            0.55,  # slightly less (DC uses cross-league team rates)
-    "europa":         0.55,
-    "international":  0.55,
+    "epl":            0.45,
+    "laliga":         0.45,
+    "ligamx":         0.45,
+    "ucl":            0.40,  # cross-league team rates = more model noise
+    "europa":         0.40,
+    "international":  0.40,
 }
 
 

@@ -2393,7 +2393,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
     <h1>{{ date_pretty }}</h1>
     <p class="sub">
       <b>{{ total_games }}</b> games across <b>{{ sports_with_games }}</b> sports &middot;
-      <b>{{ picks_count }}</b> picks ({{ ev_count }} EV-verified, {{ strong_count }} strong) &middot;
+      <b>{{ picks_count }}</b> picks ({{ ev_count }} EV-verified, {{ strong_count }} strong, {{ no_bet_count }} NO BET) &middot;
       all times Central. Every pick on this board is <b>+EV</b> &mdash; the model's
       probability times the posted price exceeds 1.0, so the long-run edge is
       positive. The right-hand chip shows the pick's source:
@@ -2899,10 +2899,12 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
 
     # Shared helper: per-sport-weighted model / market blended consensus
     # prob, mirroring picks._apply_consensus. Default blend is 40% model /
-    # 60% market; soccer uses 60% model / 40% market because the soccer DC
-    # fits are under-confident per calibration (55% picks hit 75-83%).
+    # 60% market (research — no public model beats the de-vigged close).
+    # Soccer gets a modest 0.45 model weight (walked back from 0.60 after
+    # the research showed the earlier under-confidence signal was likely
+    # small-sample variance).
     _SOCCER_SET = {"epl", "laliga", "ligamx", "ucl", "europa", "international"}
-    _mw = 0.60 if sport_slug in _SOCCER_SET else 0.40
+    _mw = 0.45 if sport_slug in _SOCCER_SET else 0.40
     _market_w = 1.0 - _mw
     def _cons(fair, pin_side_fair):
         if pin_side_fair is None:
@@ -2985,7 +2987,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 # Require >= 1% EV so marginal picks that would display as
                 # "EV +0%" (ev in [0, 0.5]) don't clutter the board. Matches
                 # the alt-spread/alt-total emission policy.
-                if ev_raw < 1.0:
+                if ev_raw < 3.0:
                     continue
                 ev_capped = min(ev_raw, 15.0)
                 cons, pin_p = _cons(prob, pin_fair)
@@ -3061,7 +3063,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 if abs(prob - pin_side_fair) > 0.12:
                     continue
                 ev_raw = (prob * dec - 1.0) * 100.0
-                if ev_raw < 1.0:
+                if ev_raw < 3.0:
                     continue
                 ev_capped = min(ev_raw, 15.0)
                 cons, pin_p = _cons(prob, pin_side_fair)
@@ -3125,7 +3127,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     if not dec or dec <= 1.0:
                         continue
                     ev_pct = (prob * dec - 1.0) * 100.0
-                    if ev_pct < 1.0:
+                    if ev_pct < 5.0:
                         continue
                     if ev_pct > MAX_EV_PCT:
                         ev_pct = MAX_EV_PCT
@@ -3210,7 +3212,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     if abs(prob - pin_side_fair) > 0.12:
                         continue
                     ev_raw = (prob * dec - 1.0) * 100.0
-                    if ev_raw < 1.0:
+                    if ev_raw < 3.0:
                         continue
                     ev_capped = min(ev_raw, 15.0)
                     cons, pin_p = _cons(prob, pin_side_fair)
@@ -3326,7 +3328,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     if not dec or dec <= 1.0:
                         continue
                     ev_pct = (prob * dec - 1.0) * 100.0
-                    if ev_pct < 1.0:
+                    if ev_pct < 5.0:
                         continue
                     if ev_pct > MAX_EV_PCT:
                         ev_pct = MAX_EV_PCT   # cap display
@@ -3403,7 +3405,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 if (pin_side_fair is not None
                         and abs(prob - pin_side_fair) <= 0.12):
                     ev_raw = (prob * dec - 1.0) * 100.0
-                    if ev_raw >= 1.0:
+                    if ev_raw >= 3.0:
                         ev_capped = min(ev_raw, 15.0)
                         cons, pin_p = _cons(prob, pin_side_fair)
                         out.append({"category": "BTTS", "market": "BTTS",
@@ -3461,7 +3463,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                         if pin_fair is not None and abs(prob - pin_fair) > 0.15:
                             continue
                         ev_raw = (prob * dec - 1.0) * 100.0
-                        if ev_raw < 2.0:  # combo markets need bigger edge
+                        if ev_raw < 3.0:  # 3% research-backed sides floor
                             continue
                         if best is None or ev_raw > best[0]:
                             best = (ev_raw, lbl, prob, am, dec, pin_fair)
@@ -3606,7 +3608,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                             if abs(prob - pin_side_fair) > MAX_GAP_TT:
                                 continue
                         ev_raw = (prob * dec - 1.0) * 100.0
-                        if ev_raw < 1.0:
+                        if ev_raw < 3.0:
                             continue
                         ev_capped = min(ev_raw, MAX_EV_TT)
                         cons, pin_p = _cons(prob, pin_side_fair if pin_o_fair is not None else None)
@@ -3657,7 +3659,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                         if pin_fair is not None and abs(prob - pin_fair) > 0.12:
                             continue
                         ev_raw = (prob * dec - 1.0) * 100.0
-                        if ev_raw < 1.0:
+                        if ev_raw < 3.0:
                             continue
                         ev_capped = min(ev_raw, 15.0)
                         team = home if side_name == "home" else away
@@ -3710,7 +3712,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
             dec = mlb_odds.american_to_decimal(am) if am is not None else None
             if dec and dec > 1.0:
                 ev_raw = (prob * dec - 1.0) * 100.0
-                if ev_raw >= 1.0:
+                if ev_raw >= 3.0:
                     ev_capped = min(ev_raw, 15.0)
                     # Pinnacle devig on 1H total for the picked side
                     pin_side_fair = None
@@ -3777,7 +3779,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     if abs(prob - side_pin_fair) > 0.12:
                         continue
                 ev_raw = (prob * dec - 1.0) * 100.0
-                if ev_raw < 1.0:
+                if ev_raw < 3.0:
                     continue
                 ev_capped = min(ev_raw, 15.0)
                 cons, pin_p = _cons(prob, side_pin_fair)
@@ -3824,7 +3826,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
             dec = mlb_odds.american_to_decimal(am) if am is not None else None
             if dec and dec > 1.0:
                 ev_raw = (prob * dec - 1.0) * 100.0
-                if ev_raw >= 1.0:
+                if ev_raw >= 3.0:
                     ev_capped = min(ev_raw, 15.0)
                     pin_side_fair = None
                     if (pin_total_h1.get("over_am") is not None
@@ -3896,7 +3898,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                         if abs(prob - side_pin_fair) > 0.12:
                             continue
                     ev_raw = (prob * dec - 1.0) * 100.0
-                    if ev_raw < 1.0:
+                    if ev_raw < 3.0:
                         continue
                     ev_capped = min(ev_raw, 15.0)
                     cons, pin_p = _cons(prob, side_pin_fair)
@@ -3976,7 +3978,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                         if abs(prob - side_pin_fair) > 0.12:
                             continue
                     ev_raw = (prob * dec - 1.0) * 100.0
-                    if ev_raw < 1.0:
+                    if ev_raw < 3.0:
                         continue
                     ev_capped = min(ev_raw, 15.0)
                     cons, pin_p = _cons(prob, side_pin_fair)
@@ -4027,7 +4029,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     if pin_fair is not None and abs(prob - pin_fair) > 0.12:
                         continue
                     ev_raw = (prob * dec - 1.0) * 100.0
-                    if ev_raw < 1.0:
+                    if ev_raw < 3.0:
                         continue
                     ev_capped = min(ev_raw, 15.0)
                     cons, pin_p = _cons(prob, pin_fair)
@@ -4120,7 +4122,8 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
         if ev is None:
             continue
         try:
-            if float(ev) >= 1.0:
+            # Research floor: 3% for sides/totals/moneylines.
+            if float(ev) >= 3.0:
                 filtered.append(p)
         except (TypeError, ValueError):
             continue
@@ -4581,6 +4584,10 @@ def picks_landing():
     ev_count      = sum(1 for r in board_rows for p in r["picks"] if not p.get("model_only"))
     strong_count  = sum(1 for r in board_rows for p in r["picks"] if p.get("strong"))
     total_games   = len(board_rows)
+    # NO BET count: games we have on the slate with zero picks. Per research,
+    # "no bet" is the expected and default outcome; empty rows are a feature
+    # not a bug.
+    no_bet_count  = sum(1 for r in board_rows if not r["picks"])
     sports_with_games = len({r["sport_slug"] for r in board_rows})
     today = datetime.now(CENTRAL).date().isoformat()
 
@@ -4596,6 +4603,7 @@ def picks_landing():
         picks_count=picks_count,
         ev_count=ev_count,
         strong_count=strong_count,
+        no_bet_count=no_bet_count,
         total_games=total_games,
         sports_with_games=sports_with_games,
         scan_time_ms=scan_time_ms,
@@ -9977,9 +9985,43 @@ main.logged-page { max-width: 1040px; }
   </div>
   {% endif %}
 
+  {# Closing-Line Value is the primary skill indicator (research:
+     "a long record of no-bet outputs and small positive CLV is the
+     realistic sign that the process is working"). Shown first; W/L
+     and ROI are below because they're too noisy under ~2,000 bets. #}
+  {% if summary.all_30d.clv_n or summary.all_90d.clv_n %}
   <section class="records-section">
-    <h2>Overall Record</h2>
-    <div class="sub">All graded picks across every sport. Pending = game not yet final (Odds API lags by a few minutes after games end).</div>
+    <h2>Closing-Line Value (CLV) &mdash; <span style="color:var(--good);font-size:13px">primary skill metric</span></h2>
+    <div class="sub">
+      Change in Pinnacle's devigged probability between our first snapshot
+      of a pick and its latest (closing-ish) value. Positive = the sharp
+      side of the market moved toward our pick after we locked in &mdash;
+      the single strongest leading indicator of long-run bettor skill
+      under small samples. ROI on fewer than ~2,000 bets cannot separate
+      skill from luck (A view from the Pinnacle); CLV can.
+    </div>
+    <div class="records-grid">
+      {% for key, label in [('all_7d','Last 7 days'),('all_30d','Last 30 days'),('all_90d','Last 90 days')] %}
+      {% set r = summary[key] %}
+      <div class="rec-tile {{ 'good' if r.clv_avg_pp > 0.3 else ('bad' if r.clv_avg_pp < -0.3 else '') }}">
+        <div class="lbl">{{ label }}</div>
+        {% if r.clv_n %}
+        <div class="wl">{{ '%+.2f' % r.clv_avg_pp }}<span class="pct">pp avg</span></div>
+        <span class="units">{{ '%.0f' % r.clv_pos_pct }}% beat close &middot; {{ '%+.2f' % r.clv_avg_ev_pct }}% EV</span>
+        {% else %}
+        <div class="wl" style="color:var(--muted)">&mdash;</div>
+        <span class="units" style="color:var(--muted)">&mdash;</span>
+        {% endif %}
+        <div class="meta">{{ r.clv_n }} CLV samples</div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  <section class="records-section">
+    <h2>Overall Record <span style="color:var(--muted);font-size:13px">lagging indicator</span></h2>
+    <div class="sub">All graded picks across every sport. Research-cited caveat: ROI under ~2,000 bets is dominated by variance; use the CLV number above as the primary skill signal.</div>
     <div class="records-grid">
       {% for key, label in [('all_7d','Last 7 days'),('all_30d','Last 30 days'),('all_90d','Last 90 days')] %}
       {% set r = summary[key] %}
@@ -10082,35 +10124,6 @@ main.logged-page { max-width: 1040px; }
     </div>
     {% endif %}
   </section>
-
-  {% if summary.all_30d.clv_n or summary.all_90d.clv_n %}
-  <section class="records-section">
-    <h2>Closing-Line Value (CLV)</h2>
-    <div class="sub">
-      Change in Pinnacle's devigged probability between our FIRST snapshot of
-      a pick and its latest (closing-ish) value. Positive = the sharp side of
-      the market moved toward our pick after we locked in &mdash; the single
-      strongest leading indicator of long-run bettor skill. Only settled picks
-      count.
-    </div>
-    <div class="records-grid">
-      {% for key, label in [('all_7d','Last 7 days'),('all_30d','Last 30 days'),('all_90d','Last 90 days')] %}
-      {% set r = summary[key] %}
-      <div class="rec-tile {{ 'good' if r.clv_avg_pp > 0.3 else ('bad' if r.clv_avg_pp < -0.3 else '') }}">
-        <div class="lbl">{{ label }}</div>
-        {% if r.clv_n %}
-        <div class="wl">{{ '%+.2f' % r.clv_avg_pp }}<span class="pct">pp avg</span></div>
-        <span class="units">{{ '%.0f' % r.clv_pos_pct }}% beat close &middot; {{ '%+.2f' % r.clv_avg_ev_pct }}% EV</span>
-        {% else %}
-        <div class="wl" style="color:var(--muted)">&mdash;</div>
-        <span class="units" style="color:var(--muted)">&mdash;</span>
-        {% endif %}
-        <div class="meta">{{ r.clv_n }} CLV samples</div>
-      </div>
-      {% endfor %}
-    </div>
-  </section>
-  {% endif %}
 
   {% if active_adj and active_adj.any %}
   <div class="active-adj">
