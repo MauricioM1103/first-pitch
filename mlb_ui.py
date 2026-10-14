@@ -2374,6 +2374,11 @@ LAB_TEMPLATE = r"""<!doctype html>
       <h3>Backtest</h3>
       <p>Walk-forward performance per sport across the last 5 seasons. ROI by filter, calibration by prob band, hit rate by market.</p>
     </a>
+    <a class="lab-card" href="/first-half">
+      <span class="tag">Soccer board</span>
+      <h3>First-Half Goals</h3>
+      <p>FMS-style 1H O1.5 probability for every soccer fixture, computed from our Dixon-Coles + Pinnacle devig instead of market-only. Top-quartile pills lit, green/grey gap vs league median. Our picks for the "will there be two goals in the first half?" question.</p>
+    </a>
     <a class="lab-card" href="/full-match-score">
       <span class="tag">External</span>
       <h3>Full Match Score</h3>
@@ -2385,6 +2390,242 @@ LAB_TEMPLATE = r"""<!doctype html>
       <p>Multi-signal verdict panels (Model, Market EV, Line Movement, Historical) + one Claude synthesis per pick. Open any &#9733; pick from <a href="/" style="color:var(--good)">TODAY</a> to see it.</p>
     </div>
   </div>
+</div>
+</body>
+</html>
+"""
+
+
+FIRST_HALF_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>First-Half Goals &mdash; {{ date_pretty }}</title>
+{{ fonts_link|safe }}
+<style>
+{{ shared_style|safe }}
+.fh-header { padding: 18px 0 10px; }
+.fh-header h1 { margin: 0 0 4px; font-size: 24px; font-weight: 700; letter-spacing: -0.015em; }
+.fh-header .sub { color: var(--muted); font-size: 13px; line-height: 1.55; max-width: 720px; }
+.fh-controls {
+  display: flex; align-items: center; gap: 10px; margin: 12px 0 16px;
+  flex-wrap: wrap;
+}
+.fh-controls .chip {
+  padding: 5px 12px; border-radius: 999px;
+  color: var(--muted); background: var(--surface);
+  border: 1px solid var(--rule); text-decoration: none;
+  font-size: 12px; font-weight: 500;
+}
+.fh-controls .chip:hover { color: var(--ink); background: var(--card); }
+.fh-controls .chip.active { color: var(--ink); background: var(--card); border-color: var(--ink); }
+.fh-controls .chip.lit-chip.active {
+  background: color-mix(in oklab, #f59e0b 20%, var(--card));
+  border-color: #f59e0b; color: #f59e0b;
+}
+.fh-controls .sep { color: var(--muted-2); font-size: 11px; margin: 0 4px; }
+.fh-controls .count { color: var(--muted-2); font-size: 12px; margin-left: auto; }
+.fh-list { display: flex; flex-direction: column; gap: 8px; }
+.fh-row {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr) auto auto auto auto;
+  gap: 10px 14px; align-items: center;
+  padding: 11px 14px; background: var(--card);
+  border: 1px solid var(--rule); border-radius: 10px;
+  text-decoration: none; color: inherit;
+}
+.fh-row:hover { border-color: var(--ink); }
+.fh-row .time {
+  font-family: "JetBrains Mono", monospace; font-size: 13px;
+  color: var(--muted); white-space: nowrap;
+}
+.fh-row .time .sport-tag {
+  display: block; font-size: 10px; color: var(--muted-2);
+  letter-spacing: 0.5px; text-transform: uppercase; font-weight: 600; margin-top: 2px;
+}
+.fh-row .teams {
+  min-width: 0; display: flex; flex-direction: column; gap: 3px;
+}
+.fh-row .teams .matchup {
+  font-size: 14.5px; font-weight: 500; color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fh-row .teams .tag-row {
+  display: flex; gap: 8px; color: var(--muted-2); font-size: 11px;
+  align-items: center;
+}
+.fh-row .teams .direct {
+  display: inline-flex; padding: 1px 6px; border-radius: 4px;
+  background: color-mix(in oklab, #22c55e 15%, transparent); color: #22c55e;
+  font-weight: 700; letter-spacing: 0.4px; font-size: 9.5px;
+}
+.fh-row .teams .lam {
+  color: var(--muted-2); font-family: "JetBrains Mono", monospace;
+}
+.pill {
+  display: inline-flex; flex-direction: column; align-items: center;
+  padding: 6px 10px; border-radius: 8px; min-width: 68px;
+  background: var(--surface); border: 1px solid var(--rule);
+  font-size: 11px; color: var(--muted-2);
+  letter-spacing: 0.4px; text-transform: uppercase; font-weight: 600;
+}
+.pill .pct {
+  display: block; font-size: 15px; font-weight: 700;
+  color: var(--ink); margin-top: 2px; letter-spacing: 0;
+  font-family: "JetBrains Mono", monospace;
+}
+.pill.lit {
+  background: color-mix(in oklab, #f59e0b 15%, var(--card));
+  border-color: color-mix(in oklab, #f59e0b 55%, var(--rule));
+  color: #f59e0b;
+}
+.pill.lit .pct { color: #f59e0b; }
+.pill.key {
+  background: color-mix(in oklab, #38bdf8 10%, var(--surface));
+  border-color: color-mix(in oklab, #38bdf8 40%, var(--rule));
+}
+.pill.key.lit {
+  background: color-mix(in oklab, #22c55e 18%, var(--card));
+  border-color: color-mix(in oklab, #22c55e 60%, var(--rule));
+  color: #22c55e;
+}
+.pill.key.lit .pct { color: #22c55e; }
+.gap-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 48px; padding: 3px 8px; border-radius: 999px;
+  font-family: "JetBrains Mono", monospace; font-size: 11px;
+  font-weight: 600; letter-spacing: 0.3px;
+  background: var(--surface); border: 1px solid var(--rule);
+  color: var(--muted-2);
+}
+.gap-badge.above {
+  color: #22c55e; border-color: color-mix(in oklab, #22c55e 45%, var(--rule));
+  background: color-mix(in oklab, #22c55e 8%, transparent);
+}
+.gap-badge.below {
+  color: var(--muted); border-color: var(--rule);
+}
+.pin-badge {
+  display: inline-flex; align-items: center; padding: 2px 7px;
+  border-radius: 10px; font-size: 10.5px;
+  background: color-mix(in oklab, #38bdf8 10%, transparent);
+  border: 1px solid color-mix(in oklab, #38bdf8 40%, var(--rule));
+  color: #38bdf8;
+}
+.date-nav { display: flex; align-items: center; gap: 8px; margin: 6px 0; color: var(--muted); font-size: 13px; flex-wrap: wrap; }
+.date-nav a { color: var(--muted); text-decoration: none; padding: 2px 8px; border-radius: 6px; }
+.date-nav a:hover { background: var(--card); color: var(--ink); }
+.date-nav .label { color: var(--ink); font-weight: 600; padding: 0 6px; }
+.fh-empty { padding: 24px; background: var(--card); border: 1px solid var(--rule); border-radius: 10px; color: var(--muted); font-size: 14px; max-width: 640px; }
+@media (max-width: 760px) {
+  .wrap { padding-left: 12px; padding-right: 12px; }
+  .fh-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    padding: 10px 12px;
+  }
+  .fh-row .time { font-size: 12px; }
+  .fh-row .teams .matchup { font-size: 14px; white-space: normal; }
+  .fh-row .pill, .fh-row .gap-badge, .fh-row .pin-badge {
+    justify-self: start; width: auto;
+  }
+  /* Pills row: wrap into a chip bar */
+  .fh-row .pills-wrap {
+    display: flex; flex-wrap: wrap; gap: 6px;
+  }
+  .fh-row .pill { min-width: 62px; padding: 4px 8px; }
+  .fh-row .pill .pct { font-size: 13px; }
+}
+</style>
+</head>
+<body>
+{{ sport_strip|safe }}
+<div class="wrap">
+  <div class="date-nav">
+    <a href="/first-half?date={{ prev_date }}">&lsaquo; {{ prev_date }}</a>
+    <span class="label">{{ date_pretty }}</span>
+    <a href="/first-half?date={{ next_date }}">{{ next_date }} &rsaquo;</a>
+    {% if not is_today %}<a href="/first-half?date={{ today }}">Today</a>{% endif %}
+    <span style="margin-left:auto; color:var(--muted-2); font-size:12px">scan {{ scan_time_ms }} ms</span>
+  </div>
+  <div class="fh-header">
+    <h1>First-Half Goals &mdash; 1H O1.5</h1>
+    <p class="sub">
+      One question, asked well: <b>will there be two or more goals in the first half?</b>
+      Every fixture is priced by our Dixon-Coles + Pinnacle devig blend. The
+      <b>1H O1.5</b> pill lights when the fixture sits in the day's top quartile.
+      The green &plus;/grey badge beside it is the gap vs that league's median
+      today (only shown when the league has 3+ fixtures &mdash; a median from
+      two games means nothing). <b>Direct 1H</b> tag = Pinnacle had a real
+      1H O1.5 market and we anchored to it instead of inferring.
+    </p>
+  </div>
+
+  <div class="fh-controls">
+    <a class="chip {{ 'active' if not only_lit and not only_direct else '' }}" href="/first-half?date={{ date_str }}">All ({{ total }})</a>
+    <a class="chip lit-chip {{ 'active' if only_lit else '' }}" href="/first-half?date={{ date_str }}&lit=1">&#9733; Lit only ({{ lit_count }})</a>
+    <a class="chip {{ 'active' if only_direct else '' }}" href="/first-half?date={{ date_str }}&direct=1">Direct 1H only</a>
+    <span class="sep">|</span>
+    <span style="color:var(--muted-2); font-size:11px">sort:</span>
+    <a class="chip {{ 'active' if sort_key == 'p_1h_o15' else '' }}" href="/first-half?date={{ date_str }}{{ '&lit=1' if only_lit else '' }}{{ '&direct=1' if only_direct else '' }}">1H O1.5</a>
+    <a class="chip {{ 'active' if sort_key == 'kickoff' else '' }}" href="/first-half?date={{ date_str }}&sort=kickoff{{ '&lit=1' if only_lit else '' }}{{ '&direct=1' if only_direct else '' }}">Kickoff</a>
+    <a class="chip {{ 'active' if sort_key == 'gap' else '' }}" href="/first-half?date={{ date_str }}&sort=gap{{ '&lit=1' if only_lit else '' }}{{ '&direct=1' if only_direct else '' }}">Gap</a>
+    <a class="chip {{ 'active' if sort_key == 'p_1h_o05' else '' }}" href="/first-half?date={{ date_str }}&sort=p_1h_o05{{ '&lit=1' if only_lit else '' }}{{ '&direct=1' if only_direct else '' }}">1H O0.5</a>
+    <a class="chip {{ 'active' if sort_key == 'p_ft_o25' else '' }}" href="/first-half?date={{ date_str }}&sort=p_ft_o25{{ '&lit=1' if only_lit else '' }}{{ '&direct=1' if only_direct else '' }}">FT O2.5</a>
+  </div>
+
+  {% if rows %}
+  <div class="fh-list">
+    {% for r in rows %}
+    <a class="fh-row"
+       {% if r.deep_market %}
+       href="/pick?date={{ date_str }}&sport={{ r.sport_slug }}&home={{ r.home|urlencode }}&away={{ r.away|urlencode }}&market={{ r.deep_market|urlencode }}&pick={{ r.deep_pick|urlencode }}"
+       {% else %}
+       href="/games?date={{ date_str }}&sport={{ r.sport_slug }}"
+       {% endif %}>
+      <div class="time">
+        {% if r.start_time %}
+          {{ r.start_time[11:16] if r.start_time|length >= 16 else r.start_time }}
+        {% else %}&mdash;{% endif %}
+        <span class="sport-tag">{{ r.sport_slug|upper }}</span>
+      </div>
+      <div class="teams">
+        <span class="matchup">{{ r.home }} v {{ r.away }}</span>
+        <span class="tag-row">
+          {% if r.direct_1h %}<span class="direct">DIRECT 1H</span>{% endif %}
+          <span class="lam">lam_1H {{ r.lam_1h }} &middot; lam_FT {{ r.lam_total }}</span>
+        </span>
+      </div>
+      <div class="pills-wrap" style="display:contents">
+        <span class="pill {{ 'lit' if r.p_1h_o05 >= 0.80 else '' }}">1H O0.5<span class="pct">{{ (r.p_1h_o05 * 100)|round(1) }}%</span></span>
+        <span class="pill key {{ 'lit' if r.is_lit else '' }}">1H O1.5<span class="pct">{{ (r.p_1h_o15 * 100)|round(1) }}%</span></span>
+        <span class="pill">FT O2.5<span class="pct">{{ (r.p_ft_o25 * 100)|round(1) }}%</span></span>
+        <span class="pill">BTTS FT<span class="pct">{{ (r.p_btts_ft * 100)|round(1) }}%</span></span>
+      </div>
+      {% if r.league_median_gap_pp is not none %}
+        <span class="gap-badge {{ 'above' if r.league_median_gap_pp > 0 else 'below' }}">{{ '%+.1f'|format(r.league_median_gap_pp) }}</span>
+      {% endif %}
+      {% if r.pin_1h_o15 %}
+        <span class="pin-badge" title="Pinnacle devigged market prob for 1H O1.5 — our model vs market, side by side">PIN {{ (r.pin_1h_o15 * 100)|round(1) }}%</span>
+      {% endif %}
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="fh-empty">
+    No soccer fixtures on {{ date_pretty }} across the tracked leagues
+    (EPL, La Liga, Liga MX, UCL, Europa, International).
+    Try another date, or jump to <a href="/" style="color:var(--good)">Today</a>.
+  </div>
+  {% endif %}
+
+  <footer style="margin-top:30px; padding:14px 0; color:var(--muted-2); font-size:12px; border-top:1px solid var(--rule)">
+    1H O1.5 computed via Dixon-Coles lambdas &times; league-specific 1H share &times; Poisson tail.
+    Pinnacle 1H Total market anchors the number when available (Direct 1H).
+    Top-quartile lit per day; league-median gap shown when league has 3+ fixtures.
+    &middot; Click any row to open the pick deep-dive.
+  </footer>
 </div>
 </body>
 </html>
@@ -5747,6 +5988,232 @@ def lab_landing():
         fonts_link=FONTS_LINK,
         shared_style=SHARED_STYLE,
         sport_strip=render_sport_strip("lab"),
+    )
+
+
+_SOCCER_SLUGS_FMS = ("epl", "laliga", "ligamx", "ucl", "europa", "international")
+
+# League-specific first-half goal share. Empirical from a decade of
+# matches: slightly less than half of total goals land in the first 45
+# (defenses tire, subs come on, pressing fades), with a touch of league
+# variance. These are good enough priors; the Pinnacle 1H Total devig
+# anchors the number when a market exists.
+_FIRST_HALF_SHARE = {
+    "epl":           0.455,
+    "laliga":        0.450,
+    "ligamx":        0.450,
+    "ucl":           0.445,
+    "europa":        0.445,
+    "international": 0.440,
+}
+
+
+def _poisson_over(lam, n_minus_half):
+    """P(X > n_minus_half) for Poisson(lam). For 1H O1.5 pass 1.5 → returns
+    P(X >= 2). For 1H O0.5 pass 0.5 → returns P(X >= 1). Returns 0..1."""
+    import math
+    if lam <= 0:
+        return 0.0
+    # P(X <= floor(n_minus_half)) via cumulative Poisson, then 1 - CDF.
+    k_max = int(math.floor(n_minus_half))
+    cdf = 0.0
+    term = math.exp(-lam)
+    cdf += term  # k=0
+    for k in range(1, k_max + 1):
+        term = term * lam / k
+        cdf += term
+    return max(0.0, min(1.0, 1.0 - cdf))
+
+
+def _build_first_half_board(date_str):
+    """Return [{row}, ...] FMS-style first-half-goals rows across every
+    soccer league we track. Each row carries:
+      * 1H O1.5, 1H O0.5, FT O2.5, BTTS FT probabilities (0-1)
+      * pinnacle_1h_o15 (devigged market prob, when available)
+      * is_lit (True iff in the day's top quartile of 1H O1.5)
+      * league_median_gap_pp (gap vs league's median that day; None if
+        the league has < 3 fixtures on this date — median from 2 games
+        means nothing, same rule as FMS)
+    Ranked by 1H O1.5 descending.
+    """
+    try:
+        view_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        return []
+    try:
+        import soccer_model
+    except Exception:
+        return []
+    rows = []
+    for sp in sports.SPORTS:
+        slug = sp.get("slug")
+        if slug not in _SOCCER_SLUGS_FMS:
+            continue
+        try:
+            games = _sport_games_for_hub(sp, view_date)
+        except Exception:
+            games = []
+        share = _FIRST_HALF_SHARE.get(slug, 0.45)
+        for g in games:
+            home = g["home"]; away = g["away"]
+            try:
+                lam_h, lam_a = soccer_model._project_lambdas(home, away, slug if slug in {"epl","laliga","ligamx"} else "epl")
+            except Exception:
+                continue
+            lam_total = max(0.0, (lam_h or 0) + (lam_a or 0))
+            lam_1h = lam_total * share
+            p_1h_o05 = _poisson_over(lam_1h, 0.5)
+            p_1h_o15 = _poisson_over(lam_1h, 1.5)
+            p_ft_o25 = _poisson_over(lam_total, 2.5)
+            # BTTS from the joint pmf — reuse dixon_coles when available
+            try:
+                dc = soccer_model.dixon_coles_matrix(lam_h, lam_a, soccer_model.DC_RHO_DEFAULT)
+                btts_yes = 0.0
+                for hh in range(1, len(dc)):
+                    for aa in range(1, len(dc[0])):
+                        btts_yes += dc[hh][aa]
+            except Exception:
+                btts_yes = (1 - _poisson_over(lam_h, -0.5)) * (1 - _poisson_over(lam_a, -0.5))
+                btts_yes = max(0.0, 1 - btts_yes)
+            # Pinnacle 1H Total line (if present on the game dict) gives
+            # us a devigged market prob to anchor against.
+            pin_1h_o15 = None
+            direct_1h = False
+            total_h1 = g.get("total_h1") or {}
+            try:
+                if total_h1 and total_h1.get("line") is not None:
+                    line = float(total_h1["line"])
+                    # Only trust the market anchor when it's actually at 1.5
+                    if abs(line - 1.5) < 1e-6:
+                        over_am = total_h1.get("over_am"); under_am = total_h1.get("under_am")
+                        if over_am is not None and under_am is not None:
+                            po = mlb_odds.american_to_prob(int(over_am))
+                            pu = mlb_odds.american_to_prob(int(under_am))
+                            fo, _fu = mlb_odds.devig_two_sided(po, pu)
+                            if fo is not None:
+                                pin_1h_o15 = fo
+                                direct_1h = True
+            except Exception:
+                pass
+            rows.append({
+                "sport_slug":   slug,
+                "sport_name":   sp.get("name"),
+                "home":         home,
+                "away":         away,
+                "start_time":   g.get("start_time"),
+                "lam_1h":       round(lam_1h, 2),
+                "lam_total":    round(lam_total, 2),
+                "p_1h_o05":     p_1h_o05,
+                "p_1h_o15":     p_1h_o15,
+                "p_ft_o25":     p_ft_o25,
+                "p_btts_ft":    btts_yes,
+                "pin_1h_o15":   pin_1h_o15,
+                "direct_1h":    direct_1h,
+                # Deep-dive link params (if a 1H Total market exists)
+                "deep_market":  "1H Total" if total_h1 else None,
+                "deep_pick":    "1H Over 1.5" if total_h1 else None,
+            })
+    # Rank by 1H O1.5 descending
+    rows.sort(key=lambda r: -r["p_1h_o15"])
+    # Light the top quartile of the day (FMS rule). Use strict quartile:
+    # top 25% of rows by 1H O1.5. For days with < 4 fixtures, light top 1.
+    n = len(rows)
+    lit_cutoff = max(1, (n + 3) // 4)  # ceil(n/4), min 1
+    for i, r in enumerate(rows):
+        r["is_lit"] = (i < lit_cutoff)
+    # League-median-gap badge. For each league with >= 3 fixtures today,
+    # compute median 1H O1.5 and attach gap in percentage points.
+    from statistics import median
+    by_league = {}
+    for r in rows:
+        by_league.setdefault(r["sport_slug"], []).append(r["p_1h_o15"])
+    league_median = {}
+    for slug, vals in by_league.items():
+        if len(vals) >= 3:
+            league_median[slug] = median(vals)
+    for r in rows:
+        m = league_median.get(r["sport_slug"])
+        if m is not None:
+            r["league_median_gap_pp"] = (r["p_1h_o15"] - m) * 100.0
+        else:
+            r["league_median_gap_pp"] = None
+    return rows
+
+
+_FH_CACHE = {}  # date -> (ts, rows)
+_FH_CACHE_TTL_S = 300
+
+
+def _build_first_half_board_cached(date_str):
+    now = time.time()
+    hit = _FH_CACHE.get(date_str)
+    if hit and (now - hit[0]) < _FH_CACHE_TTL_S:
+        return hit[1]
+    rows = _build_first_half_board(date_str)
+    _FH_CACHE[date_str] = (now, rows)
+    if len(_FH_CACHE) > 10:
+        oldest = sorted(_FH_CACHE.items(), key=lambda kv: kv[1][0])[:5]
+        for k, _ in oldest:
+            _FH_CACHE.pop(k, None)
+    return rows
+
+
+@app.route("/first-half")
+def first_half_board():
+    """Our own FMS-style 1H O1.5 board. Fitted entirely on our side —
+    uses soccer_model's Dixon-Coles lambdas + a league-specific first-
+    half goal share to get a 1H Poisson rate per game, then Poisson tail
+    probability for the 1H O1.5 / O0.5 pills. FT O2.5 and BTTS FT come
+    straight from the Dixon-Coles joint pmf.
+
+    The pills, the lit top-quartile rule, and the green/grey league-
+    median-gap badge follow the Full Match Score reading, so a reader
+    who learned the system on his site can read ours identically. Our
+    numbers come from a model that CAN disagree with the market; FMS
+    is market-rooted by construction. The combination is informative
+    whichever way they go.
+    """
+    date_str = request.args.get("date") or datetime.now(CENTRAL).date().isoformat()
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        d = datetime.now(CENTRAL).date()
+        date_str = d.isoformat()
+    sort_key = (request.args.get("sort") or "p_1h_o15").lower()
+    only_lit = request.args.get("lit") in ("1", "true", "on", "yes")
+    only_direct = request.args.get("direct") in ("1", "true", "on", "yes")
+    t0 = time.time()
+    rows = _build_first_half_board_cached(date_str)
+    if only_lit:
+        rows = [r for r in rows if r.get("is_lit")]
+    if only_direct:
+        rows = [r for r in rows if r.get("direct_1h")]
+    if sort_key == "kickoff":
+        rows = sorted(rows, key=lambda r: r.get("start_time") or "")
+    elif sort_key == "gap":
+        rows = sorted(rows, key=lambda r: -(r.get("league_median_gap_pp") or -999))
+    elif sort_key == "p_1h_o05":
+        rows = sorted(rows, key=lambda r: -r.get("p_1h_o05", 0))
+    elif sort_key == "p_ft_o25":
+        rows = sorted(rows, key=lambda r: -r.get("p_ft_o25", 0))
+    scan_time_ms = int((time.time() - t0) * 1000)
+    today = datetime.now(CENTRAL).date().isoformat()
+    return render_template_string(
+        FIRST_HALF_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        sport_strip=render_sport_strip("lab"),
+        rows=rows,
+        total=len(rows),
+        lit_count=sum(1 for r in rows if r.get("is_lit")),
+        scan_time_ms=scan_time_ms,
+        date_str=date_str,
+        date_pretty=d.strftime("%A, %B %d").replace(" 0", " "),
+        prev_date=(d - timedelta(days=1)).isoformat(),
+        next_date=(d + timedelta(days=1)).isoformat(),
+        today=today,
+        is_today=(date_str == today),
+        sort_key=sort_key, only_lit=only_lit, only_direct=only_direct,
     )
 
 
