@@ -2113,6 +2113,15 @@ PICKS_TEMPLATE = r"""<!doctype html>
 }
 .pick-dk-chip.favorable { color: #38bdf8; border-color: color-mix(in oklab, #38bdf8 50%, var(--rule)); }
 .pick-dk-chip.adverse   { color: #fb923c; border-color: color-mix(in oklab, #fb923c 50%, var(--rule)); }
+.pick-kalshi-chip {
+  display: inline-flex; align-items: center; gap: 2px; font-size: 10.5px;
+  padding: 1px 5px; border-radius: 10px; border: 1px dashed var(--rule);
+  background: transparent;
+  color: var(--muted-2);
+  white-space: nowrap;
+}
+.pick-kalshi-chip.favorable { color: #a855f7; border-color: color-mix(in oklab, #a855f7 50%, var(--rule)); }
+.pick-kalshi-chip.adverse   { color: #f472b6; border-color: color-mix(in oklab, #f472b6 50%, var(--rule)); }
 .filter-chips .chip.strong-chip.active {
   color: #000;
   background: #f59e0b;
@@ -2604,6 +2613,13 @@ PICKS_TEMPLATE = r"""<!doctype html>
                       DK {{ '%+.1f'|format(p.dk_divergence_pp) }}pp
                     </span>
                   {% endif %}
+                  {% if p.kalshi_divergence_pp is not none and (p.kalshi_divergence_pp|abs) >= 1.5 %}
+                    {% set k_sign = 'favorable' if p.kalshi_divergence_pp > 0 else 'adverse' %}
+                    <span class="pick-kalshi-chip {{ k_sign }}"
+                          title="Kalshi event-market yes-ask prices this side at {{ (p.kalshi_fair_prob * 100)|round|int }}% vs our model {{ (p.fair_prob * 100)|round|int }}% ({{ '%+.1f'|format(p.kalshi_divergence_pp) }}pp). Thin-liquidity prediction market — treat as a secondary cross-check.">
+                      KSH {{ '%+.1f'|format(p.kalshi_divergence_pp) }}pp
+                    </span>
+                  {% endif %}
                   {% if p.result %}<span class="pick-res {{ p.result }}" title="{{ p.result }}">{{ '✓' if p.result == 'W' else ('✗' if p.result == 'L' else '—') }}</span>{% endif %}
                 </div>
               {% endfor %}
@@ -2657,6 +2673,13 @@ PICKS_TEMPLATE = r"""<!doctype html>
                         <span class="label">DraftKings</span>
                         <b>{{ (p.dk_fair_prob * 100)|round|int }}%</b>
                         <small style="color: {{ '#38bdf8' if p.dk_divergence_pp > 0 else '#fb923c' }}">({{ '%+.1f'|format(p.dk_divergence_pp) }}pp vs model)</small>
+                      </span>
+                    {% endif %}
+                    {% if p.kalshi_divergence_pp is not none %}
+                      <span>
+                        <span class="label">Kalshi</span>
+                        <b>{{ (p.kalshi_fair_prob * 100)|round|int }}%</b>
+                        <small style="color: {{ '#a855f7' if p.kalshi_divergence_pp > 0 else '#f472b6' }}">({{ '%+.1f'|format(p.kalshi_divergence_pp) }}pp vs model)</small>
                       </span>
                     {% endif %}
                   </div>
@@ -4292,6 +4315,33 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False,
         if m:
             dk_fair_h_by_game.setdefault(sp_slug, {}).update(m)
 
+    # 3d) Kalshi event-market yes-ask → implied home-win probability per
+    #     game. Kalshi game-outcome markets exist for NFL/MLB/NBA/NHL/CFB
+    #     but trade thinly — most listings have no live quote outside the
+    #     playoffs. kalshi_odds.moneyline_yes_prob() returns None when
+    #     no quote exists, in which case the UI simply doesn't render
+    #     the Kalshi chip. Zero-cost signal; we don't gate anything on it.
+    try:
+        import kalshi_odds
+        kalshi_prob_home_by_game = {}
+        for sp in sports.SPORTS:
+            if sport_filter not in ("all", sp["slug"]):
+                continue
+            sp_slug = sp["slug"]
+            for row in rows_by_key.values():
+                if row.get("sport_slug") != sp_slug:
+                    continue
+                try:
+                    p = kalshi_odds.moneyline_yes_prob(sp_slug, row["home"], row["away"])
+                except Exception:
+                    p = None
+                if p is not None:
+                    kalshi_prob_home_by_game[(sp_slug,
+                                              generic_odds._team_key(row["away"]),
+                                              generic_odds._team_key(row["home"]))] = p
+    except Exception:
+        kalshi_prob_home_by_game = {}
+
     # 4) Attach each pick to its game row, synthesizing a row when the pick's
     #    game isn't in the schedule skeleton (keeps us from dropping picks).
     for p in all_picks:
@@ -4339,24 +4389,33 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False,
         # the away side, divergence = (1 - dk_fair_h) - pin_fair_a.
         dk_fair = None
         dk_divergence_pp = None
+        kalshi_fair = None
+        kalshi_divergence_pp = None
         if _market_category(p.get("market")) == "ML":
             dk_game = (dk_fair_h_by_game.get(p.get("sport_slug", "")) or {})
             away_k = generic_odds._team_key(p.get("away_team", ""))
             home_k = generic_odds._team_key(p.get("home_team", ""))
             dk_fair_h = dk_game.get((away_k, home_k))
+            pick_label_norm = (p.get("pick") or "").strip().lower()
+            home_norm       = (p.get("home_team") or "").strip().lower()
+            is_home = bool(home_norm and home_norm in pick_label_norm)
             if dk_fair_h is not None and p.get("fair_prob") is not None:
-                # Figure out which side the pick is on by matching labels
-                pick_label_norm = (p.get("pick") or "").strip().lower()
-                home_norm       = (p.get("home_team") or "").strip().lower()
-                is_home = home_norm and home_norm in pick_label_norm
-                if is_home:
-                    dk_fair = dk_fair_h
-                else:
-                    dk_fair = 1.0 - dk_fair_h
+                dk_fair = dk_fair_h if is_home else (1.0 - dk_fair_h)
                 try:
                     dk_divergence_pp = (dk_fair - float(p.get("fair_prob"))) * 100.0
                 except (TypeError, ValueError):
                     dk_divergence_pp = None
+            # Kalshi yes-prob is for the HOME team (we query by home_team).
+            # No chip unless there's actually a live quote AND a model prob.
+            k_prob_h = kalshi_prob_home_by_game.get(
+                (p.get("sport_slug", ""), away_k, home_k)
+            )
+            if k_prob_h is not None and p.get("fair_prob") is not None:
+                kalshi_fair = k_prob_h if is_home else (1.0 - k_prob_h)
+                try:
+                    kalshi_divergence_pp = (kalshi_fair - float(p.get("fair_prob"))) * 100.0
+                except (TypeError, ValueError):
+                    kalshi_divergence_pp = None
         row["picks"].append({
             **p,
             "icon":          icon,
@@ -4369,6 +4428,8 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False,
             "line_move_pp":       move_pp,
             "dk_fair_prob":       dk_fair,
             "dk_divergence_pp":   dk_divergence_pp,
+            "kalshi_fair_prob":   kalshi_fair,
+            "kalshi_divergence_pp": kalshi_divergence_pp,
         })
         # Overlay score if this pick graded with a final score
         gp = graded_by_id.get(p.get("id"))
@@ -4537,27 +4598,40 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False,
                     "market":     mp["market"],
                     "pick":       mp["pick"],
                 })) or {}),
-                # DK divergence for model-fill ML picks (same math as EV
-                # picks above). Non-ML model-fill picks get None/None.
+                # DK + Kalshi divergence for model-fill ML picks (same
+                # math as EV picks above). Non-ML model-fill picks get
+                # None values.
                 **(lambda: (
-                    (lambda dk_fair_h, pick_label, home: {
-                        "dk_fair_prob": (
-                            dk_fair_h if (home and home.lower() in (pick_label or "").lower())
-                            else (1.0 - dk_fair_h) if dk_fair_h is not None else None
-                        ),
-                        "dk_divergence_pp": (
-                            ((dk_fair_h if (home and home.lower() in (pick_label or "").lower())
-                              else (1.0 - dk_fair_h)) - mp["fair_prob"]) * 100.0
-                            if (dk_fair_h is not None and mp.get("fair_prob") is not None)
-                            else None
-                        ),
-                    })(
+                    (lambda dk_fair_h, k_prob_h, pick_label, home, fair: (
+                        (lambda is_home: {
+                            "dk_fair_prob": (
+                                dk_fair_h if is_home else (1.0 - dk_fair_h) if dk_fair_h is not None else None
+                            ),
+                            "dk_divergence_pp": (
+                                ((dk_fair_h if is_home else (1.0 - dk_fair_h)) - fair) * 100.0
+                                if (dk_fair_h is not None and fair is not None) else None
+                            ),
+                            "kalshi_fair_prob": (
+                                k_prob_h if is_home else (1.0 - k_prob_h) if k_prob_h is not None else None
+                            ),
+                            "kalshi_divergence_pp": (
+                                ((k_prob_h if is_home else (1.0 - k_prob_h)) - fair) * 100.0
+                                if (k_prob_h is not None and fair is not None) else None
+                            ),
+                        })(bool(home and home.lower() in (pick_label or "").lower()))
+                    ))(
                         (dk_fair_h_by_game.get(row["sport_slug"]) or {}).get(
                             (generic_odds._team_key(row["away"]),
                              generic_odds._team_key(row["home"]))
                         ) if _market_category(mp.get("market")) == "ML" else None,
+                        kalshi_prob_home_by_game.get(
+                            (row["sport_slug"],
+                             generic_odds._team_key(row["away"]),
+                             generic_odds._team_key(row["home"]))
+                        ) if _market_category(mp.get("market")) == "ML" else None,
                         mp.get("pick"),
                         row["home"],
+                        mp.get("fair_prob"),
                     )
                 ))(),
             })
