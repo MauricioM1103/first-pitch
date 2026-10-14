@@ -2407,7 +2407,11 @@ FIRST_HALF_TEMPLATE = r"""<!doctype html>
 <style>
 {{ shared_style|safe }}
 .fh-header { padding: 18px 0 10px; }
-.fh-header h1 { margin: 0 0 4px; font-size: 24px; font-weight: 700; letter-spacing: -0.015em; }
+.fh-header h1 { margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.015em; }
+.fh-header .byline {
+  margin: 2px 0 10px; color: var(--good); font-size: 13px; font-weight: 600;
+  letter-spacing: 0.3px;
+}
 .fh-header .sub { color: var(--muted); font-size: 13px; line-height: 1.55; max-width: 720px; }
 .fh-controls {
   display: flex; align-items: center; gap: 10px; margin: 12px 0 16px;
@@ -2552,6 +2556,7 @@ FIRST_HALF_TEMPLATE = r"""<!doctype html>
   </div>
   <div class="fh-header">
     <h1>First-Half Goals &mdash; 1H O1.5</h1>
+    <div class="byline">Sways 1H Picks</div>
     <p class="sub">
       One question, asked well: <b>will there be two or more goals in the first half?</b>
       Every fixture is priced by our Dixon-Coles + Pinnacle devig blend. The
