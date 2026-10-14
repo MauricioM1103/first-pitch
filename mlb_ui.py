@@ -4117,6 +4117,20 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
             return False
         return frac < 1e-9 or abs(frac - 0.5) < 1e-9
 
+    # Stricter gate for spreads: ONLY .5 lines. Whole-number spreads (e.g.
+    # +7.0 or -3.0) can push on exact margin, which voids the bet — a
+    # non-trivial downside on NFL/NCAAF key numbers (3, 7, 10, 14). Totals
+    # at .0 can also push but are far more common at US books, so keep
+    # them under the lenient _is_half_point check above.
+    def _is_dot_five_only(line):
+        if line is None:
+            return False
+        try:
+            frac = abs(float(line) - int(float(line)))
+        except (TypeError, ValueError):
+            return False
+        return abs(frac - 0.5) < 1e-9
+
     # ---- ML (ALWAYS emit both sides so the reader sees the model's lean
     #        for the whole game, not just the favored side) ----
     if "ML" not in existing_cats:
@@ -4294,8 +4308,8 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     continue
                 if abs(alt_h - main_line_h) < 0.01:
                     continue
-                if not _is_half_point(alt_h):
-                    continue   # DK/FD only trade .5 multiples
+                if not _is_dot_five_only(alt_h):
+                    continue   # spreads: .5-only (whole numbers push on exact margin)
                 home_cover = sum(1 for m in numeric_margins if m > -alt_h) / n
                 # Pinnacle's own devigged fair prob for this alt line
                 pin_home_fair = None
@@ -6210,6 +6224,53 @@ def first_half_board():
         rows = [r for r in rows if r.get("is_lit")]
     if only_direct:
         rows = [r for r in rows if r.get("direct_1h")]
+
+    # Persist the lit top-quartile 1H Goals picks so they grade later via
+    # the existing 1H Total linescore path on plays_log. Only lit rows
+    # with a Pinnacle 1H line get saved — those have a deep_pick label
+    # matching the main board emission format, so grading finds them.
+    try:
+        if date_str == today and rows:
+            fh_logged = []
+            for r in rows:
+                if not r.get("is_lit"):
+                    continue
+                if not (r.get("deep_market") and r.get("deep_pick") and r.get("pin_line") is not None):
+                    continue
+                side = "Over" if "Over" in r["deep_pick"] else "Under"
+                p_fair = r["p_1h_o15"] if side == "Over" else (1.0 - r["p_1h_o15"])
+                pin_fair = None
+                if r.get("pin_1h_o15") is not None:
+                    pin_fair = r["pin_1h_o15"] if side == "Over" else (1.0 - r["pin_1h_o15"])
+                fh_logged.append({
+                    "id":            f"1hg-{r['sport_slug']}-{generic_odds._team_key(r['away'])}-{generic_odds._team_key(r['home'])}-{r['pin_line']}-{side.lower()}",
+                    "sport":         r.get("sport_name"),
+                    "sport_slug":    r["sport_slug"],
+                    "home_team":     r["home"],
+                    "away_team":     r["away"],
+                    "market":        r["deep_market"],
+                    "pick":          r["deep_pick"],
+                    "fair_prob":     p_fair,
+                    "pricing_prob":  p_fair,
+                    "mc_prob":       p_fair,
+                    "consensus_prob": (0.55 * p_fair + 0.45 * pin_fair) if pin_fair is not None else p_fair,
+                    "pinnacle_prob": pin_fair,
+                    "ev_pct":        None,
+                    "decimal":       None,
+                    "american":      None,
+                    "book":          None,
+                    "source":        "1h_goals",
+                    "model_only":    False,
+                    "strong":        False,
+                    "start_time":    r.get("start_time"),
+                    "line_move_pp":  None,
+                })
+            if fh_logged:
+                import plays_log
+                plays_log.save_daily_picks(date_str, fh_logged)
+    except Exception:
+        pass
+
     if sort_key == "kickoff":
         rows = sorted(rows, key=lambda r: r.get("start_time") or "")
     elif sort_key == "gap":
@@ -11466,6 +11527,64 @@ AI_UNIFIED_TEMPLATE = r"""<!doctype html>
   background: color-mix(in oklab, #ef4444 20%, var(--card));
   border-color: #ef4444; color: var(--ink);
 }
+
+/* Pick-highlight banner: rendered ABOVE the markdown narrative so the
+   reader sees the verdict first, prose second. Colored by confidence
+   tier — Strong is amber-gold like our ★ picks, Solid green, Lean cyan,
+   Pass muted. */
+.ai-pick {
+  display: grid; grid-template-columns: auto 1fr auto;
+  gap: 6px 18px; align-items: center;
+  padding: 16px 18px; border-radius: 12px;
+  margin: 10px 0 20px; border: 1px solid var(--rule);
+  background: var(--card);
+}
+.ai-pick.strong { border-color: #f59e0b; background: color-mix(in oklab, #f59e0b 12%, var(--card)); }
+.ai-pick.solid  { border-color: #22c55e; background: color-mix(in oklab, #22c55e 10%, var(--card)); }
+.ai-pick.lean   { border-color: #38bdf8; background: color-mix(in oklab, #38bdf8 8%,  var(--card)); }
+.ai-pick.pass   { border-color: var(--rule-strong); background: var(--card); opacity: 0.85; }
+.ai-pick .verdict {
+  font-size: 24px; font-weight: 800; letter-spacing: 0.04em;
+  padding: 6px 16px; border-radius: 10px;
+  background: var(--surface); border: 1px solid var(--rule);
+  text-transform: uppercase;
+}
+.ai-pick.strong .verdict { color: #f59e0b; border-color: #f59e0b; }
+.ai-pick.solid  .verdict { color: #22c55e; border-color: #22c55e; }
+.ai-pick.lean   .verdict { color: #38bdf8; border-color: #38bdf8; }
+.ai-pick.pass   .verdict { color: var(--muted-2); }
+.ai-pick .body { min-width: 0; }
+.ai-pick .label {
+  font-size: 10.5px; letter-spacing: 0.6px; text-transform: uppercase;
+  color: var(--muted-2); font-weight: 600; margin-bottom: 2px;
+}
+.ai-pick .pick-text {
+  font-size: 18px; font-weight: 600; color: var(--ink);
+  letter-spacing: -0.01em;
+}
+.ai-pick .pick-text .market {
+  display: inline-block; padding: 2px 8px; border-radius: 6px;
+  margin-right: 8px; font-size: 11px; font-weight: 700;
+  background: color-mix(in oklab, var(--rule) 30%, transparent);
+  color: var(--muted); letter-spacing: 0.4px; text-transform: uppercase;
+  vertical-align: middle;
+}
+.ai-pick .note {
+  font-size: 11px; color: var(--muted-2); margin-top: 4px;
+  font-family: "JetBrains Mono", monospace;
+}
+.ai-pick .side-cta a {
+  display: inline-block; padding: 6px 10px;
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 8px;
+  color: var(--muted); text-decoration: none; font-size: 11.5px; white-space: nowrap;
+}
+.ai-pick .side-cta a:hover { color: var(--ink); border-color: var(--ink); }
+@media (max-width: 640px) {
+  .ai-pick { grid-template-columns: 1fr; padding: 14px; }
+  .ai-pick .verdict { font-size: 20px; justify-self: start; padding: 4px 12px; }
+  .ai-pick .pick-text { font-size: 16px; }
+  .ai-pick .side-cta a { font-size: 11px; }
+}
 </style>
 </head>
 <body>
@@ -11541,15 +11660,57 @@ AI_UNIFIED_TEMPLATE = r"""<!doctype html>
   {% endif %}
 
   {% if analysis %}
-  <section class="ai-result">
     {% if analysis.error %}
+    <section class="ai-result ai-err">
       <h3 style="margin-top:0;color:#ef4444">Analysis error</h3>
       <p>{{ analysis.error }}</p>
+    </section>
     {% else %}
-      {{ analysis.html|safe }}
-      <div class="ai-foot">model: {{ analysis.model }} · generated: {{ analysis.generated_at }}</div>
+      {# AI's chosen pick, highlighted above the narrative. The chip
+         is colored by confidence (Strong amber, Solid green, Lean cyan,
+         Pass muted). Logged to plays_log on POST so the pick grades
+         alongside the main board picks. #}
+      {% if analysis.pick %}
+      <div class="ai-pick {{ analysis.pick.confidence_cls or 'lean' }}">
+        <div class="verdict">
+          {% if analysis.pick.confidence_cls == 'pass' %}PASS{% else %}{{ analysis.pick.confidence or 'LEAN' }}{% endif %}
+        </div>
+        <div class="body">
+          <div class="label">
+            {% if analysis.pick.confidence_cls == 'pass' %}
+              No actionable play
+            {% else %}
+              Claude's pick
+            {% endif %}
+          </div>
+          <div class="pick-text">
+            {% if analysis.pick.confidence_cls != 'pass' %}
+              <span class="market">{{ analysis.pick.market }}</span>{{ analysis.pick.side }}
+            {% else %}
+              Claude recommends sitting this one out.
+            {% endif %}
+          </div>
+          <div class="note">
+            {% if analysis.pick.confidence_cls != 'pass' %}
+              Confidence {{ analysis.pick.confidence }} &middot; logged to Results for grading &middot; see full reasoning below
+            {% else %}
+              Nothing cleared the threshold today
+            {% endif %}
+          </div>
+        </div>
+        {% if analysis.pick.confidence_cls != 'pass' %}
+        <div class="side-cta">
+          <a href="/logged" title="See all logged AI picks and their grades">Track in Results &rarr;</a>
+        </div>
+        {% endif %}
+      </div>
+      {% endif %}
+
+      <section class="ai-result">
+        {{ analysis.html|safe }}
+        <div class="ai-foot">model: {{ analysis.model }} · generated: {{ analysis.generated_at }}</div>
+      </section>
     {% endif %}
-  </section>
   {% endif %}
 </main>
 {{ theme_script|safe }}
@@ -11716,7 +11877,19 @@ Write 6 sections with markdown headings (## Section):
   (Lean / Solid / Strong). Avoid filler.
 
 450-650 words. Be specific, cite sources when you use them. If search returns
-nothing useful, say so and work from training knowledge rather than inventing."""
+nothing useful, say so and work from training knowledge rather than inventing.
+
+AT THE VERY END, output EXACTLY ONE machine-readable line in this format
+(nothing else on the line, no markdown, exact pipes):
+
+PICK: <market> | <side> | <confidence>
+
+Where
+  market     = ML | Spread | Total | BTTS | 1H ML | 1H Total | Team Total | DNB | Distance
+  side       = your actual pick label (e.g. "Arsenal ML", "Over 2.5", "Dodgers -1.5")
+  confidence = Pass | Lean | Solid | Strong
+
+If no actionable play, write exactly: PICK: Pass | - | Pass"""
 
     def _attempt(use_search):
         """One API call. Returns (text, stop_reason, used_search, err)."""
@@ -11770,13 +11943,52 @@ nothing useful, say so and work from training knowledge rather than inventing.""
                               f"tool_err={tool_err or 'none'})."}
         if used_search:
             text = text + "\n\n*(web search used for current news / injuries)*"
+        # Extract the machine-readable PICK: line the prompt asked for.
+        parsed_pick = _extract_ai_pick(text, sport_slug, game_ctx)
+        # Strip the PICK: line from the rendered narrative so it doesn't
+        # also show as prose (the parsed pick is rendered as a chip).
+        import re as _re
+        clean_text = _re.sub(r'^\s*PICK:\s*.+$', '', text, flags=_re.MULTILINE).strip()
         return {
-            "html": _ai_render_markdown(text),
+            "html": _ai_render_markdown(clean_text),
+            "pick": parsed_pick,
             "model": analyst_mod.CLAUDE_MODEL,
             "generated_at": datetime.now().isoformat(timespec="seconds"),
         }
     except Exception as e:
         return {"error": f"Claude call failed: {e}"}
+
+
+def _extract_ai_pick(text, sport_slug, game_ctx):
+    """Parse the 'PICK: <market> | <side> | <confidence>' line we told the
+    model to emit. Returns a dict with market / side / confidence /
+    confidence_cls, or None when the line is absent or marked Pass.
+
+    confidence_cls is one of 'strong', 'solid', 'lean', 'pass' — maps to
+    the UI chip colors directly."""
+    import re as _re
+    m = _re.search(r'PICK:\s*(.+)$', text, flags=_re.MULTILINE)
+    if not m:
+        return None
+    line = m.group(1).strip()
+    parts = [p.strip() for p in line.split('|')]
+    if len(parts) < 3:
+        return None
+    market, side, conf = parts[0], parts[1], parts[2]
+    conf_norm = conf.lower()
+    if conf_norm in ("pass", "none", "-", ""):
+        return {"market": "Pass", "side": "-", "confidence": "Pass",
+                "confidence_cls": "pass"}
+    cls = "lean"
+    if "strong" in conf_norm: cls = "strong"
+    elif "solid" in conf_norm: cls = "solid"
+    elif "lean" in conf_norm:  cls = "lean"
+    return {
+        "market":         market,
+        "side":           side,
+        "confidence":     conf.title(),
+        "confidence_cls": cls,
+    }
 
 
 @app.route("/ai-analysis", methods=["GET", "POST"])
@@ -11801,12 +12013,64 @@ def ai_analysis_unified():
 
     games = []
     analysis = None
+    selected_game = None
     if sport_slug:
         games = _mc_fetch_games(sport_slug, date_str)
         if game_id and request.method == "POST":
-            selected = next((g for g in games if g["id"] == game_id), None)
-            if selected:
-                analysis = _ai_analyze_matchup(sport_slug, selected["ctx"])
+            selected_game = next((g for g in games if g["id"] == game_id), None)
+            if selected_game:
+                analysis = _ai_analyze_matchup(sport_slug, selected_game["ctx"])
+                # If the AI produced a non-Pass pick, persist it to the
+                # daily log so it grades alongside the main board picks.
+                # Only save for TODAY — historical dates are read-only.
+                try:
+                    if (analysis and analysis.get("pick")
+                            and analysis["pick"].get("confidence_cls") != "pass"
+                            and date_str == today_str):
+                        import plays_log
+                        ctx = selected_game.get("ctx") or {}
+                        home_t = (ctx.get("home_name")
+                                  or (ctx.get("home") or {}).get("team")
+                                  or "")
+                        away_t = (ctx.get("away_name")
+                                  or (ctx.get("away") or {}).get("team")
+                                  or "")
+                        start_time = (ctx.get("start_time")
+                                      or ctx.get("first_pitch_utc")
+                                      or ctx.get("first_pitch")
+                                      or None)
+                        pick_label = analysis["pick"].get("side") or ""
+                        market_label = analysis["pick"].get("market") or "ML"
+                        pid = (f"ai-{sport_slug}-"
+                               f"{generic_odds._team_key(away_t)}-"
+                               f"{generic_odds._team_key(home_t)}-"
+                               f"{abs(hash((market_label, pick_label))) & 0xffffffff:08x}")
+                        plays_log.save_daily_picks(date_str, [{
+                            "id":             pid,
+                            "sport":          sport_name or sport_slug.upper(),
+                            "sport_slug":     sport_slug,
+                            "home_team":      home_t,
+                            "away_team":      away_t,
+                            "market":         market_label,
+                            "pick":           pick_label,
+                            "fair_prob":      None,
+                            "pricing_prob":   None,
+                            "mc_prob":        None,
+                            "consensus_prob": None,
+                            "pinnacle_prob":  None,
+                            "ev_pct":         None,
+                            "decimal":        None,
+                            "american":       None,
+                            "book":           None,
+                            "source":         "ai_analysis",
+                            "model_only":     False,
+                            "strong":         (analysis["pick"].get("confidence_cls") == "strong"),
+                            "start_time":     start_time,
+                            "ai_confidence":  analysis["pick"].get("confidence"),
+                            "ai_model":       analysis.get("model"),
+                        }])
+                except Exception:
+                    pass
 
     return render_template_string(
         AI_UNIFIED_TEMPLATE,
@@ -12222,6 +12486,58 @@ main.logged-page { max-width: 1040px; }
       {% endfor %}
     </div>
   </section>
+
+  {% if summary.ai_30d.settled or summary.ai_30d.pending %}
+  <section class="records-section">
+    <h2>AI Analysis Picks <span style="color:#38bdf8;font-size:13px">Claude's calls on /ai-analysis</span></h2>
+    <div class="sub">
+      Picks logged when Claude emits a BET verdict on the AI Analysis page
+      (not Pass). Grades on the same W/L path as the main picks board so
+      the LLM's actual track record is visible, not just its prose.
+    </div>
+    <div class="records-grid">
+      {% for key, label in [('ai_7d','Last 7 days'),('ai_30d','Last 30 days'),('ai_90d','Last 90 days')] %}
+      {% set r = summary[key] %}
+      <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
+        <div class="lbl">{{ label }}</div>
+        {% if r.settled %}
+        <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
+        <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
+        {% else %}
+        <div class="wl" style="color:var(--muted)">&mdash;</div>
+        <span class="units" style="color:var(--muted)">&mdash;</span>
+        {% endif %}
+        <div class="meta">{{ r.settled }} settled{% if r.pending %} &middot; {{ r.pending }} pending{% endif %}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  {% if summary.fh_30d.settled or summary.fh_30d.pending %}
+  <section class="records-section">
+    <h2>1H Goals Picks <span style="color:#f59e0b;font-size:13px">Sways-style lit top-quartile</span></h2>
+    <div class="sub">
+      Lit 1H O1.5 picks from the <a href="/first-half" style="color:#f59e0b">1H Goals</a> board — soccer fixtures our Dixon-Coles + Pinnacle devig blend puts in the top quartile of their day. Grades via the 1H Total linescore path.
+    </div>
+    <div class="records-grid">
+      {% for key, label in [('fh_7d','Last 7 days'),('fh_30d','Last 30 days'),('fh_90d','Last 90 days')] %}
+      {% set r = summary[key] %}
+      <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
+        <div class="lbl">{{ label }}</div>
+        {% if r.settled %}
+        <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
+        <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
+        {% else %}
+        <div class="wl" style="color:var(--muted)">&mdash;</div>
+        <span class="units" style="color:var(--muted)">&mdash;</span>
+        {% endif %}
+        <div class="meta">{{ r.settled }} settled{% if r.pending %} &middot; {{ r.pending }} pending{% endif %}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
 
   <section class="records-section">
     <h2>High-EV Picks <span style="color:var(--accent);font-size:13px">ev_pct &ge; +9%</span></h2>

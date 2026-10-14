@@ -1489,6 +1489,10 @@ def summary(graded_by_date, today=None):
         out[f"strong_{label}"]   = record_in_window(graded_by_date, days, True,  today)
         out[f"plusev9_{label}"]  = record_in_window(graded_by_date, days, False, today, min_ev=9.0)
         out[f"dk_{label}"]       = record_in_window(graded_by_date, days, False, today, source="book_dk")
+        # Phase 11b: 1H Goals picks (saved from /first-half, source "1h_goals").
+        out[f"fh_{label}"]       = record_in_window(graded_by_date, days, False, today, source="1h_goals")
+        # Phase 11c: AI Analysis picks (saved from /ai-analysis non-Pass, source "ai_analysis").
+        out[f"ai_{label}"]       = record_in_window(graded_by_date, days, False, today, source="ai_analysis")
         # Phase 6b: "if we had used today's filter all along" retro-backtest.
         # Picks that would have survived the current Signal >= 3 + EV >= 3%
         # (5% alt) + no-model-only filter stack, re-aggregated across the

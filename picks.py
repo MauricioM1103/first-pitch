@@ -863,6 +863,14 @@ def _expand_alt_line_picks(picks):
             # whenever the game lands on 0 margin.
             if abs(alt_line) < 0.01:
                 continue
+            # Skip whole-number alt lines (e.g. +7.0, -3.0). Shifting a
+            # whole-number base (3) by ±3 or ±6 keeps the result on whole
+            # numbers, which push on exact margin — exactly the key
+            # numbers (3/7/10/14) where NFL/NCAAF games most often land.
+            # Only emit .5 alts so the bet can't push.
+            frac = abs(alt_line - int(alt_line))
+            if frac < 1e-9:
+                continue
             # Fair prob at this alt line:
             #   home covers -alt_line  ⇔  margin > -alt_line
             #   away covers +alt_line  ⇔  margin <  alt_line
