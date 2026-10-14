@@ -2523,13 +2523,15 @@ PICKS_TEMPLATE = r"""<!doctype html>
     {% endfor %}
     <span class="chip-divider" aria-hidden="true"></span>
     {# ★ Signal-only toggle: 0-5 composite replacing the old prob+EV binary.
-       Click to keep only picks with signal_score >= 4. #}
+       Threshold set to 3/5 while cross-book data (DK/Kalshi) is dark —
+       book-agreement +1 is unreachable right now, so 4/5 would starve
+       the board. Raise back to 4/5 once DK data flows. #}
     {% if strong_only %}
       <a class="chip strong-chip active" href="/?date={{ date_str }}{{ sport_suffix }}{{ linemove_suffix }}"
-         title="Showing only picks with Signal ≥ 4/5 (EV cushion + favorable line move + cross-book agreement + prob floor). Click to clear.">&#9733; Signal &ge; 4 ({{ strong_count }})</a>
+         title="Showing only picks with Signal ≥ 3/5 (EV cushion + favorable line move + prob floor). Click to clear.">&#9733; Signal &ge; 3 ({{ strong_count }})</a>
     {% else %}
       <a class="chip strong-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ linemove_suffix }}&strong=1"
-         title="Show only picks with Signal ≥ 4/5 — a composite of EV cushion, favorable line movement, cross-book agreement, and prob floor. Replaces the old 'Strong = 68% AND +4% EV' binary.">&#9733; Signal &ge; 4</a>
+         title="Show only picks with Signal ≥ 3/5 — a composite of EV cushion, favorable line movement, cross-book agreement (currently dark), and prob floor. Replaces the old 'Strong = 68% AND +4% EV' binary.">&#9733; Signal &ge; 3</a>
     {% endif %}
     {# Line-move toggle: show only picks where Pinnacle's devigged prob
        moved toward our side by ≥ 1pp over the last ≤3 days. Sharp money
@@ -2602,7 +2604,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
           <td class="col-picks">
             {% if row.picks %}
               {% for p in row.picks %}
-                <div class="pick-badge-row {{ 'strong' if p.strong else '' }} {{ 'model-only' if p.model_only else '' }}" title="{{ 'Model-only preference (no EV filter)' if p.model_only else ('High-signal pick (score ≥ 4/5): EV cushion + favorable line move + book agreement + prob floor' if p.strong else 'EV-verified pick') }}">
+                <div class="pick-badge-row {{ 'strong' if p.strong else '' }} {{ 'model-only' if p.model_only else '' }}" title="{{ 'Model-only preference (no EV filter)' if p.model_only else ('High-signal pick (score ≥ 3/5): EV cushion + favorable line move + prob floor (book agreement +1 pending DK/Kalshi data)' if p.strong else 'EV-verified pick') }}">
                   <span class="pick-ico {{ p.icon_cls }}">{{ p.icon }}</span>
                   <span class="pick-lbl">{{ p.pick_short }}</span>
                   <span class="pick-conf c{{ p.conf }}">{{ p.conf }}/5</span>
@@ -4756,19 +4758,21 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False,
         # Must happen AFTER line_move_pp and dk/kalshi divergence fields
         # are populated (sections 4/5 above), which they are at this point.
         # The signal composite replaces the binary "strong" tag for the UI
-        # badge + filter; `strong` field is kept for backwards-compat and
-        # recomputed from signal_score >= 4.
+        # badge + filter.
+        # ★ threshold: 3/5 for now. Rationale: the book-agreement
+        # component (+1 pt from DK or Kalshi divergence) is dark whenever
+        # the Odds API is capped and the direct DK read is geo-blocked,
+        # which caps the realistic achievable max at 4/5 for most picks.
+        # 3/5 keeps ★ picks meaningful (requires EV + line move + prob
+        # floor, OR equivalent combos) without demanding data streams we
+        # can't currently source. When DK/Kalshi data comes back online,
+        # revisit — a healthy 4/5 bar is the eventual target.
         for p in row["picks"]:
             p["signal_score"] = _signal_score(p)
-            # Override the legacy `strong` boolean to the new definition
-            # so the ★ badge and filter stay consistent with the composite.
-            # Keep model-only picks out of ★ regardless of score (research:
-            # a model-only pick lacks the independent corroboration that
-            # the signal composite rewards; it's an opinion, not a bet).
             if p.get("model_only"):
                 p["strong"] = False
             else:
-                p["strong"] = (p["signal_score"] >= 4)
+                p["strong"] = (p["signal_score"] >= 3)
 
         # Order picks within a game by signal_score desc (strongest first),
         # then market category to keep the ML/Spread/Total/… triplet shape,
@@ -4814,13 +4818,12 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False,
                 ))
 
     # 6) Finalize each row — status, countdown, line/close text, sort key.
-    # Apply ★ strong-only filter: keep only picks with signal_score >= 4
-    # (new composite replacing the old prob+EV binary tier). Rows left
-    # with no picks drop entirely.
+    # Apply ★ signal-only filter: keep only picks tagged p.strong = True
+    # (signal_score >= 3 AND not model_only). Mirrors the ★ star emission
+    # so the filter and the badge agree on what counts.
     if strong_only:
         for row in rows_by_key.values():
-            row["picks"] = [p for p in row["picks"]
-                            if (p.get("signal_score") or 0) >= 4]
+            row["picks"] = [p for p in row["picks"] if p.get("strong")]
     # Favorable-move filter: keep only picks whose Pinnacle devig moved
     # toward us by ≥ +1pp over the last ≤ 3 days. Research-cited: a sharp
     # book moving in our direction is one of the strongest independent
