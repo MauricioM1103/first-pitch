@@ -11024,6 +11024,34 @@ main.logged-page { max-width: 1040px; }
   </section>
 
   <section class="records-section">
+    <h2>Current-Filter Backtest <span style="color:var(--good);font-size:13px">if we had used today's filter all along</span></h2>
+    <div class="sub">
+      Historical re-grade: for every pick in the last window, we recompute
+      <b>what the current (post-Phase 4) filter would have done</b> — Signal
+      composite &ge; 3/5 AND EV &ge; 3% (5% for alts) AND not model-only —
+      then re-aggregate the W/L/ROI across just the picks that would have
+      survived. Compare to Overall Record above to see the lift the filter
+      actually produces on real graded games.
+    </div>
+    <div class="records-grid">
+      {% for key, label in [('curfilter_7d','Last 7 days'),('curfilter_30d','Last 30 days'),('curfilter_90d','Last 90 days')] %}
+      {% set r = summary[key] %}
+      <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
+        <div class="lbl">{{ label }}</div>
+        {% if r.settled %}
+        <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
+        <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
+        {% else %}
+        <div class="wl" style="color:var(--muted)">&mdash;</div>
+        <span class="units" style="color:var(--muted)">&mdash;</span>
+        {% endif %}
+        <div class="meta">{{ r.settled }} settled{% if r.pending %} &middot; {{ r.pending }} pending{% endif %}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="records-section">
     <h2>High-EV Picks <span style="color:var(--accent);font-size:13px">ev_pct &ge; +9%</span></h2>
     <div class="sub">
       Picks where the model's probability × posted price produced at least

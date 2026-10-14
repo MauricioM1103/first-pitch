@@ -1314,9 +1314,62 @@ def _conf_tier_for(pk):
     return 1
 
 
+def _backtest_signal_score(pk):
+    """Reconstruct the current signal_score from fields that WERE in the
+    log at save time. Book-agreement (+1 for DK/Kalshi divergence) is
+    excluded because historical logs don't carry those fields — so the
+    max achievable in a backtest is 4, same cap as live today while the
+    cross-book data path is dark."""
+    score = 0.0
+    try:
+        ev = float(pk.get("ev_pct") or 0.0)
+    except (TypeError, ValueError):
+        ev = 0.0
+    if ev >= 6.0:
+        score += 2
+    elif ev >= 3.0:
+        score += 1
+    try:
+        move = float(pk.get("line_move_pp") or 0.0)
+    except (TypeError, ValueError):
+        move = 0.0
+    if move > 0.0:
+        score += 1
+    try:
+        fp = float(pk.get("fair_prob") or 0.0)
+    except (TypeError, ValueError):
+        fp = 0.0
+    if fp >= 0.60 and pk.get("source") != "alt":
+        score += 1
+    return int(min(5, max(0, score)))
+
+
+def _passes_current_filter(pk):
+    """True iff this pick would survive the CURRENT (post-Phase 4) filter
+    stack: not model-only, EV cushion met for its market class, signal
+    composite >= 3. Used for the 'if we had used current filter all along'
+    backtest shown on /logged."""
+    if pk.get("model_only"):
+        return False
+    try:
+        ev = float(pk.get("ev_pct") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    # EV floor: 5% for alt-line picks, 3% for everything else. Matches the
+    # emission-site thresholds in mlb_ui._model_fill_picks and picks.MIN_EV_PCT.
+    is_alt = (pk.get("source") == "alt")
+    ev_floor = 5.0 if is_alt else 3.0
+    if ev < ev_floor:
+        return False
+    # Signal composite — same math as live, minus book-agreement (dark).
+    if _backtest_signal_score(pk) < 3:
+        return False
+    return True
+
+
 def record_in_window(graded_by_date, days_back, strong_only=False, today=None,
                      source=None, conf_tier=None, plus_ev_only=False,
-                     min_ev=None):
+                     min_ev=None, current_filter=False):
     """Aggregate W/L/P/pending + units + ROI for picks that match the filters.
       source="ev"       → only EV-verified consensus picks.
       source="model"    → only model-only picks that scored 4/5 or 5/5.
@@ -1327,6 +1380,10 @@ def record_in_window(graded_by_date, days_back, strong_only=False, today=None,
                           not just the +2% threshold used for EV tagging).
       min_ev=9.0        → only picks with ev_pct >= 9%. Combines with
                           plus_ev_only to form the "+EV ≥ 9%" tracker.
+      current_filter=True → only picks that would pass the CURRENT (Phase 4)
+                          filter: not model-only, EV >= 3% (5% for alts),
+                          signal composite >= 3. Shows 'if we had used
+                          today's filter all along' retroactively.
     """
     today = today or date.today()
     cutoff = today - timedelta(days=days_back - 1)
@@ -1343,7 +1400,10 @@ def record_in_window(graded_by_date, days_back, strong_only=False, today=None,
         if d < cutoff or d > today:
             continue
         for pk in picks:
-            if strong_only:
+            if current_filter:
+                if not _passes_current_filter(pk):
+                    continue
+            elif strong_only:
                 # Recompute "strong" at read time instead of trusting the
                 # saved pk["strong"] flag. Historical picks were tagged
                 # under the old 60% threshold; the new definition is 68%
@@ -1429,6 +1489,13 @@ def summary(graded_by_date, today=None):
         out[f"strong_{label}"]   = record_in_window(graded_by_date, days, True,  today)
         out[f"plusev9_{label}"]  = record_in_window(graded_by_date, days, False, today, min_ev=9.0)
         out[f"dk_{label}"]       = record_in_window(graded_by_date, days, False, today, source="book_dk")
+        # Phase 6b: "if we had used today's filter all along" retro-backtest.
+        # Picks that would have survived the current Signal >= 3 + EV >= 3%
+        # (5% alt) + no-model-only filter stack, re-aggregated across the
+        # window using the already-graded W/L on each log entry.
+        out[f"curfilter_{label}"] = record_in_window(graded_by_date, days,
+                                                     False, today,
+                                                     current_filter=True)
         # back-compat (not rendered)
         out[f"ev_{label}"]       = record_in_window(graded_by_date, days, False, today, source="ev")
         out[f"model_{label}"]    = record_in_window(graded_by_date, days, False, today, source="model")
