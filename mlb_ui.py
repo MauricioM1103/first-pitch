@@ -2198,7 +2198,7 @@ details.also-wrap .today-card { opacity: 0.88; }
   </div>
   <div class="today-list">
     {% for p in star_picks %}
-    <a class="today-card star" href="/games?date={{ date_str }}#{{ p.row_id or '' }}" style="text-decoration:none; color:inherit">
+    <a class="today-card star" href="/pick?date={{ date_str }}&sport={{ p.sport_slug }}&home={{ p.game_home|urlencode }}&away={{ p.game_away|urlencode }}&market={{ p.market|urlencode }}&pick={{ p.pick|urlencode }}" style="text-decoration:none; color:inherit">
       <div class="pick-head">
         <span class="star">&#9733;</span>
         <span class="pick-text">{{ p.pick }}</span>
@@ -2257,7 +2257,7 @@ details.also-wrap .today-card { opacity: 0.88; }
     <summary>Model also likes &mdash; {{ also_likes|length }} pick{{ 's' if also_likes|length != 1 else '' }} with Signal 2/5 (below the bet threshold, but the model has interest)</summary>
     <div class="today-list">
       {% for p in also_likes %}
-      <a class="today-card" href="/games?date={{ date_str }}#{{ p.row_id or '' }}" style="text-decoration:none; color:inherit">
+      <a class="today-card" href="/pick?date={{ date_str }}&sport={{ p.sport_slug }}&home={{ p.game_home|urlencode }}&away={{ p.game_away|urlencode }}&market={{ p.market|urlencode }}&pick={{ p.pick|urlencode }}" style="text-decoration:none; color:inherit">
         <div class="pick-head">
           <span class="pick-text">{{ p.pick }}</span>
           <span class="signal-chip s2" style="color:var(--muted-2); background:color-mix(in oklab, var(--rule) 20%, transparent); border-color:var(--rule)">Signal 2/5</span>
@@ -2379,6 +2379,222 @@ LAB_TEMPLATE = r"""<!doctype html>
       <h3>AI Debate</h3>
       <p>Five Claude models each verdict on one pick, moderated into a composite view. Disagreement itself is the signal.</p>
     </div>
+  </div>
+</div>
+</body>
+</html>
+"""
+
+
+PICK_DETAIL_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ pick.pick }} &mdash; Deep Dive</title>
+{{ fonts_link|safe }}
+<style>
+{{ shared_style|safe }}
+.pd-header { padding: 20px 0 12px; }
+.pd-crumb { font-size: 12px; color: var(--muted-2); margin-bottom: 8px; }
+.pd-crumb a { color: var(--muted); text-decoration: none; }
+.pd-crumb a:hover { color: var(--ink); }
+.pd-title { font-size: 24px; font-weight: 700; margin: 0 0 4px; letter-spacing: -0.015em; }
+.pd-meta { color: var(--muted); font-size: 13px; display: flex; gap: 10px; flex-wrap: wrap; }
+.pd-meta .sport-tag { font-weight: 600; color: var(--ink); letter-spacing: 0.4px; text-transform: uppercase; font-size: 11px; }
+.pd-composite {
+  margin: 18px 0 10px; padding: 18px 20px; border-radius: 12px;
+  border: 1px solid var(--rule);
+  background: var(--card);
+  display: grid; grid-template-columns: auto 1fr auto; gap: 10px 16px; align-items: center;
+}
+.pd-composite.bet  { border-color: color-mix(in oklab, #22c55e 55%, var(--rule));
+                     background: color-mix(in oklab, #22c55e 10%, var(--card)); }
+.pd-composite.lean { border-color: color-mix(in oklab, #38bdf8 55%, var(--rule));
+                     background: color-mix(in oklab, #38bdf8 8%, var(--card)); }
+.pd-composite.hold { border-color: color-mix(in oklab, #f59e0b 55%, var(--rule));
+                     background: color-mix(in oklab, #f59e0b 8%, var(--card)); }
+.pd-composite.pass { border-color: color-mix(in oklab, #ef4444 50%, var(--rule));
+                     background: color-mix(in oklab, #ef4444 7%, var(--card)); }
+.pd-composite .label {
+  font-size: 32px; font-weight: 800; letter-spacing: 0.03em;
+  padding: 4px 20px; border-radius: 10px;
+  background: var(--surface); border: 1px solid var(--rule);
+}
+.pd-composite.bet  .label { color: #22c55e; border-color: #22c55e; }
+.pd-composite.lean .label { color: #38bdf8; border-color: #38bdf8; }
+.pd-composite.hold .label { color: #f59e0b; border-color: #f59e0b; }
+.pd-composite.pass .label { color: #ef4444; border-color: #ef4444; }
+.pd-composite .note { color: var(--muted); font-size: 14px; line-height: 1.5; }
+.pd-composite .avg {
+  font-family: "JetBrains Mono", monospace; font-size: 12px;
+  color: var(--muted-2); white-space: nowrap;
+}
+.pd-grid {
+  display: grid; gap: 12px; margin: 16px 0;
+  grid-template-columns: repeat(2, 1fr);
+}
+.pd-panel {
+  padding: 14px 16px; background: var(--card); border: 1px solid var(--rule);
+  border-radius: 10px;
+}
+.pd-panel .head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 6px; }
+.pd-panel .name { font-size: 11px; letter-spacing: 0.6px; text-transform: uppercase; color: var(--muted-2); font-weight: 600; }
+.pd-panel .verdict {
+  font-size: 15px; font-weight: 700; letter-spacing: 0.3px;
+}
+.pd-panel .meter {
+  display: inline-flex; gap: 2px; margin-top: 2px;
+}
+.pd-panel .meter .pip {
+  width: 10px; height: 4px; border-radius: 2px; background: var(--rule);
+}
+.pd-panel .meter .pip.filled { background: currentColor; }
+.pd-panel.s5 .verdict, .pd-panel.s5 .meter { color: #22c55e; }
+.pd-panel.s4 .verdict, .pd-panel.s4 .meter { color: #38bdf8; }
+.pd-panel.s3 .verdict, .pd-panel.s3 .meter { color: var(--ink); }
+.pd-panel.s2 .verdict, .pd-panel.s2 .meter { color: #f59e0b; }
+.pd-panel.s1 .verdict, .pd-panel.s1 .meter { color: #ef4444; }
+.pd-panel .lines { color: var(--muted); font-size: 13px; line-height: 1.5; margin-top: 6px; }
+.pd-panel .lines div { margin: 2px 0; }
+.pd-ai {
+  margin: 18px 0; padding: 16px 18px;
+  border-radius: 10px; border: 1px solid var(--rule);
+  background: color-mix(in oklab, var(--accent) 5%, var(--card));
+}
+.pd-ai .label {
+  font-size: 11px; letter-spacing: 0.6px; text-transform: uppercase;
+  color: var(--accent); font-weight: 700; margin-bottom: 8px;
+}
+.pd-ai .text { font-size: 14.5px; line-height: 1.6; color: var(--ink); }
+.pd-ai.missing .text { color: var(--muted); font-style: italic; }
+.pd-stats {
+  margin: 16px 0; padding: 12px 16px; background: var(--card);
+  border: 1px solid var(--rule); border-radius: 10px;
+  display: flex; gap: 24px; flex-wrap: wrap;
+}
+.pd-stats .stat .label { font-size: 10.5px; letter-spacing: 0.6px; text-transform: uppercase; color: var(--muted-2); display: block; }
+.pd-stats .stat .value { font-size: 16px; font-weight: 600; color: var(--ink); font-family: "JetBrains Mono", monospace; }
+@media (max-width: 640px) {
+  .wrap { padding-left: 12px; padding-right: 12px; }
+  .pd-title { font-size: 20px; line-height: 1.25; }
+  .pd-meta { font-size: 12px; gap: 6px; }
+  .pd-composite { grid-template-columns: 1fr; padding: 14px; }
+  .pd-composite .label { font-size: 24px; justify-self: start; padding: 2px 14px; }
+  .pd-composite .note { font-size: 13px; }
+  .pd-grid { grid-template-columns: 1fr; gap: 10px; }
+  .pd-panel { padding: 12px 14px; }
+  .pd-ai .text { font-size: 13.5px; }
+  .pd-stats { gap: 14px; }
+}
+</style>
+</head>
+<body>
+{{ sport_strip|safe }}
+<div class="wrap">
+  <div class="pd-crumb">
+    <a href="/">&lsaquo; Today</a>
+    &middot; <a href="/games?date={{ date_str }}">Games</a>
+    &middot; Pick Deep Dive
+  </div>
+  <div class="pd-header">
+    <h1 class="pd-title">{{ pick.pick }}</h1>
+    <div class="pd-meta">
+      <span class="sport-tag">{{ pick.sport_name }}</span>
+      <span>{{ pick.game_away }} @ {{ pick.game_home }}</span>
+      <span>&middot; {{ pick.market }}</span>
+      {% if pick.decimal %}<span>&middot; @ {{ '%.2f'|format(pick.decimal) }}{% if pick.book %} ({{ pick.book }}){% endif %}</span>{% endif %}
+      {% if pick.countdown %}<span>&middot; {{ pick.countdown }}</span>{% endif %}
+      {% if pick.time_abs %}<span>&middot; {{ pick.time_abs }}</span>{% endif %}
+    </div>
+  </div>
+
+  <div class="pd-composite {{ composite.cls }}">
+    <div class="label">{{ composite.label }}</div>
+    <div class="note">{{ composite.note }}</div>
+    <div class="avg">avg {{ composite.avg_strength }}/5</div>
+  </div>
+
+  {% if ai_synthesis %}
+  <div class="pd-ai">
+    <div class="label">AI Synthesis &middot; Claude Haiku</div>
+    <div class="text">{{ ai_synthesis }}</div>
+  </div>
+  {% else %}
+  <div class="pd-ai missing">
+    <div class="label">AI Synthesis</div>
+    <div class="text">ANTHROPIC_API_KEY not configured on this deploy — the four data panels below are the full read; add the key to enable a 2-3 sentence Claude Haiku synthesis.</div>
+  </div>
+  {% endif %}
+
+  <div class="pd-grid">
+    {% for panel in panels %}
+    <div class="pd-panel s{{ panel.strength }}">
+      <div class="head">
+        <span class="name">{{ panel.name }}</span>
+        <span class="meter">
+          {% for i in range(5) %}
+            <span class="pip {{ 'filled' if i < panel.strength else '' }}"></span>
+          {% endfor %}
+        </span>
+      </div>
+      <div class="verdict">{{ panel.verdict }}</div>
+      <div class="lines">
+        {% for line in panel.lines %}<div>{{ line }}</div>{% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="pd-stats">
+    {% if pick.ev_pct is not none %}<div class="stat"><span class="label">EV</span><span class="value">{{ '%+.1f'|format(pick.ev_pct) }}%</span></div>{% endif %}
+    {% if pick.signal_score is not none %}<div class="stat"><span class="label">Signal</span><span class="value">{{ pick.signal_score }}/5</span></div>{% endif %}
+    {% if pick.fair_prob is not none %}<div class="stat"><span class="label">Model</span><span class="value">{{ (pick.fair_prob * 100)|round|int }}%</span></div>{% endif %}
+    {% if pick.pinnacle_prob is not none %}<div class="stat"><span class="label">Pinnacle</span><span class="value">{{ (pick.pinnacle_prob * 100)|round|int }}%</span></div>{% endif %}
+    {% if pick.consensus_prob is not none %}<div class="stat"><span class="label">Consensus</span><span class="value">{{ (pick.consensus_prob * 100)|round|int }}%</span></div>{% endif %}
+    {% if pick.kelly_pct and pick.kelly_pct > 0 %}<div class="stat"><span class="label">1/4 Kelly</span><span class="value">{{ '%.1f'|format(pick.kelly_pct) }}%</span></div>{% endif %}
+    {% if pick.line_move_pp is not none %}<div class="stat"><span class="label">Line Δ</span><span class="value">{{ '%+.1f'|format(pick.line_move_pp * 100) }}pp</span></div>{% endif %}
+  </div>
+
+  <footer style="margin-top:30px; padding:14px 0; color:var(--muted-2); font-size:12px; border-top:1px solid var(--rule)">
+    Four INDEPENDENT signals ensembled; one Claude call synthesizes.
+    Research-ask: Bayesian ensemble &gt; correlated LLM debate.
+  </footer>
+</div>
+</body>
+</html>
+"""
+
+
+PICK_NOT_FOUND_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pick not found</title>
+{{ fonts_link|safe }}
+<style>{{ shared_style|safe }}
+.nf-box { max-width: 560px; margin: 60px auto; padding: 28px; background: var(--card); border: 1px solid var(--rule); border-radius: 12px; }
+.nf-box h1 { margin: 0 0 10px; font-size: 22px; }
+.nf-box p { margin: 10px 0; color: var(--muted); font-size: 14px; line-height: 1.5; }
+.nf-box code { background: var(--surface); padding: 1px 6px; border-radius: 4px; font-size: 12px; color: var(--muted-2); }
+.nf-box a.cta { display: inline-block; margin-top: 10px; padding: 8px 14px; border-radius: 8px; background: var(--card); border: 1px solid var(--ink); color: var(--ink); text-decoration: none; font-weight: 600; font-size: 13px; }
+</style>
+</head>
+<body>
+{{ sport_strip|safe }}
+<div class="wrap">
+  <div class="nf-box">
+    <h1>Pick not on today's board.</h1>
+    <p>
+      Deep-dive URLs reference live board state. The pick you tried to open
+      {% if sport_slug %}<br><code>{{ sport_slug }} / {{ away }} @ {{ home }} / {{ market }} / {{ pick_label }}</code>{% endif %}
+      isn't on the <b>{{ date_str }}</b> board — the game may have already
+      kicked off, the pick may have been filtered out, or the URL may be stale.
+    </p>
+    <p>Jump back to the opinionated feed:</p>
+    <a class="cta" href="/">&larr; Today</a>
+    <a class="cta" href="/games?date={{ date_str }}" style="margin-left:8px">All games &rarr;</a>
   </div>
 </div>
 </body>
@@ -5405,6 +5621,306 @@ def lab_landing():
         fonts_link=FONTS_LINK,
         shared_style=SHARED_STYLE,
         sport_strip=render_sport_strip("lab"),
+    )
+
+
+def _historical_similar_record(sport_slug, market_cat, prob_band, days=90, today=None):
+    """Pull W/L/ROI for picks matching this (sport, market category, prob
+    band) over the last N days. Prob bands are 5pp buckets (50-55, 55-60,
+    60-65, 65-70, 70+) so a 61% pick matches past 60-65% picks. This is
+    the historical-calibration leg of the deep-dive — tells the reader
+    'the model's priors in THIS tier have hit at X% over N bets'."""
+    try:
+        import plays_log
+        graded = plays_log.grade_all(limit_dates=days)
+    except Exception:
+        return None
+    today = today or datetime.now(CENTRAL).date()
+    cutoff = today - timedelta(days=days - 1)
+    def _band(fp):
+        if fp is None:
+            return None
+        try:
+            v = float(fp)
+        except (TypeError, ValueError):
+            return None
+        if v >= 0.70: return "70+"
+        if v >= 0.65: return "65-70"
+        if v >= 0.60: return "60-65"
+        if v >= 0.55: return "55-60"
+        if v >= 0.50: return "50-55"
+        return None
+    want_band = prob_band if isinstance(prob_band, str) else _band(prob_band)
+    want_cat = (market_cat or "").upper().strip()
+    want_sport = (sport_slug or "").lower().strip()
+    w = l = p = pending = 0
+    units = 0.0
+    for ds, picks in graded.items():
+        try:
+            d = datetime.strptime(ds, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if d < cutoff or d > today:
+            continue
+        for pk in picks:
+            if (pk.get("sport_slug") or "").lower().strip() != want_sport:
+                continue
+            if _market_category(pk.get("market") or "") != want_cat:
+                continue
+            fp = pk.get("fair_prob") or pk.get("consensus_prob")
+            if _band(fp) != want_band:
+                continue
+            r = pk.get("result")
+            if r == "W":
+                w += 1
+            elif r == "L":
+                l += 1
+            elif r == "P":
+                p += 1
+            else:
+                pending += 1
+            units += pk.get("profit_u", 0) or 0
+    settled = w + l
+    if settled == 0 and pending == 0:
+        return None
+    return {
+        "wins": w, "losses": l, "pushes": p, "pending": pending,
+        "settled": settled,
+        "win_pct": (w / settled * 100) if settled else 0.0,
+        "roi_pct": (units / settled * 100) if settled else 0.0,
+        "units": units,
+        "band": want_band,
+        "sport": want_sport, "market": want_cat,
+    }
+
+
+def _pick_deep_dive_signals(pick):
+    """Compute the 4 independent-signal panels for the deep-dive page.
+
+    Each panel: {verdict, strength (0-5), one-liner, data lines}. Verdicts:
+    'STRONG BET', 'LEAN', 'HOLD', 'PASS', 'NO BET'. Strength is a 0-5
+    heart-count for the UI meter. Research-ask (Bayesian ensemble of
+    independent signals) is the whole premise — four INDEPENDENT sources
+    beat 5 correlated LLMs."""
+    fair = pick.get("fair_prob")
+    pin  = pick.get("pinnacle_prob")
+    ev   = pick.get("ev_pct")
+    move = pick.get("line_move_pp")
+
+    # 1) MODEL verdict — how confident is OUR model relative to market?
+    try:
+        gap_pp = (float(fair) - float(pin)) * 100.0 if (fair is not None and pin is not None) else 0.0
+    except (TypeError, ValueError):
+        gap_pp = 0.0
+    if gap_pp >= 6: model_v, model_s = "STRONG", 5
+    elif gap_pp >= 3: model_v, model_s = "LEAN",   4
+    elif gap_pp >= 1: model_v, model_s = "AGREE",  3
+    elif gap_pp >= -1: model_v, model_s = "NEUTRAL", 2
+    else: model_v, model_s = "FADE",   1
+    model_lines = []
+    if fair is not None:
+        model_lines.append(f"Model prices {round(float(fair)*100)}%")
+    if pin is not None:
+        model_lines.append(f"Pinnacle devig {round(float(pin)*100)}%")
+    model_lines.append(f"Gap {gap_pp:+.1f}pp")
+
+    # 2) MARKET verdict — EV cushion survives the research thresholds?
+    try:
+        ev_f = float(ev) if ev is not None else 0.0
+    except (TypeError, ValueError):
+        ev_f = 0.0
+    is_alt = (pick.get("source") == "alt")
+    ev_floor = 5.0 if is_alt else 3.0
+    if ev_f >= 8: market_v, market_s = "STRONG BET", 5
+    elif ev_f >= 5: market_v, market_s = "BET",       4
+    elif ev_f >= ev_floor: market_v, market_s = "LEAN", 3
+    elif ev_f > 0: market_v, market_s = "HOLD",       2
+    else: market_v, market_s = "PASS",       1
+    market_lines = [f"EV +{ev_f:.1f}% vs {ev_floor:.0f}% floor"]
+    if pick.get("decimal"):
+        market_lines.append(f"Price {float(pick['decimal']):.2f} ({pick.get('book','?')})")
+    if pick.get("kelly_pct") and pick["kelly_pct"] > 0:
+        market_lines.append(f"1/4 Kelly stake {float(pick['kelly_pct']):.1f}% bankroll")
+
+    # 3) LINE MOVEMENT verdict — sharp agreement
+    try:
+        move_pp = float(move) * 100.0 if move is not None else None
+    except (TypeError, ValueError):
+        move_pp = None
+    if move_pp is None:
+        line_v, line_s = "NO DATA", 2
+        line_lines = ["Pinnacle snapshot younger than lookback window"]
+    elif move_pp >= 2.0:
+        line_v, line_s = "SHARP AGREE", 5
+        line_lines = [f"Pinnacle moved {move_pp:+.1f}pp toward our side"]
+    elif move_pp >= 0.5:
+        line_v, line_s = "LEANING",     4
+        line_lines = [f"Pinnacle moved {move_pp:+.1f}pp toward our side"]
+    elif move_pp >= -0.5:
+        line_v, line_s = "QUIET",       3
+        line_lines = [f"Pinnacle devig steady ({move_pp:+.1f}pp)"]
+    elif move_pp >= -2.0:
+        line_v, line_s = "DRIFTING OFF", 2
+        line_lines = [f"Pinnacle moved {move_pp:+.1f}pp AGAINST our side"]
+    else:
+        line_v, line_s = "SHARP FADE",  1
+        line_lines = [f"Pinnacle moved {move_pp:+.1f}pp AGAINST — a strong sharp signal against the bet"]
+    if pick.get("line_open_pinnacle") is not None and pick.get("line_open_date"):
+        line_lines.append(f"Opened {round(float(pick['line_open_pinnacle'])*100)}% on {pick['line_open_date']}")
+
+    # 4) HISTORICAL verdict — how have similar (sport, market, prob band)
+    # picks performed over the 90-day log?
+    cat = _market_category(pick.get("market") or "")
+    hist = _historical_similar_record(pick.get("sport_slug"), cat, fair, days=90)
+    if hist is None or hist["settled"] < 3:
+        hist_v, hist_s = "SMALL N", 2
+        hist_lines = ["Not enough comparable picks in the last 90 days to calibrate"]
+    else:
+        wp = hist["win_pct"]; roi = hist["roi_pct"]
+        if wp >= 60 and roi > 5:
+            hist_v, hist_s = "HOT TIER", 5
+        elif wp >= 55 and roi > 0:
+            hist_v, hist_s = "WARM TIER", 4
+        elif 45 <= wp <= 55:
+            hist_v, hist_s = "AVERAGE", 3
+        elif wp >= 40:
+            hist_v, hist_s = "COOL TIER", 2
+        else:
+            hist_v, hist_s = "COLD TIER", 1
+        hist_lines = [
+            f"{cat.title()} {hist['band']}% band: {hist['wins']}W-{hist['losses']}L"
+            + (f"-{hist['pushes']}P" if hist["pushes"] else "")
+            + f" ({wp:.0f}% hit rate)",
+            f"{roi:+.1f}% ROI across {hist['settled']} settled picks",
+        ]
+
+    panels = [
+        {"name": "Model",         "verdict": model_v,  "strength": model_s,  "lines": model_lines},
+        {"name": "Market EV",     "verdict": market_v, "strength": market_s, "lines": market_lines},
+        {"name": "Line Movement", "verdict": line_v,   "strength": line_s,   "lines": line_lines},
+        {"name": "Historical",    "verdict": hist_v,   "strength": hist_s,   "lines": hist_lines},
+    ]
+    # Composite verdict: average strength → BET / LEAN / HOLD / PASS
+    avg = sum(p["strength"] for p in panels) / 4
+    if avg >= 4.0:
+        composite = {"label": "BET", "note": "all four signals support the pick", "cls": "bet"}
+    elif avg >= 3.25:
+        composite = {"label": "LEAN", "note": "most signals agree; one wobble", "cls": "lean"}
+    elif avg >= 2.5:
+        composite = {"label": "HOLD", "note": "mixed — wait for sharper confirmation", "cls": "hold"}
+    else:
+        composite = {"label": "PASS", "note": "signals disagree; the market is probably right", "cls": "pass"}
+    composite["avg_strength"] = round(avg, 2)
+    return panels, composite
+
+
+def _ai_pick_synthesis(pick, panels, composite):
+    """One Claude call that reads the 4 panels + composite and emits a
+    2-3 sentence natural-language verdict. Haiku for speed/cost. Returns
+    None if ANTHROPIC_API_KEY missing. Soft-fails."""
+    try:
+        import analyst as analyst_mod
+        if not analyst_mod.is_available():
+            return None
+        import os
+        from anthropic import Anthropic
+        client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    except Exception:
+        return None
+    panel_lines = "\n".join(
+        f"- {p['name']}: {p['verdict']} ({p['strength']}/5) — {'; '.join(p['lines'])}"
+        for p in panels
+    )
+    prompt = (
+        f"You are a sharp sports bettor. Below are four INDEPENDENT signals on a pick.\n\n"
+        f"PICK: {pick.get('pick')} ({pick.get('sport_name')} — {pick.get('market')})\n"
+        f"GAME: {pick.get('away_team') or pick.get('game_away')} @ "
+        f"{pick.get('home_team') or pick.get('game_home')}\n\n"
+        f"SIGNALS:\n{panel_lines}\n\n"
+        f"COMPOSITE VERDICT: {composite['label']} (avg strength {composite['avg_strength']}/5)\n\n"
+        "In 2-3 sentences, synthesize the four signals. Lead with whether you'd place "
+        "this bet, then name the strongest supporting signal and the biggest concern. "
+        "Do NOT repeat the numbers verbatim — the user can see them. Plain prose, no "
+        "markdown. No disclaimer."
+    )
+    try:
+        resp = client.messages.create(
+            model="claude-haiku-5-5",
+            max_tokens=240,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        txt = "".join(b.text for b in resp.content if hasattr(b, "text")).strip()
+        return txt
+    except Exception as e:
+        return None
+
+
+@app.route("/pick")
+def pick_deep_dive():
+    """Multi-signal deep-dive on a single pick. Four INDEPENDENT verdict
+    panels (Model gap vs market, EV cushion, 3-day line movement, 90-day
+    historical calibration of the same tier) plus a Claude Haiku synthesis
+    that reads the panels and gives a 2-3 sentence natural-language take.
+
+    Research-aligned: a Bayesian ensemble of independent signals, not a
+    chorus of correlated LLM voters. One Claude call keeps cost down and
+    the data panels keep the reasoning auditable.
+    """
+    date_str = request.args.get("date") or datetime.now(CENTRAL).date().isoformat()
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        d = datetime.now(CENTRAL).date()
+        date_str = d.isoformat()
+    sport_slug = (request.args.get("sport") or "").lower()
+    home       = (request.args.get("home") or "").strip()
+    away       = (request.args.get("away") or "").strip()
+    market     = (request.args.get("market") or "").strip()
+    pick_label = (request.args.get("pick") or "").strip()
+
+    board_rows, _ = _build_board_rows(date_str, d, "all", strong_only=False)
+    pick = None
+    for row in board_rows:
+        if (row.get("sport_slug") or "").lower() != sport_slug:
+            continue
+        if home and (row.get("home") or "").strip() != home:
+            continue
+        if away and (row.get("away") or "").strip() != away:
+            continue
+        for p in row.get("picks", []):
+            if (p.get("market") or "").strip() == market and (p.get("pick") or "").strip() == pick_label:
+                pick = {**p, "game_home": row["home"], "game_away": row["away"],
+                        "sport_name": row.get("sport_name"), "start_time": row.get("start_time"),
+                        "countdown": row.get("countdown"), "time_abs": row.get("time_abs"),
+                        "status": row.get("status"), "row_id": row.get("id")}
+                break
+        if pick:
+            break
+
+    if not pick:
+        # Soft 404: a template that explains what happened and links back
+        # to TODAY. Catches the stale-URL case (yesterday's pick, URL shared).
+        return render_template_string(
+            PICK_NOT_FOUND_TEMPLATE,
+            fonts_link=FONTS_LINK,
+            shared_style=SHARED_STYLE,
+            sport_strip=render_sport_strip("today"),
+            date_str=date_str,
+            sport_slug=sport_slug, home=home, away=away,
+            market=market, pick_label=pick_label,
+        ), 404
+
+    panels, composite = _pick_deep_dive_signals(pick)
+    ai_synthesis = _ai_pick_synthesis(pick, panels, composite)
+
+    return render_template_string(
+        PICK_DETAIL_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        sport_strip=render_sport_strip("today"),
+        pick=pick, panels=panels, composite=composite,
+        ai_synthesis=ai_synthesis,
+        date_str=date_str,
     )
 
 
