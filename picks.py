@@ -382,29 +382,46 @@ def _pick_is_on_date(pick, date_str):
 CONSENSUS_MAX_DIVERGENCE = 0.08   # drop pick if |sim − fair| > 8pp (tightened from 15)
 CONSENSUS_FLAG_DIVERGENCE = 0.05  # flag the pick as "divergent" between 5-8pp
 CONSENSUS_SIM_TRIALS     = 1500   # smaller sims for consensus — memory + speed
-# Final blend used for the fair prob we actually bet into: 40% our model
-# (which itself is the avg of pricing + MC), 60% Pinnacle's devigged line.
-# Pinnacle is the sharpest line we have access to; our models beat them
-# only in flashes, so a market-weighted blend is honest.
-MARKET_WEIGHT            = 0.60
-MODEL_WEIGHT             = 0.40
+# Final blend used for the fair prob we actually bet into: 35% our model
+# (which itself is the avg of pricing + MC), 65% Pinnacle's devigged line.
+# Pinnacle is the sharpest line we have access to; the research PDF cites
+# 65/35 as the fitted-optimal blend across sports. Per-sport overrides
+# tilt further toward the market for sports where our model has been
+# demonstrably over-confident (NFL, NCAAF — see Phase 1 calibration audit)
+# and toward the model for the one sport the research says a bettor model
+# routinely beats the market (MMA, via distinct physical features).
+MARKET_WEIGHT            = 0.65
+MODEL_WEIGHT             = 0.35
 
-# Per-sport MODEL_WEIGHT override. Default is 0.40 (65% market / 35% model
-# per nfelo's maximum-accuracy blend).
+# Per-sport MODEL_WEIGHT override. Default is 0.35 (65% market / 35% model
+# per the research-PDF fitted maximum-accuracy blend).
 #
-# Earlier soccer boost to 0.60 was based on n=12 samples (EPL 55% picks
-# hitting 83%); the 2017 Soccer Prediction Challenge showed NO model beats
-# the sharp close, so the under-confidence we observed was almost
-# certainly variance. Walked back to 0.45 — slight pro-model tilt that
-# reflects soccer's lower-liquidity book pricing, but still keeps the
-# market as the dominant anchor.
+# NFL / NCAAF: 0.30. Phase 1 calibration found these two sports priced
+# the 55-62% band at ~29% actual hit rate — the model is systematically
+# over-confident. Lean harder on market until Phase 2's key-number +
+# margin dist fixes show measurable improvement.
+#
+# Soccer: 0.45. Earlier 0.60 boost was based on n=12 samples and the
+# 2017 Soccer Prediction Challenge showed NO model beats the sharp close;
+# slight pro-model tilt only reflects soccer's lower-liquidity pricing.
+# UCL / Europa / International stay at 0.40 (cross-league team rates =
+# more model noise).
+#
+# UFC: 0.50. Research names MMA as the one sport where a bettor model
+# routinely clears the market (sparse data + physical features that
+# books under-weight: reach differential, cardio by camp, defensive
+# striking by fight length). 50/50 is a fair middle ground; we can push
+# further if measured EV holds up.
 _SPORT_MODEL_WEIGHT = {
+    "nfl":            0.30,
+    "ncaaf":          0.30,
     "epl":            0.45,
     "laliga":         0.45,
     "ligamx":         0.45,
-    "ucl":            0.40,  # cross-league team rates = more model noise
+    "ucl":            0.40,
     "europa":         0.40,
     "international":  0.40,
+    "ufc":            0.50,
 }
 
 

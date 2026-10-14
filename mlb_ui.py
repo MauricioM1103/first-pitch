@@ -2487,7 +2487,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
         </div>
       </div>
       <div class="model-explain-foot">
-        Each candidate is scored against a <b>40% model / 60% Pinnacle devig</b> consensus.
+        Each candidate is scored against a <b>per-sport model/Pinnacle devig</b> consensus (default 35/65; NFL &amp; NCAAF 30/70, soccer 45/55, UFC 50/50).
         EV-verified picks must clear <b>+2% EV</b>, fair prob &ge; 46%, odds &ge; 1.60.
         Strong (&starf;) picks clear <b>68% consensus (5/5 tier) AND +4% EV</b>. Picks below
         3/5 confidence (fair_prob &lt; 57%) are hidden entirely.
@@ -2733,7 +2733,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
   {% endif %}
 
   <footer>
-    <div>Picks blended via 40% model / 60% Pinnacle devig &middot; one row per game &middot; scan {{ scan_time_ms }} ms</div>
+    <div>Picks blended per-sport (default 35/65 model/Pinnacle; NFL &amp; NCAAF 30/70, soccer 45/55, UFC 50/50) &middot; one row per game &middot; scan {{ scan_time_ms }} ms</div>
     <div>updated {{ now }}</div>
   </footer>
 </main>
@@ -3070,13 +3070,24 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
     out = []
 
     # Shared helper: per-sport-weighted model / market blended consensus
-    # prob, mirroring picks._apply_consensus. Default blend is 40% model /
-    # 60% market (research — no public model beats the de-vigged close).
-    # Soccer gets a modest 0.45 model weight (walked back from 0.60 after
-    # the research showed the earlier under-confidence signal was likely
-    # small-sample variance).
-    _SOCCER_SET = {"epl", "laliga", "ligamx", "ucl", "europa", "international"}
-    _mw = 0.45 if sport_slug in _SOCCER_SET else 0.40
+    # prob, mirroring picks._apply_consensus. Default blend is 35% model /
+    # 65% market default (research-PDF fitted optimum — no public model
+    # beats the de-vigged close). Per-sport overrides mirror
+    # picks._SPORT_MODEL_WEIGHT: NFL/NCAAF 0.30 (over-confident per
+    # Phase 1 calibration), soccer 0.45, UFC 0.50 (research names MMA
+    # as the one sport bettor models routinely beat market).
+    _SOCCER_SET = {"epl", "laliga", "ligamx"}  # domestic soccer leagues
+    _UEFA_SET   = {"ucl", "europa", "international"}
+    if sport_slug in ("nfl", "ncaaf"):
+        _mw = 0.30
+    elif sport_slug == "ufc":
+        _mw = 0.50
+    elif sport_slug in _SOCCER_SET:
+        _mw = 0.45
+    elif sport_slug in _UEFA_SET:
+        _mw = 0.40
+    else:
+        _mw = 0.35  # new default: 65/35 instead of old 60/40
     _market_w = 1.0 - _mw
     def _cons(fair, pin_side_fair):
         if pin_side_fair is None:
@@ -8599,8 +8610,8 @@ def _mc_team_stats(sport_slug, game_ctx):
 def _mc_edge_table(sport_slug, game_ctx, sim):
     """Build the edge-detection rows: CONSENSUS prob vs book prob per market.
 
-    "Consensus" here is the same 40% model / 60% Pinnacle devig blend the main
-    picks board uses — the MC page previously bet off raw sim probability,
+    "Consensus" here is the same per-sport model / Pinnacle devig blend the
+    main picks board uses — the MC page previously bet off raw sim prob,
     which disagreed with the board whenever Pinnacle disagreed with the sim.
     Rows share the main board's EV discipline so staking advice from the two
     pages lines up (fixes the "+4.5% edge, 2.4% Kelly here / 1-of-5 rating
@@ -8614,7 +8625,19 @@ def _mc_edge_table(sport_slug, game_ctx, sim):
     import picks as _picks_mod
 
     rows = []
-    MODEL_W, MARKET_W = 0.40, 0.60   # mirror picks.MODEL_WEIGHT / MARKET_WEIGHT
+    # Per-sport model weight, mirrors picks._SPORT_MODEL_WEIGHT. See the
+    # comment on _cons above for the full rationale per sport.
+    if sport_slug in ("nfl", "ncaaf"):
+        MODEL_W = 0.30
+    elif sport_slug == "ufc":
+        MODEL_W = 0.50
+    elif sport_slug in ("epl", "laliga", "ligamx"):
+        MODEL_W = 0.45
+    elif sport_slug in ("ucl", "europa", "international"):
+        MODEL_W = 0.40
+    else:
+        MODEL_W = 0.35   # was 0.40 pre-rebalance
+    MARKET_W = 1.0 - MODEL_W
 
     def _add(label, sim_prob_pct, decimal, book_name, book_prob_pct=None,
              market_type="ML", pick_label=None, pinnacle_prob_pct=None):
