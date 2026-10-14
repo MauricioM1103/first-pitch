@@ -812,17 +812,20 @@ FONTS_LINK = _FONTS  # keep historical name; THEME_SCRIPT appended below
 
 
 _PRIMARY_SECTIONS = [
-    ("today",    "Today",    "/"),
-    ("games",    "Games",    "/games"),
-    ("1h_goals", "1H Goals", "/first-half"),
-    ("results",  "Results",  "/logged"),
-    ("lab",      "Lab",      "/lab"),
+    ("today",    "Today",       "/"),
+    ("games",    "Games",       "/games"),
+    ("1h_goals", "1H Goals",    "/first-half"),
+    ("analysis", "AI Analysis", "/ai-analysis"),
+    ("results",  "Results",     "/logged"),
+    ("lab",      "Lab",         "/lab"),
 ]
 
 # Which legacy slugs should light up the LAB tab. LAB is a container for
-# the power tools (Monte Carlo, AI Analysis, Backtest, future AI debate);
-# visiting any of them highlights the LAB primary tab.
-_LAB_SLUGS = {"montecarlo", "analysis", "backtest", "lab"}
+# the power tools (Monte Carlo, Backtest, future AI debate); visiting any
+# of them highlights the LAB primary tab.
+# NOTE: 'analysis' used to live under LAB but now has its own primary slot
+# ('AI Analysis'), so it is NOT in this set anymore.
+_LAB_SLUGS = {"montecarlo", "backtest", "lab"}
 
 
 def render_sport_strip(active_slug):
@@ -2365,11 +2368,6 @@ LAB_TEMPLATE = r"""<!doctype html>
       <h3>Monte Carlo</h3>
       <p>Run 10,000+ sims on one game across every market. See edges per outcome, score distributions, and Kelly stakes.</p>
     </a>
-    <a class="lab-card" href="/ai-analysis">
-      <span class="tag">LLM read</span>
-      <h3>AI Analysis</h3>
-      <p>Natural-language second opinion on a single pick. Pulls the game context, our model's prob, Pinnacle devig, and current line movement.</p>
-    </a>
     <a class="lab-card" href="/backtest">
       <span class="tag">History</span>
       <h3>Backtest</h3>
@@ -2677,7 +2675,9 @@ FULL_MATCH_SCORE_TEMPLATE = r"""<!doctype html>
   position: relative;
   border: 1px solid var(--rule); border-radius: 10px; overflow: hidden;
   background: var(--card);
-  height: calc(100vh - 220px); min-height: 540px;
+  /* max() guards against negative heights on short viewports
+     (phone landscape, ~360px tall) where 100vh - chrome underflows. */
+  height: max(540px, calc(100vh - 220px));
 }
 .fms-frame-wrap iframe {
   width: 100%; height: 100%; border: 0; display: block; background: #fff;
@@ -2695,7 +2695,7 @@ FULL_MATCH_SCORE_TEMPLATE = r"""<!doctype html>
   .wrap { padding-left: 12px; padding-right: 12px; }
   .fms-header h1 { font-size: 18px; }
   .fms-explainer { padding: 10px 12px; font-size: 12.5px; }
-  .fms-frame-wrap { height: calc(100vh - 280px); min-height: 420px; }
+  .fms-frame-wrap { height: max(420px, calc(100vh - 280px)); }
 }
 </style>
 </head>
@@ -6085,22 +6085,37 @@ def _build_first_half_board(date_str):
             # us a devigged market prob to anchor against.
             pin_1h_o15 = None
             direct_1h = False
+            pin_line = None
             total_h1 = g.get("total_h1") or {}
             try:
                 if total_h1 and total_h1.get("line") is not None:
-                    line = float(total_h1["line"])
-                    # Only trust the market anchor when it's actually at 1.5
-                    if abs(line - 1.5) < 1e-6:
-                        over_am = total_h1.get("over_am"); under_am = total_h1.get("under_am")
-                        if over_am is not None and under_am is not None:
-                            po = mlb_odds.american_to_prob(int(over_am))
-                            pu = mlb_odds.american_to_prob(int(under_am))
-                            fo, _fu = mlb_odds.devig_two_sided(po, pu)
-                            if fo is not None:
+                    pin_line = float(total_h1["line"])
+                    over_am = total_h1.get("over_am"); under_am = total_h1.get("under_am")
+                    if over_am is not None and under_am is not None:
+                        po = mlb_odds.american_to_prob(int(over_am))
+                        pu = mlb_odds.american_to_prob(int(under_am))
+                        fo, _fu = mlb_odds.devig_two_sided(po, pu)
+                        if fo is not None:
+                            # fo = devigged prob of Over at pin_line. For
+                            # 1H O1.5 pill cross-check only use when the
+                            # pinnacle line IS 1.5 (otherwise we'd be
+                            # comparing different thresholds).
+                            if abs(pin_line - 1.5) < 1e-6:
                                 pin_1h_o15 = fo
                                 direct_1h = True
             except Exception:
                 pass
+            # Deep-dive link: construct the pick label that the main
+            # board actually emits so the lookup resolves instead of
+            # soft-404-ing. Format: f"1H Over {line:g}" / "1H Under {line:g}"
+            # Model picks the direction with higher Poisson tail prob.
+            deep_market = None
+            deep_pick = None
+            if pin_line is not None:
+                over_prob = _poisson_over(lam_1h, pin_line)
+                side = "Over" if over_prob >= 0.5 else "Under"
+                deep_market = "1H Total"
+                deep_pick = f"1H {side} {pin_line:g}"
             rows.append({
                 "sport_slug":   slug,
                 "sport_name":   sp.get("name"),
@@ -6114,10 +6129,11 @@ def _build_first_half_board(date_str):
                 "p_ft_o25":     p_ft_o25,
                 "p_btts_ft":    btts_yes,
                 "pin_1h_o15":   pin_1h_o15,
+                "pin_line":     pin_line,
                 "direct_1h":    direct_1h,
                 # Deep-dive link params (if a 1H Total market exists)
-                "deep_market":  "1H Total" if total_h1 else None,
-                "deep_pick":    "1H Over 1.5" if total_h1 else None,
+                "deep_market":  deep_market,
+                "deep_pick":    deep_pick,
             })
     # Rank by 1H O1.5 descending
     rows.sort(key=lambda r: -r["p_1h_o15"])
