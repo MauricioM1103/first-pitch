@@ -2374,13 +2374,139 @@ LAB_TEMPLATE = r"""<!doctype html>
       <h3>Backtest</h3>
       <p>Walk-forward performance per sport across the last 5 seasons. ROI by filter, calibration by prob band, hit rate by market.</p>
     </a>
+    <a class="lab-card" href="/full-match-score">
+      <span class="tag">External</span>
+      <h3>Full Match Score</h3>
+      <p>Soccer-only: 1H O1.5 goal probability for every fixture across every league, de-margined from bookmaker consensus, fitted to a goal model. Companion tool by a friend; embedded in a side panel here.</p>
+    </a>
     <div class="lab-card coming" style="cursor:default">
-      <span class="tag">Coming</span>
-      <h3>AI Debate</h3>
-      <p>Five Claude models each verdict on one pick, moderated into a composite view. Disagreement itself is the signal.</p>
+      <span class="tag">Live now</span>
+      <h3>Pick Deep-Dive</h3>
+      <p>Multi-signal verdict panels (Model, Market EV, Line Movement, Historical) + one Claude synthesis per pick. Open any &#9733; pick from <a href="/" style="color:var(--good)">TODAY</a> to see it.</p>
     </div>
   </div>
 </div>
+</body>
+</html>
+"""
+
+
+FULL_MATCH_SCORE_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Full Match Score &mdash; Betting Tools</title>
+{{ fonts_link|safe }}
+<style>
+{{ shared_style|safe }}
+.fms-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 0 10px; flex-wrap: wrap; gap: 10px;
+}
+.fms-header h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
+.fms-header .meta { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.fms-actions { display: flex; gap: 8px; }
+.fms-actions a {
+  padding: 7px 14px; border-radius: 8px;
+  background: var(--card); border: 1px solid var(--rule);
+  color: var(--ink); text-decoration: none; font-size: 13px; font-weight: 600;
+}
+.fms-actions a:hover { border-color: var(--ink); }
+.fms-actions a.primary {
+  background: color-mix(in oklab, var(--good) 20%, var(--card));
+  border-color: var(--good); color: var(--good);
+}
+.fms-explainer {
+  background: color-mix(in oklab, #38bdf8 7%, var(--card));
+  border: 1px solid color-mix(in oklab, #38bdf8 35%, var(--rule));
+  border-radius: 10px; padding: 12px 14px; margin: 10px 0 14px;
+  color: var(--muted); font-size: 13px; line-height: 1.55;
+  display: flex; align-items: start; gap: 10px;
+}
+.fms-explainer strong { color: var(--ink); display: block; margin-bottom: 2px; }
+.fms-explainer .dot { color: #38bdf8; font-size: 20px; line-height: 1; }
+.fms-frame-wrap {
+  position: relative;
+  border: 1px solid var(--rule); border-radius: 10px; overflow: hidden;
+  background: var(--card);
+  height: calc(100vh - 220px); min-height: 540px;
+}
+.fms-frame-wrap iframe {
+  width: 100%; height: 100%; border: 0; display: block; background: #fff;
+}
+.fms-fallback {
+  position: absolute; inset: 0; display: flex;
+  align-items: center; justify-content: center; flex-direction: column;
+  gap: 10px; padding: 20px; text-align: center;
+  background: var(--card); color: var(--muted); font-size: 13px;
+  visibility: hidden; pointer-events: none;
+}
+.fms-fallback.show { visibility: visible; pointer-events: auto; }
+.fms-fallback a { color: var(--good); text-decoration: underline; }
+@media (max-width: 640px) {
+  .wrap { padding-left: 12px; padding-right: 12px; }
+  .fms-header h1 { font-size: 18px; }
+  .fms-explainer { padding: 10px 12px; font-size: 12.5px; }
+  .fms-frame-wrap { height: calc(100vh - 280px); min-height: 420px; }
+}
+</style>
+</head>
+<body>
+{{ sport_strip|safe }}
+<div class="wrap">
+  <div class="fms-header">
+    <div>
+      <h1>Full Match Score</h1>
+      <div class="meta">
+        External soccer board &middot;
+        <a href="{{ embed_url }}" target="_blank" rel="noopener" style="color:var(--muted-2); text-decoration:underline">full-match-score.vercel.app &rarr;</a>
+        &middot; <a href="/lab" style="color:var(--muted); text-decoration:none">&larr; Lab</a>
+      </div>
+    </div>
+    <div class="fms-actions">
+      <a href="{{ embed_url }}" target="_blank" rel="noopener" class="primary">Open in new tab &rarr;</a>
+    </div>
+  </div>
+
+  <div class="fms-explainer">
+    <span class="dot">&#9679;</span>
+    <div>
+      <strong>What this tool is for</strong>
+      One question, asked well: <b>will there be two or more goals in the first half?</b> Every fixture is priced once pre-kickoff from the de-margined bookmaker consensus, fitted to a goal model. Lit pills mark the top quartile of the day; the green/grey badge is the fixture's gap vs. its league's median that day. Prices are frozen at kickoff so you can grade the model honestly.
+      Companion to our main board &mdash; our picks engine hedges across sports; this one goes deep on soccer first-half goals.
+    </div>
+  </div>
+
+  <div class="fms-frame-wrap" id="fmsFrameWrap">
+    <iframe
+      src="{{ embed_url }}"
+      title="Full Match Score"
+      loading="lazy"
+      referrerpolicy="no-referrer-when-downgrade"
+      allow="clipboard-read; clipboard-write"
+      onerror="document.getElementById('fmsFallback').classList.add('show')"
+    ></iframe>
+    <div class="fms-fallback" id="fmsFallback">
+      <div>The embed didn&rsquo;t load.</div>
+      <a href="{{ embed_url }}" target="_blank" rel="noopener">Open Full Match Score in a new tab &rarr;</a>
+    </div>
+  </div>
+</div>
+<script>
+// Belt-and-braces fallback: if the iframe fails to load within 10s or
+// its contentWindow is cross-origin-blocked, show the fallback link.
+(function() {
+  var frame = document.querySelector('.fms-frame-wrap iframe');
+  var fb = document.getElementById('fmsFallback');
+  if (!frame || !fb) return;
+  var loaded = false;
+  frame.addEventListener('load', function() { loaded = true; });
+  setTimeout(function() {
+    if (!loaded) fb.classList.add('show');
+  }, 10000);
+})();
+</script>
 </body>
 </html>
 """
@@ -5621,6 +5747,24 @@ def lab_landing():
         fonts_link=FONTS_LINK,
         shared_style=SHARED_STYLE,
         sport_strip=render_sport_strip("lab"),
+    )
+
+
+@app.route("/full-match-score")
+def full_match_score():
+    """Embed a friend's Full Match Score board (full-match-score.vercel.app)
+    inside a LAB sub-page. The external tool is laser-focused on soccer
+    1H O1.5 goal probability — complementary to our main picks engine,
+    which hedges across sports but doesn't surface first-half goal totals
+    at that level of detail. We embed via iframe + prominent 'open in new
+    tab' link as fallback in case the iframe is ever blocked (currently
+    no X-Frame-Options / CSP header set, so embed works)."""
+    return render_template_string(
+        FULL_MATCH_SCORE_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        sport_strip=render_sport_strip("lab"),
+        embed_url="https://full-match-score.vercel.app/",
     )
 
 
