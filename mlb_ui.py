@@ -6096,18 +6096,23 @@ def _build_first_half_board(date_str):
                 btts_yes = (1 - _poisson_over(lam_h, -0.5)) * (1 - _poisson_over(lam_a, -0.5))
                 btts_yes = max(0.0, 1 - btts_yes)
             # Pinnacle 1H Total line (if present on the game dict) gives
-            # us a devigged market prob to anchor against.
+            # us a devigged market prob to anchor against + the actual
+            # American price we can grade against later.
             pin_1h_o15 = None
             direct_1h = False
             pin_line = None
+            pin_over_am = None
+            pin_under_am = None
             total_h1 = g.get("total_h1") or {}
             try:
                 if total_h1 and total_h1.get("line") is not None:
                     pin_line = float(total_h1["line"])
                     over_am = total_h1.get("over_am"); under_am = total_h1.get("under_am")
                     if over_am is not None and under_am is not None:
-                        po = mlb_odds.american_to_prob(int(over_am))
-                        pu = mlb_odds.american_to_prob(int(under_am))
+                        pin_over_am = int(over_am)
+                        pin_under_am = int(under_am)
+                        po = mlb_odds.american_to_prob(pin_over_am)
+                        pu = mlb_odds.american_to_prob(pin_under_am)
                         fo, _fu = mlb_odds.devig_two_sided(po, pu)
                         if fo is not None:
                             # fo = devigged prob of Over at pin_line. For
@@ -6144,6 +6149,8 @@ def _build_first_half_board(date_str):
                 "p_btts_ft":    btts_yes,
                 "pin_1h_o15":   pin_1h_o15,
                 "pin_line":     pin_line,
+                "pin_over_am":  pin_over_am,
+                "pin_under_am": pin_under_am,
                 "direct_1h":    direct_1h,
                 # Deep-dive link params (if a 1H Total market exists)
                 "deep_market":  deep_market,
@@ -6242,6 +6249,13 @@ def first_half_board():
                 pin_fair = None
                 if r.get("pin_1h_o15") is not None:
                     pin_fair = r["pin_1h_o15"] if side == "Over" else (1.0 - r["pin_1h_o15"])
+                # Carry the Pinnacle price for the picked side so profit_u
+                # grades honestly against a real decimal.
+                am = r.get("pin_over_am") if side == "Over" else r.get("pin_under_am")
+                dec = mlb_odds.american_to_decimal(am) if am is not None else None
+                ev_pct = None
+                if dec and p_fair:
+                    ev_pct = max(-100.0, min(50.0, (p_fair * dec - 1.0) * 100.0))
                 fh_logged.append({
                     "id":            f"1hg-{r['sport_slug']}-{generic_odds._team_key(r['away'])}-{generic_odds._team_key(r['home'])}-{r['pin_line']}-{side.lower()}",
                     "sport":         r.get("sport_name"),
@@ -6255,10 +6269,10 @@ def first_half_board():
                     "mc_prob":       p_fair,
                     "consensus_prob": (0.55 * p_fair + 0.45 * pin_fair) if pin_fair is not None else p_fair,
                     "pinnacle_prob": pin_fair,
-                    "ev_pct":        None,
-                    "decimal":       None,
-                    "american":      None,
-                    "book":          None,
+                    "ev_pct":        ev_pct,
+                    "decimal":       dec,
+                    "american":      am,
+                    "book":          "pinnacle" if am is not None else None,
                     "source":        "1h_goals",
                     "model_only":    False,
                     "strong":        False,
