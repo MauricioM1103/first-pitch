@@ -2564,6 +2564,13 @@ FIRST_HALF_TEMPLATE = r"""<!doctype html>
       two games means nothing). <b>Direct 1H</b> tag = Pinnacle had a real
       1H O1.5 market and we anchored to it instead of inferring.
     </p>
+    {% if lit_count and is_today %}
+    <p class="sub" style="margin-top:8px">
+      <b style="color:var(--good)">{{ lit_count }} lit pick{{ 's' if lit_count != 1 else '' }}</b>
+      logged to <a href="/logged" style="color:var(--good)">Results</a> for grading &mdash;
+      shown in the <b>1H Goals Picks</b> record tiles once games settle.
+    </p>
+    {% endif %}
   </div>
 
   <div class="fh-controls">
