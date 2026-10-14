@@ -2515,15 +2515,15 @@ PICK_DETAIL_TEMPLATE = r"""<!doctype html>
     <div class="avg">avg {{ composite.avg_strength }}/5</div>
   </div>
 
-  {% if ai_synthesis %}
+  {% if ai_synthesis and ai_synthesis.text %}
   <div class="pd-ai">
-    <div class="label">AI Synthesis &middot; Claude Haiku</div>
-    <div class="text">{{ ai_synthesis }}</div>
+    <div class="label">AI Synthesis &middot; {{ ai_synthesis.model or 'Claude' }}</div>
+    <div class="text">{{ ai_synthesis.text }}</div>
   </div>
-  {% else %}
+  {% elif ai_synthesis and ai_synthesis.error %}
   <div class="pd-ai missing">
-    <div class="label">AI Synthesis</div>
-    <div class="text">ANTHROPIC_API_KEY not configured on this deploy — the four data panels below are the full read; add the key to enable a 2-3 sentence Claude Haiku synthesis.</div>
+    <div class="label">AI Synthesis unavailable</div>
+    <div class="text">{{ ai_synthesis.error }} — the four data panels below are the full read without it.</div>
   </div>
   {% endif %}
 
@@ -5816,17 +5816,25 @@ def _pick_deep_dive_signals(pick):
 
 def _ai_pick_synthesis(pick, panels, composite):
     """One Claude call that reads the 4 panels + composite and emits a
-    2-3 sentence natural-language verdict. Haiku for speed/cost. Returns
-    None if ANTHROPIC_API_KEY missing. Soft-fails."""
+    2-3 sentence natural-language verdict. Returns a dict with either
+    `text` (success) or `error` (specific failure cause) so the template
+    can show the user WHY synthesis didn't fire instead of a generic
+    'not configured'."""
     try:
         import analyst as analyst_mod
-        if not analyst_mod.is_available():
-            return None
+    except Exception as e:
+        return {"error": f"analyst module not importable: {type(e).__name__}: {e}"}
+    if not analyst_mod.is_available():
+        return {"error": "ANTHROPIC_API_KEY not set in this environment"}
+    try:
         import os
         from anthropic import Anthropic
+    except Exception as e:
+        return {"error": f"anthropic SDK not available: {type(e).__name__}: {e}"}
+    try:
         client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    except Exception:
-        return None
+    except Exception as e:
+        return {"error": f"Anthropic client init failed: {type(e).__name__}: {e}"}
     panel_lines = "\n".join(
         f"- {p['name']}: {p['verdict']} ({p['strength']}/5) — {'; '.join(p['lines'])}"
         for p in panels
@@ -5843,16 +5851,31 @@ def _ai_pick_synthesis(pick, panels, composite):
         "Do NOT repeat the numbers verbatim — the user can see them. Plain prose, no "
         "markdown. No disclaimer."
     )
-    try:
-        resp = client.messages.create(
-            model="claude-haiku-5-5",
-            max_tokens=240,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        txt = "".join(b.text for b in resp.content if hasattr(b, "text")).strip()
-        return txt
-    except Exception as e:
-        return None
+    # Try fast model first, fall back to the model /ai-analysis uses (already
+    # proven callable on this account) if the fast one isn't whitelisted.
+    model_candidates = ["claude-haiku-5-5", "claude-sonnet-5-5"]
+    last_err = None
+    for model_name in model_candidates:
+        try:
+            resp = client.messages.create(
+                model=model_name,
+                max_tokens=240,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            txt = "".join(b.text for b in resp.content if hasattr(b, "text")).strip()
+            if txt:
+                return {"text": txt, "model": model_name}
+            last_err = "empty response"
+        except Exception as e:
+            last_err = f"{type(e).__name__}: {e}"
+            # If the first model isn't whitelisted (404/not_found) we retry
+            # the fallback. Other errors (auth, 429) likely apply to both;
+            # don't retry on them.
+            msg = str(e).lower()
+            if "not_found" in msg or "does not exist" in msg or "404" in msg:
+                continue
+            break
+    return {"error": f"Claude call failed: {last_err}"}
 
 
 @app.route("/pick")
