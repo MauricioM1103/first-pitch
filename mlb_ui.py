@@ -2599,7 +2599,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
                     <span class="src-tag ev" title="EV-verified: cleared the +2% expected-value bar after model + Pinnacle devig consensus">EV{% if p.ev_pct and p.ev_pct > 0 %} +{{ '%.0f'|format(p.ev_pct) }}%{% endif %}</span>
                   {% endif %}
                   {% if p.strong %}<span class="strong-star" title="Model &ge; 68% (5/5) AND EV &ge; +4%">&#9733;</span>{% endif %}
-                  {% if p.line_move_pp is not none and (p.line_move_pp|abs) >= 0.01 %}
+                  {% if p.line_move_pp is not none and (p.line_move_pp|abs) >= 0.005 %}
                     {% set move_sign = 'favorable' if p.line_move_pp > 0 else 'adverse' %}
                     <span class="pick-move-chip {{ move_sign }}"
                           title="Pinnacle's devigged probability for this side moved by {{ '%+.1f'|format(p.line_move_pp * 100) }}pp since {{ p.line_open_date }} (opening {{ (p.line_open_pinnacle * 100)|round|int }}%). Positive = market moving toward our pick.">
@@ -4295,15 +4295,17 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False,
     except Exception:
         line_history = {}
 
-    # 3c) DraftKings cross-book: devigged fair-prob (home side) per game,
-    #     pulled off the Odds API payload we already fetch. Lets the UI
-    #     show "DK: 54.5 / Pin: 51.2 (+3.3pp)" chips for ML picks so the
-    #     reader can see when a US retail book disagrees with sharp. Keyed
-    #     by (away_slug, home_slug) to match collect_picks keys.
+    # 3c + 3d) Cross-book overlays: DraftKings (via Odds API) and Kalshi.
+    # Scoped to sports that actually have games on the board right now —
+    # we had this iterating all 12 sports which pushed cold-boot renders
+    # past the gunicorn 120s wall. 3-4 sports/day is typical.
+    active_sport_slugs = {row.get("sport_slug") for row in rows_by_key.values()
+                          if row.get("sport_slug")}
+    active_sports = [sp for sp in sports.SPORTS
+                     if sp["slug"] in active_sport_slugs
+                     and sport_filter in ("all", sp["slug"])]
     dk_fair_h_by_game = {}
-    for sp in sports.SPORTS:
-        if sport_filter not in ("all", sp["slug"]):
-            continue
+    for sp in active_sports:
         sp_slug = sp["slug"]
         try:
             m = generic_odds.draftkings_moneyline_fair_probs(
@@ -4315,19 +4317,28 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False,
         if m:
             dk_fair_h_by_game.setdefault(sp_slug, {}).update(m)
 
-    # 3d) Kalshi event-market yes-ask → implied home-win probability per
-    #     game. Kalshi game-outcome markets exist for NFL/MLB/NBA/NHL/CFB
-    #     but trade thinly — most listings have no live quote outside the
-    #     playoffs. kalshi_odds.moneyline_yes_prob() returns None when
-    #     no quote exists, in which case the UI simply doesn't render
-    #     the Kalshi chip. Zero-cost signal; we don't gate anything on it.
+    # Kalshi: event-market yes-ask → implied home-win probability per
+    # game. Markets exist for NFL/MLB/NBA/NHL/CFB but trade thinly — most
+    # listings have no live quote outside the playoffs. We treat Kalshi
+    # as fire-and-forget: a per-sport "any live quotes?" probe, and only
+    # run the per-game lookups when that probe says yes. Saves 20-50s on
+    # cold boot since the series fetch is bypassed when the book is dead.
+    kalshi_prob_home_by_game = {}
     try:
         import kalshi_odds
-        kalshi_prob_home_by_game = {}
-        for sp in sports.SPORTS:
-            if sport_filter not in ("all", sp["slug"]):
-                continue
+        for sp in active_sports:
             sp_slug = sp["slug"]
+            try:
+                mks = kalshi_odds._series_markets(sp_slug)
+                has_any_quote = any(
+                    (m.get("yes_ask") is not None) or (m.get("yes_bid") is not None)
+                    for m in mks
+                )
+            except Exception:
+                has_any_quote = False
+            if not has_any_quote:
+                # No book, no chip. Skip the per-game inner loop entirely.
+                continue
             for row in rows_by_key.values():
                 if row.get("sport_slug") != sp_slug:
                     continue
@@ -4340,7 +4351,7 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False,
                                               generic_odds._team_key(row["away"]),
                                               generic_odds._team_key(row["home"]))] = p
     except Exception:
-        kalshi_prob_home_by_game = {}
+        pass
 
     # 4) Attach each pick to its game row, synthesizing a row when the pick's
     #    game isn't in the schedule skeleton (keeps us from dropping picks).
