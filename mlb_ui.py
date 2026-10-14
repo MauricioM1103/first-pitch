@@ -2102,10 +2102,55 @@ details.also-wrap summary::before { content: '▸ '; color: var(--muted-2); }
 details.also-wrap[open] summary::before { content: '▾ '; }
 details.also-wrap .today-list { margin-top: 10px; }
 details.also-wrap .today-card { opacity: 0.88; }
-.date-nav { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; color: var(--muted); font-size: 13px; }
+.date-nav { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; color: var(--muted); font-size: 13px; flex-wrap: wrap; }
 .date-nav a { color: var(--muted); text-decoration: none; padding: 2px 8px; border-radius: 6px; }
 .date-nav a:hover { background: var(--card); color: var(--ink); }
 .date-nav .label { color: var(--ink); font-weight: 600; padding: 0 6px; }
+
+/* Mobile — tested at 375px (iPhone SE/Mini) */
+@media (max-width: 640px) {
+  .wrap { padding-left: 12px; padding-right: 12px; }
+  .today-hero { padding: 14px 0 6px; }
+  .today-hero h1 { font-size: 22px; line-height: 1.2; }
+  .today-hero .sub { font-size: 13px; line-height: 1.5; }
+  .start-here { padding: 12px 36px 12px 14px; margin: 12px 0 16px; }
+  .start-here h3 { font-size: 13px; }
+  .start-here ol { font-size: 12.5px; padding-left: 16px; }
+  .today-section { margin: 18px 0 8px; flex-wrap: wrap; }
+  .today-section h2 { font-size: 16px; }
+  .today-section .count { font-size: 12px; }
+  /* Stack the card: pick info first, time below instead of to the right */
+  .today-card {
+    grid-template-columns: 1fr;
+    padding: 12px 14px;
+    gap: 6px;
+  }
+  .today-card .pick-head {
+    font-size: 15px; gap: 6px;
+  }
+  .today-card .pick-head .signal-chip,
+  .today-card .pick-head .ev-chip,
+  .today-card .pick-head .move-chip {
+    font-size: 10px; padding: 1px 6px;
+  }
+  .today-card .pick-game { font-size: 12px; gap: 6px; }
+  .today-card .pick-why { font-size: 12.5px; }
+  .today-card .pick-time {
+    grid-column: 1 / 2;
+    grid-row: auto;
+    text-align: left;
+    font-size: 12px;
+    color: var(--muted-2);
+    padding-top: 4px;
+    border-top: 1px dashed var(--rule);
+  }
+  .today-card .pick-time b { display: inline; font-size: 12px; margin-right: 6px; }
+  .today-empty { padding: 16px 14px; }
+  .today-empty h3 { font-size: 15px; }
+  .today-empty p, .today-empty blockquote { font-size: 13px; }
+  details.also-wrap summary { font-size: 12px; }
+  .date-nav { font-size: 12px; gap: 4px; }
+}
 </style>
 </head>
 <body>
@@ -2294,6 +2339,16 @@ LAB_TEMPLATE = r"""<!doctype html>
   background: color-mix(in oklab, #38bdf8 15%, transparent); color: #38bdf8;
 }
 .lab-card.coming .tag { background: color-mix(in oklab, var(--rule) 30%, transparent); color: var(--muted-2); }
+@media (max-width: 640px) {
+  .wrap { padding-left: 12px; padding-right: 12px; }
+  .lab-hero { padding: 16px 0 6px; }
+  .lab-hero h1 { font-size: 22px; }
+  .lab-hero p { font-size: 13px; }
+  .lab-grid { gap: 10px; margin: 16px 0; grid-template-columns: 1fr; }
+  .lab-card { padding: 14px 16px; }
+  .lab-card h3 { font-size: 15px; }
+  .lab-card p { font-size: 12.5px; }
+}
 </style>
 </head>
 <body>
@@ -2766,9 +2821,16 @@ PICKS_TEMPLATE = r"""<!doctype html>
   .pick-badge-row .pick-conf,
   .pick-badge-row .src-tag,
   .pick-badge-row .strong-star,
+  .pick-badge-row .pick-signal,
+  .pick-badge-row .pick-move-chip,
   .pick-badge-row .pick-res { margin-left: 26px; flex-shrink: 0; }
   .pick-badge-row .pick-conf + .src-tag,
   .pick-badge-row .src-tag + .strong-star,
+  .pick-badge-row .pick-signal + .src-tag,
+  .pick-badge-row .src-tag + .pick-signal,
+  .pick-badge-row .pick-signal + .pick-move-chip,
+  .pick-badge-row .src-tag + .pick-move-chip,
+  .pick-badge-row .pick-move-chip + .pick-res,
   .pick-badge-row .src-tag + .pick-res,
   .pick-badge-row .strong-star + .pick-res { margin-left: 0; }
   /* Expanded-view drawer: single-column cards on narrow screens */
@@ -2776,7 +2838,11 @@ PICKS_TEMPLATE = r"""<!doctype html>
   /* Hero text + EV callout tighten a notch for phones */
   .ev-callout { font-size: 11.5px; padding: 8px 10px; }
   .hero h1 { font-size: 24px; }
+  .filter-chips { gap: 4px; margin-bottom: 10px; }
   .filter-chips .chip { padding: 4px 9px; font-size: 11px; }
+  .wrap { padding-left: 12px; padding-right: 12px; }
+  .board-table .pick-stats-detail { gap: 10px 14px; font-size: 11.5px; }
+  .board-table .pick-detail { padding: 10px 12px; }
 }
 </style>
 </head>
@@ -4667,7 +4733,37 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
     return filtered
 
 
+# In-process cache for _build_board_rows. Keyed by all filter args so a
+# ?strong=1 request doesn't poison the all-picks cache. TTL short enough
+# that Pinnacle-devig and line-move numbers stay fresh (every page render
+# calls into this), but long enough that two tabs opened within 30s of
+# each other share the heavy compute instead of each paying 10-30s.
+_BOARD_CACHE = {}  # key_tuple -> (ts, (board_rows, all_picks))
+_BOARD_CACHE_TTL_S = 30
+
+
 def _build_board_rows(date_str, today_date, sport_filter, strong_only=False,
+                       favorable_move_only=False):
+    cache_key = (date_str, today_date.isoformat(), sport_filter,
+                 bool(strong_only), bool(favorable_move_only))
+    hit = _BOARD_CACHE.get(cache_key)
+    if hit and (time.time() - hit[0]) < _BOARD_CACHE_TTL_S:
+        return hit[1]
+    result = _build_board_rows_uncached(date_str, today_date, sport_filter,
+                                         strong_only=strong_only,
+                                         favorable_move_only=favorable_move_only)
+    _BOARD_CACHE[cache_key] = (time.time(), result)
+    # Keep the cache bounded — on a date change we don't want yesterday's
+    # keys hanging around. 20 keys covers "today + a few dates + a few
+    # filter variants" comfortably.
+    if len(_BOARD_CACHE) > 20:
+        oldest = sorted(_BOARD_CACHE.items(), key=lambda kv: kv[1][0])[:10]
+        for k, _ in oldest:
+            _BOARD_CACHE.pop(k, None)
+    return result
+
+
+def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=False,
                        favorable_move_only=False):
     """Return the unified board: one row per game with picks nested.
 

@@ -248,6 +248,10 @@ def _match_by_market_key(p):
     )
 
 
+_LINE_HISTORY_CACHE = {}  # (date_str, days_back) -> (ts, dict)
+_LINE_HISTORY_TTL_S = 60   # pick logs change at most once per picks-pipeline run
+
+
 def line_movement_history(current_date_str, days_back=3):
     """Return {match_key: {"earliest_pinnacle_prob": pct, "earliest_date": "YYYY-MM-DD",
                            "earliest_decimal": dec, "earliest_fair_prob": pct}}
@@ -264,6 +268,12 @@ def line_movement_history(current_date_str, days_back=3):
         today = datetime.strptime(current_date_str, "%Y-%m-%d").date()
     except (ValueError, TypeError):
         return {}
+    # Hit cache first — reading 4 log files + loose JSON parse adds up on
+    # every render. 60s TTL is well below the pick-log write cadence.
+    cache_key = (current_date_str, days_back)
+    hit = _LINE_HISTORY_CACHE.get(cache_key)
+    if hit and (time.time() - hit[0]) < _LINE_HISTORY_TTL_S:
+        return hit[1]
     scan_dates = []
     for i in range(days_back + 1):
         scan_dates.append((today - timedelta(days=i)).isoformat())
@@ -301,6 +311,12 @@ def line_movement_history(current_date_str, days_back=3):
                 "earliest_date":          ds,
                 "earliest_snapshot_at":   p.get("first_snapshot_at") or p.get("snapshotted_at"),
             }
+    _LINE_HISTORY_CACHE[cache_key] = (time.time(), history)
+    # Keep cache bounded; only 2-3 keys realistic
+    if len(_LINE_HISTORY_CACHE) > 10:
+        oldest = sorted(_LINE_HISTORY_CACHE.items(), key=lambda kv: kv[1][0])[:5]
+        for k, _ in oldest:
+            _LINE_HISTORY_CACHE.pop(k, None)
     return history
 
 
