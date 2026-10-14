@@ -2088,6 +2088,31 @@ PICKS_TEMPLATE = r"""<!doctype html>
   background: color-mix(in oklab, #f59e0b 6%, transparent);
 }
 .filter-chips .chip.strong-chip:hover { background: color-mix(in oklab, #f59e0b 12%, transparent); }
+.filter-chips .chip.linemove-chip {
+  border-color: #22c55e; color: #22c55e; background: color-mix(in oklab, #22c55e 6%, transparent);
+}
+.filter-chips .chip.linemove-chip:hover { background: color-mix(in oklab, #22c55e 12%, transparent); }
+.filter-chips .chip.linemove-chip.active {
+  background: #22c55e; color: #0a0b0d; border-color: #22c55e;
+}
+.pick-move-chip {
+  display: inline-flex; align-items: center; gap: 2px; font-size: 10.5px;
+  padding: 1px 5px; border-radius: 10px; border: 1px solid var(--rule);
+  background: color-mix(in oklab, var(--rule) 15%, transparent);
+  color: var(--muted-2);
+  white-space: nowrap;
+}
+.pick-move-chip.favorable { color: #22c55e; border-color: color-mix(in oklab, #22c55e 50%, var(--rule)); }
+.pick-move-chip.adverse   { color: #ef4444; border-color: color-mix(in oklab, #ef4444 50%, var(--rule)); }
+.pick-dk-chip {
+  display: inline-flex; align-items: center; gap: 2px; font-size: 10.5px;
+  padding: 1px 5px; border-radius: 10px; border: 1px dashed var(--rule);
+  background: transparent;
+  color: var(--muted-2);
+  white-space: nowrap;
+}
+.pick-dk-chip.favorable { color: #38bdf8; border-color: color-mix(in oklab, #38bdf8 50%, var(--rule)); }
+.pick-dk-chip.adverse   { color: #fb923c; border-color: color-mix(in oklab, #fb923c 50%, var(--rule)); }
 .filter-chips .chip.strong-chip.active {
   color: #000;
   background: #f59e0b;
@@ -2463,22 +2488,34 @@ PICKS_TEMPLATE = r"""<!doctype html>
   </div>
   {% endif %}
 
-  {# Preserve strong_only across sport-chip clicks and vice versa. #}
+  {# Preserve toggles across sport-chip clicks and vice versa. #}
   {% set strong_suffix = '&strong=1' if strong_only else '' %}
+  {% set linemove_suffix = '&linemove=1' if favorable_move_only else '' %}
   {% set sport_suffix  = ('&sport=' ~ sport_filter) if sport_filter != 'all' else '' %}
+  {% set extra_filters = strong_suffix ~ linemove_suffix %}
   <div class="filter-chips">
-    <a class="chip {% if sport_filter == 'all' %}active{% endif %}" href="/?date={{ date_str }}{{ strong_suffix }}">All ({{ total_games }})</a>
+    <a class="chip {% if sport_filter == 'all' %}active{% endif %}" href="/?date={{ date_str }}{{ extra_filters }}">All ({{ total_games }})</a>
     {% for s in sport_counts %}
-      <a class="chip {% if sport_filter == s.slug %}active{% endif %}" href="/?date={{ date_str }}&sport={{ s.slug }}{{ strong_suffix }}">{{ s.name }} ({{ s.count }})</a>
+      <a class="chip {% if sport_filter == s.slug %}active{% endif %}" href="/?date={{ date_str }}&sport={{ s.slug }}{{ extra_filters }}">{{ s.name }} ({{ s.count }})</a>
     {% endfor %}
     <span class="chip-divider" aria-hidden="true"></span>
     {# ★ Strong-only toggle: when active, href flips the filter off. #}
     {% if strong_only %}
-      <a class="chip strong-chip active" href="/?date={{ date_str }}{{ sport_suffix }}"
-         title="Showing only ★ Strong picks (≥ 60% prob AND ≥ +4% EV). Click to clear.">&#9733; Strong only ({{ strong_count }})</a>
+      <a class="chip strong-chip active" href="/?date={{ date_str }}{{ sport_suffix }}{{ linemove_suffix }}"
+         title="Showing only ★ Strong picks (≥ 68% prob AND ≥ +4% EV). Click to clear.">&#9733; Strong only ({{ strong_count }})</a>
     {% else %}
-      <a class="chip strong-chip" href="/?date={{ date_str }}{{ sport_suffix }}&strong=1"
-         title="Show only ★ Strong picks (≥ 60% prob AND ≥ +4% EV)">&#9733; Strong only</a>
+      <a class="chip strong-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ linemove_suffix }}&strong=1"
+         title="Show only ★ Strong picks (≥ 68% prob AND ≥ +4% EV)">&#9733; Strong only</a>
+    {% endif %}
+    {# Line-move toggle: show only picks where Pinnacle's devigged prob
+       moved toward our side by ≥ 1pp over the last ≤3 days. Sharp money
+       agreeing with us is one of the strongest independent EV signals. #}
+    {% if favorable_move_only %}
+      <a class="chip linemove-chip active" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}"
+         title="Showing only picks where the market moved toward our side ≥ +1pp. Click to clear.">&uarr; Line toward me</a>
+    {% else %}
+      <a class="chip linemove-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}&linemove=1"
+         title="Show only picks where Pinnacle's devigged prob moved toward our side by ≥ +1pp over the past 3 days (sharp agreement signal)">&uarr; Line toward me</a>
     {% endif %}
   </div>
 
@@ -2553,6 +2590,20 @@ PICKS_TEMPLATE = r"""<!doctype html>
                     <span class="src-tag ev" title="EV-verified: cleared the +2% expected-value bar after model + Pinnacle devig consensus">EV{% if p.ev_pct and p.ev_pct > 0 %} +{{ '%.0f'|format(p.ev_pct) }}%{% endif %}</span>
                   {% endif %}
                   {% if p.strong %}<span class="strong-star" title="Model &ge; 68% (5/5) AND EV &ge; +4%">&#9733;</span>{% endif %}
+                  {% if p.line_move_pp is not none and (p.line_move_pp|abs) >= 0.01 %}
+                    {% set move_sign = 'favorable' if p.line_move_pp > 0 else 'adverse' %}
+                    <span class="pick-move-chip {{ move_sign }}"
+                          title="Pinnacle's devigged probability for this side moved by {{ '%+.1f'|format(p.line_move_pp * 100) }}pp since {{ p.line_open_date }} (opening {{ (p.line_open_pinnacle * 100)|round|int }}%). Positive = market moving toward our pick.">
+                      {{ '↑' if p.line_move_pp > 0 else '↓' }}{{ '%+.1f'|format(p.line_move_pp * 100) }}pp
+                    </span>
+                  {% endif %}
+                  {% if p.dk_divergence_pp is not none and (p.dk_divergence_pp|abs) >= 1.5 %}
+                    {% set dk_sign = 'favorable' if p.dk_divergence_pp > 0 else 'adverse' %}
+                    <span class="pick-dk-chip {{ dk_sign }}"
+                          title="DraftKings devigged probability for this side is {{ (p.dk_fair_prob * 100)|round|int }}% vs our model {{ (p.fair_prob * 100)|round|int }}% ({{ '%+.1f'|format(p.dk_divergence_pp) }}pp). Positive = DK agrees more than our model expected.">
+                      DK {{ '%+.1f'|format(p.dk_divergence_pp) }}pp
+                    </span>
+                  {% endif %}
                   {% if p.result %}<span class="pick-res {{ p.result }}" title="{{ p.result }}">{{ '✓' if p.result == 'W' else ('✗' if p.result == 'L' else '—') }}</span>{% endif %}
                 </div>
               {% endfor %}
@@ -2593,6 +2644,21 @@ PICKS_TEMPLATE = r"""<!doctype html>
                       {% else %}<span style="color:var(--muted-2)">EV {{ '%+.1f'|format(p.ev_pct) }}%</span>{% endif %}
                     </span>
                     {% if p.kelly_pct and p.kelly_pct > 0 %}<span><span class="label">Stake (1/4 K)</span><b>{{ '%.1f'|format(p.kelly_pct) }}%</b></span>{% endif %}
+                    {% if p.line_move_pp is not none %}
+                      <span>
+                        <span class="label">Line Δ (since {{ p.line_open_date }})</span>
+                        <b style="color: {{ '#22c55e' if p.line_move_pp > 0 else ('#ef4444' if p.line_move_pp < 0 else 'var(--muted)') }}">
+                          {{ '%+.1f'|format(p.line_move_pp * 100) }}pp
+                        </b>
+                      </span>
+                    {% endif %}
+                    {% if p.dk_divergence_pp is not none %}
+                      <span>
+                        <span class="label">DraftKings</span>
+                        <b>{{ (p.dk_fair_prob * 100)|round|int }}%</b>
+                        <small style="color: {{ '#38bdf8' if p.dk_divergence_pp > 0 else '#fb923c' }}">({{ '%+.1f'|format(p.dk_divergence_pp) }}pp vs model)</small>
+                      </span>
+                    {% endif %}
                   </div>
                   <div class="pick-bulletin">{{ p.bulletin }}</div>
                   <button class="btn-ai" onclick="analyzePick('{{ p.id }}', this)">Expand with AI</button>
@@ -4130,7 +4196,8 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
     return filtered
 
 
-def _build_board_rows(date_str, today_date, sport_filter, strong_only=False):
+def _build_board_rows(date_str, today_date, sport_filter, strong_only=False,
+                       favorable_move_only=False):
     """Return the unified board: one row per game with picks nested.
 
     `date_str` is YYYY-MM-DD being viewed. `today_date` is the CT reference
@@ -4196,6 +4263,35 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False):
     except Exception:
         pass
 
+    # 3b) Line-movement history over the past 3 days. For each pick we
+    #     attach the earliest Pinnacle devigged prob we saw across the
+    #     window; the picks board renders (current - earliest) as the
+    #     Line Delta column, and the favorable-move filter uses it.
+    try:
+        line_history = plays_log.line_movement_history(date_str, days_back=3)
+    except Exception:
+        line_history = {}
+
+    # 3c) DraftKings cross-book: devigged fair-prob (home side) per game,
+    #     pulled off the Odds API payload we already fetch. Lets the UI
+    #     show "DK: 54.5 / Pin: 51.2 (+3.3pp)" chips for ML picks so the
+    #     reader can see when a US retail book disagrees with sharp. Keyed
+    #     by (away_slug, home_slug) to match collect_picks keys.
+    dk_fair_h_by_game = {}
+    for sp in sports.SPORTS:
+        if sport_filter not in ("all", sp["slug"]):
+            continue
+        sp_slug = sp["slug"]
+        try:
+            m = generic_odds.draftkings_moneyline_fair_probs(
+                sp_slug, ml_outcomes=sp.get("ml_outcomes", 2),
+                sport_key=sp.get("odds_api_key"),
+            )
+        except Exception:
+            m = {}
+        if m:
+            dk_fair_h_by_game.setdefault(sp_slug, {}).update(m)
+
     # 4) Attach each pick to its game row, synthesizing a row when the pick's
     #    game isn't in the schedule skeleton (keeps us from dropping picks).
     for p in all_picks:
@@ -4225,6 +4321,42 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False):
 
         # Pick badge data
         icon, icon_cls = _pick_icon(p.get("market"))
+        # Line-move overlay: look up the earliest Pinnacle prob we saw for
+        # this (game, market, side) across the 3-day window. move_pp is
+        # positive when the market moved toward our pick (sharp agreement).
+        hist = line_history.get(plays_log._match_by_market_key(p)) or {}
+        open_pin = hist.get("earliest_pinnacle_prob")
+        now_pin  = p.get("pinnacle_prob")
+        move_pp  = None
+        if open_pin is not None and now_pin is not None:
+            try:
+                move_pp = float(now_pin) - float(open_pin)
+            except (TypeError, ValueError):
+                move_pp = None
+        # DK cross-book divergence (ML only): dk_fair_h is the home-side
+        # fair-prob implied by DK's current moneyline, devigged. For a
+        # pick ON the home side, divergence = dk_fair_h - pin_fair_h; for
+        # the away side, divergence = (1 - dk_fair_h) - pin_fair_a.
+        dk_fair = None
+        dk_divergence_pp = None
+        if _market_category(p.get("market")) == "ML":
+            dk_game = (dk_fair_h_by_game.get(p.get("sport_slug", "")) or {})
+            away_k = generic_odds._team_key(p.get("away_team", ""))
+            home_k = generic_odds._team_key(p.get("home_team", ""))
+            dk_fair_h = dk_game.get((away_k, home_k))
+            if dk_fair_h is not None and p.get("fair_prob") is not None:
+                # Figure out which side the pick is on by matching labels
+                pick_label_norm = (p.get("pick") or "").strip().lower()
+                home_norm       = (p.get("home_team") or "").strip().lower()
+                is_home = home_norm and home_norm in pick_label_norm
+                if is_home:
+                    dk_fair = dk_fair_h
+                else:
+                    dk_fair = 1.0 - dk_fair_h
+                try:
+                    dk_divergence_pp = (dk_fair - float(p.get("fair_prob"))) * 100.0
+                except (TypeError, ValueError):
+                    dk_divergence_pp = None
         row["picks"].append({
             **p,
             "icon":          icon,
@@ -4232,6 +4364,11 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False):
             "pick_short":    _pick_short_label(p),
             "conf":          _conf_tier(p.get("consensus_prob") or p.get("fair_prob")),
             "result":        (graded_by_id.get(p.get("id"), {}) or {}).get("result"),
+            "line_open_pinnacle": open_pin,
+            "line_open_date":     hist.get("earliest_date"),
+            "line_move_pp":       move_pp,
+            "dk_fair_prob":       dk_fair,
+            "dk_divergence_pp":   dk_divergence_pp,
         })
         # Overlay score if this pick graded with a final score
         gp = graded_by_id.get(p.get("id"))
@@ -4382,6 +4519,47 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False):
                 "pick_short":    mp["pick"],
                 "conf":          _conf_tier(mp["fair_prob"]),
                 "result":        None,
+                # Line-move overlay for model-fill picks (same lookup
+                # key shape as EV picks — matches on game + market + side).
+                **(lambda _h: {
+                    "line_open_pinnacle": _h.get("earliest_pinnacle_prob"),
+                    "line_open_date":     _h.get("earliest_date"),
+                    "line_move_pp": (
+                        (float(mp.get("pinnacle_prob")) - float(_h["earliest_pinnacle_prob"]))
+                        if (mp.get("pinnacle_prob") is not None
+                            and _h.get("earliest_pinnacle_prob") is not None)
+                        else None
+                    ),
+                })(line_history.get(plays_log._match_by_market_key({
+                    "sport_slug": row["sport_slug"],
+                    "home_team":  row["home"],
+                    "away_team":  row["away"],
+                    "market":     mp["market"],
+                    "pick":       mp["pick"],
+                })) or {}),
+                # DK divergence for model-fill ML picks (same math as EV
+                # picks above). Non-ML model-fill picks get None/None.
+                **(lambda: (
+                    (lambda dk_fair_h, pick_label, home: {
+                        "dk_fair_prob": (
+                            dk_fair_h if (home and home.lower() in (pick_label or "").lower())
+                            else (1.0 - dk_fair_h) if dk_fair_h is not None else None
+                        ),
+                        "dk_divergence_pp": (
+                            ((dk_fair_h if (home and home.lower() in (pick_label or "").lower())
+                              else (1.0 - dk_fair_h)) - mp["fair_prob"]) * 100.0
+                            if (dk_fair_h is not None and mp.get("fair_prob") is not None)
+                            else None
+                        ),
+                    })(
+                        (dk_fair_h_by_game.get(row["sport_slug"]) or {}).get(
+                            (generic_odds._team_key(row["away"]),
+                             generic_odds._team_key(row["home"]))
+                        ) if _market_category(mp.get("market")) == "ML" else None,
+                        mp.get("pick"),
+                        row["home"],
+                    )
+                ))(),
             })
 
         # Hide any pick whose model probability is below the sport's
@@ -4437,10 +4615,18 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False):
     if strong_only:
         for row in rows_by_key.values():
             row["picks"] = [p for p in row["picks"] if p.get("strong")]
+    # Favorable-move filter: keep only picks whose Pinnacle devig moved
+    # toward us by ≥ +1pp over the last ≤ 3 days. Research-cited: a sharp
+    # book moving in our direction is one of the strongest independent
+    # signals of real EV ("steam-chasing" done the smart way).
+    if favorable_move_only:
+        for row in rows_by_key.values():
+            row["picks"] = [p for p in row["picks"]
+                            if (p.get("line_move_pp") or 0) >= 0.01]
 
     rows = []
     for row in rows_by_key.values():
-        if strong_only and not row["picks"]:
+        if (strong_only or favorable_move_only) and not row["picks"]:
             continue
         has_score = row["score_home"] is not None
         row["status"]    = _derive_status(row["start_time"], now_dt, has_score)
@@ -4475,6 +4661,9 @@ def picks_landing():
     sport_filter = (request.args.get("sport") or "all").lower()
     # ?strong=1 trims the board to only ★ Strong picks (≥60% prob AND ≥4% EV).
     strong_only = request.args.get("strong") in ("1", "true", "on", "yes")
+    # ?linemove=1 filters the board to picks where Pinnacle devig moved
+    # toward our side by >= 1pp over the past <= 3 days (sharp agreement).
+    favorable_move_only = request.args.get("linemove") in ("1", "true", "on", "yes")
     try:
         d = datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
@@ -4484,7 +4673,8 @@ def picks_landing():
     t0 = time.time()
     try:
         board_rows, all_picks = _build_board_rows(date_str, d, sport_filter,
-                                                   strong_only=strong_only)
+                                                   strong_only=strong_only,
+                                                   favorable_move_only=favorable_move_only)
     except Exception:
         board_rows, all_picks = [], []
     scan_time_ms = int((time.time() - t0) * 1000)
@@ -4600,6 +4790,7 @@ def picks_landing():
         sport_counts=sport_counts,
         sport_filter=sport_filter,
         strong_only=strong_only,
+        favorable_move_only=favorable_move_only,
         picks_count=picks_count,
         ev_count=ev_count,
         strong_count=strong_count,

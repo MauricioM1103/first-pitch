@@ -34,6 +34,25 @@ from mlb_odds import (
 
 PINNACLE_BASE = "https://guest.api.arcadia.pinnacle.com/0.1"
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
+DRAFTKINGS_BASE = "https://sportsbook-nash.draftkings.com/sites/US-SB/api/v5/eventgroups"
+
+# DraftKings event-group IDs by sport slug. These are the public ids used
+# by the DK sportsbook frontend; stable for years. If DK renames a sport
+# (rare) the fetch returns None and we silently skip the cross-book chip.
+DK_EVENTGROUP_IDS = {
+    "nfl":   "88808",
+    "ncaaf": "87637",
+    "nba":   "42648",
+    "mlb":   "84240",
+    "nhl":   "42133",
+    "ufc":   "9034",
+    "epl":   "40253",
+    "laliga":"40817",
+    "ligamx":"42210",
+    "ucl":   "40685",
+    "europa":"41410",
+    "international": "40366",
+}
 
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
@@ -72,6 +91,84 @@ def fetch_pinnacle_matchups(league_id):
 def fetch_pinnacle_markets(league_id):
     return _cached(("pin_mk", league_id), 300,
                    lambda: _fetch_json(f"{PINNACLE_BASE}/leagues/{league_id}/markets/straight"))
+
+
+# ============================================================================
+# DraftKings cross-book fetch (public sportsbook API)
+# ============================================================================
+# Pulls moneylines so we can show "DK says X, Pinnacle says Y" divergence on
+# each pick. DK is a US retail book, slower to move than Pinnacle; when its
+# devigged fair prob differs from Pinnacle's by a meaningful margin, that's
+# a soft-vs-sharp arbitrage signal — bet the side the SHARP book favors.
+# No API key required; cached 5 min like Pinnacle.
+
+def fetch_draftkings_eventgroup(sport_slug):
+    eid = DK_EVENTGROUP_IDS.get(sport_slug)
+    if not eid:
+        return None
+    return _cached(("dk_eg", sport_slug), 300,
+                   lambda: _fetch_json(f"{DRAFTKINGS_BASE}/{eid}?format=json", timeout=20))
+
+
+def draftkings_moneyline_fair_probs(sport_slug, ml_outcomes=2, sport_key=None):
+    """Return {(away_key, home_key): dk_devigged_fair_prob_home} for every
+    game DK has a moneyline on. Soft return: {} when ODDS_API_KEY isn't set
+    or no DK offer is present.
+
+    Data path: The Odds API, not DK direct. DK's own sportsbook endpoints
+    (sportsbook-nash.draftkings.com/sites/US-SB/api/v5/eventgroups/*) return
+    HTTP 403 unless the request comes from a US-sportsbook-approved region;
+    our server IPs don't qualify. The Odds API is already fetched for every
+    picks render and includes draftkings as a bookmakers filter — we just
+    pull the DK row out of that same payload (zero added credits).
+    """
+    if not sport_key:
+        return {}
+    data = fetch_odds_api(sport_key, markets="h2h")
+    if not data:
+        return {}
+    out = {}
+    for (away_k, home_k), game in data.items():
+        books = (game or {}).get("books") or {}
+        dk = books.get("draftkings") or {}
+        h2h = dk.get("h2h") or []
+        if not h2h:
+            continue
+        home_name = game.get("home") or ""
+        away_name = game.get("away") or ""
+        prices = {}
+        for oc in h2h:
+            name = (oc.get("name") or "").strip()
+            price = oc.get("price")
+            if name and price:
+                try:
+                    prices[name] = 1.0 / float(price)
+                except (TypeError, ValueError, ZeroDivisionError):
+                    pass
+        if ml_outcomes == 3 and len(prices) >= 3:
+            try:
+                p_h = prices.get(home_name)
+                p_a = prices.get(away_name)
+                p_d = prices.get("Draw") or prices.get("Tie")
+                if p_h is None or p_a is None or p_d is None:
+                    continue
+                fair_h, _fair_d, _fair_a = devig_three_way(p_h, p_d, p_a)
+                if fair_h is not None:
+                    out[(away_k, home_k)] = fair_h
+            except Exception:
+                pass
+        elif ml_outcomes == 2 and len(prices) >= 2:
+            try:
+                p_h = prices.get(home_name)
+                p_a = prices.get(away_name)
+                if p_h is None or p_a is None:
+                    continue
+                fair_h, _fair_a = devig_two_sided(p_h, p_a)
+                if fair_h is not None:
+                    out[(away_k, home_k)] = fair_h
+            except Exception:
+                pass
+    return out
 
 
 # ============================================================================

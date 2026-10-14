@@ -230,6 +230,80 @@ def read_picks(date_str):
         return None
 
 
+def _match_by_market_key(p):
+    """Stable cross-day key for a pick: (sport, home, away, market, pick_label).
+
+    Pick IDs include a random-hash suffix for model-fill picks, so same
+    game + same market + same side across days will NOT share an id. Match
+    via the market+pick-label tuple instead; game-level identity comes from
+    the sport/home/away triple."""
+    def _norm(x):
+        return (x or "").strip().lower()
+    return (
+        _norm(p.get("sport_slug") or p.get("sport")),
+        _norm(p.get("home_team")),
+        _norm(p.get("away_team")),
+        _norm(p.get("market")),
+        _norm(p.get("pick")),
+    )
+
+
+def line_movement_history(current_date_str, days_back=3):
+    """Return {match_key: {"earliest_pinnacle_prob": pct, "earliest_date": "YYYY-MM-DD",
+                           "earliest_decimal": dec, "earliest_fair_prob": pct}}
+    for every pick we've logged across the last `days_back` days, scanned
+    newest-first. The earliest observation across the window is what we
+    anchor the "line moved by X pp" column against.
+
+    Why multiple days: a game listed on 2026-10-14 might have first been
+    quoted on 2026-10-12 (two days of advance pricing). The intraday
+    first_pinnacle_prob only captures movement within the current day,
+    missing the 48h of movement BEFORE today's first snapshot.
+    """
+    try:
+        today = datetime.strptime(current_date_str, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return {}
+    scan_dates = []
+    for i in range(days_back + 1):
+        scan_dates.append((today - timedelta(days=i)).isoformat())
+    # Walk oldest-first so later-date overwrites don't clobber earlier
+    # observations. For each (sport, home, away, market, pick), the first
+    # time we see it wins — that's the opening line.
+    scan_dates.sort()
+    history = {}
+    for ds in scan_dates:
+        data = read_picks(ds)
+        if not data:
+            continue
+        for p in data.get("picks", []):
+            key = _match_by_market_key(p)
+            if key in history:
+                continue
+            # Prefer the day's first_* snapshot. Fall back to live fields
+            # if the first_ fields are missing on an older log (early rows
+            # before we wired up first_* capture).
+            open_pin = p.get("first_pinnacle_prob")
+            if open_pin is None:
+                open_pin = p.get("pinnacle_prob")
+            open_fair = p.get("first_fair_prob")
+            if open_fair is None:
+                open_fair = p.get("fair_prob")
+            open_dec = p.get("first_decimal") or p.get("decimal")
+            # Skip entries with no pricing anchor — they can't contribute
+            # to a delta.
+            if open_pin is None and open_fair is None:
+                continue
+            history[key] = {
+                "earliest_pinnacle_prob": open_pin,
+                "earliest_fair_prob":     open_fair,
+                "earliest_decimal":       open_dec,
+                "earliest_date":          ds,
+                "earliest_snapshot_at":   p.get("first_snapshot_at") or p.get("snapshotted_at"),
+            }
+    return history
+
+
 def read_graded(date_str):
     path = graded_file(date_str)
     text = None
