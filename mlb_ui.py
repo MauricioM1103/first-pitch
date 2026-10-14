@@ -10251,11 +10251,17 @@ main.logged-page { max-width: 1040px; }
   </div>
 
   {% if odds_usage and odds_usage.key_set %}
-  <div class="persist-status ok">
+  <div class="persist-status {{ 'bad' if odds_usage.paused else 'ok' }}">
     <strong>Odds API usage:</strong>
+    {% if odds_usage.paused %}
+      <span style="color:var(--bad)">circuit open &mdash; API paused ({{ odds_usage.paused_min_left }} min remaining).
+      Monthly cap hit, or key auth failed. DK cross-book chips stay empty until this clears.</span>
+      &middot;
+    {% endif %}
     {{ odds_usage.hour.credits or 0 }} credits in last hour &middot;
     {{ odds_usage.day.credits or 0 }} in last 24h &middot;
-    {{ odds_usage.week.credits or 0 }} in last week &middot;
+    {{ odds_usage.week.credits or 0 }} in last 7d &middot;
+    {{ odds_usage.month.credits or 0 }} in last 30d &middot;
     cache TTL {{ odds_usage.ttl_minutes }} min &middot; markets: h2h only.
     MC + AI dropdowns do not hit the Odds API — Pinnacle covers them.
   </div>

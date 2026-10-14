@@ -644,17 +644,27 @@ def odds_api_available():
 # A 4-market, 1-region request = 4 credits per sport fetch. With a 10-min TTL
 # and 10 sports polled on each /picks + /montecarlo render we were torching
 # the monthly plan in days. Changes to stay under the cap:
-#   * TTL raised 10min -> 2hr. Odds don't move enough in a quarter hour to
-#     justify a fresh fetch.
+#   * TTL raised 10min -> 2hr -> 6hr. Moneylines are the only market we pull
+#     (h2h) and they rarely move > 2pp inside a 6hr window; a sharper fetch
+#     doesn't improve picks accuracy. Credit burn: 4 fetches/day/sport * 4
+#     active sports = 16/day = ~480/month, well under the 20k cap even
+#     before accounting for cached hits.
 #   * Default markets dropped to h2h only (1 credit). Pinnacle already
 #     covers spreads/totals/BTTS devigged — the US-book shopping advantage
 #     is mostly on moneyline anyway. _enable_full_markets() can request
 #     more when the user actually needs them.
+#   * Rate-limit circuit breaker: when the API returns a 429 or an auth
+#     error (hit the monthly cap, bad key), cache an empty result for
+#     1 hour so we don't hammer the dead endpoint on every page render.
+#     Previously a cap-hit would still burn connection attempts +
+#     error-logging on every request.
 #   * fetch_odds_api_optional() short-circuits to {} without a call when
 #     the caller just needs a game list (MC + AI dropdowns).
 #   * In-process call counter + monthly total surfaced on /logged so you
 #     can see burn rate without logging into The Odds API dashboard.
-_ODDS_API_TTL_S  = 2 * 60 * 60
+_ODDS_API_TTL_S            = 6 * 60 * 60    # was 2h; moneylines rarely move > 2pp inside 6h
+_ODDS_API_RATELIMIT_TTL_S  = 60 * 60        # ignore the API for 1h after a cap-hit / auth error
+_ODDS_API_RATELIMIT_UNTIL  = 0.0            # UNIX ts; before this, _fetch_odds_api returns {} immediately
 _ODDS_API_CALLS  = []  # list of (timestamp, sport_key, markets_count)
 _ODDS_API_MARKETS_DEFAULT = "h2h"  # down from "h2h,spreads,totals(,btts)"
 
@@ -683,6 +693,13 @@ def fetch_odds_api_optional(sport_key):
 
 
 def _fetch_odds_api(sport_key, markets=None):
+    global _ODDS_API_RATELIMIT_UNTIL
+    # Circuit breaker: if a recent call tripped the monthly cap or an auth
+    # error, don't retry for an hour. Prevents a cap-hit scenario from
+    # firing dozens of doomed requests per page render.
+    now = time.time()
+    if now < _ODDS_API_RATELIMIT_UNTIL:
+        return {}
     key = os.environ["ODDS_API_KEY"]
     mkts = markets or _ODDS_API_MARKETS_DEFAULT
     # Soccer-only BTTS is only pulled when explicitly requested in `markets`.
@@ -696,7 +713,14 @@ def _fetch_odds_api(sport_key, markets=None):
     url = f"{ODDS_API_BASE}/sports/{sport_key}/odds/?{params}"
     try:
         events = _fetch_json(url) or []
-    except Exception:
+    except Exception as e:
+        # Any 401 / 403 / 429 is treated as "stop asking for an hour".
+        # 401/403 = bad or revoked key. 429 = rate limit. 402 = plan over
+        # quota. All of these look the same to our callers (no data) so
+        # the open circuit just saves wasted round-trips.
+        code = getattr(e, "code", None)
+        if code in (401, 402, 403, 429):
+            _ODDS_API_RATELIMIT_UNTIL = now + _ODDS_API_RATELIMIT_TTL_S
         return {}
     # Log the call so the UI can show monthly burn.
     _ODDS_API_CALLS.append((time.time(), sport_key, len(mkts.split(","))))
@@ -722,18 +746,26 @@ def _fetch_odds_api(sport_key, markets=None):
 
 
 def odds_api_usage_summary():
-    """Return call + credit counts across common time windows."""
+    """Return call + credit counts across common time windows, plus the
+    circuit-breaker status so the UI can show whether the API is currently
+    being skipped (cap-hit or auth failure)."""
     now = time.time()
     def _window(sec):
         total_calls = sum(1 for t, _, _ in _ODDS_API_CALLS if t > now - sec)
         credits     = sum(mc for t, _, mc in _ODDS_API_CALLS if t > now - sec)
         return {"calls": total_calls, "credits": credits}
+    paused_remaining_min = None
+    if _ODDS_API_RATELIMIT_UNTIL and now < _ODDS_API_RATELIMIT_UNTIL:
+        paused_remaining_min = int((_ODDS_API_RATELIMIT_UNTIL - now) / 60) + 1
     return {
         "key_set":    odds_api_available(),
         "hour":       _window(3600),
         "day":        _window(86400),
         "week":       _window(7 * 86400),
+        "month":      _window(30 * 86400),
         "ttl_minutes": _ODDS_API_TTL_S // 60,
+        "paused":          paused_remaining_min is not None,
+        "paused_min_left": paused_remaining_min,
     }
 
 
