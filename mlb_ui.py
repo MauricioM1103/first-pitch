@@ -812,10 +812,11 @@ FONTS_LINK = _FONTS  # keep historical name; THEME_SCRIPT appended below
 
 
 _PRIMARY_SECTIONS = [
-    ("today",   "Today",   "/"),
-    ("games",   "Games",   "/games"),
-    ("results", "Results", "/logged"),
-    ("lab",     "Lab",     "/lab"),
+    ("today",    "Today",    "/"),
+    ("games",    "Games",    "/games"),
+    ("1h_goals", "1H Goals", "/first-half"),
+    ("results",  "Results",  "/logged"),
+    ("lab",      "Lab",      "/lab"),
 ]
 
 # Which legacy slugs should light up the LAB tab. LAB is a container for
@@ -6202,7 +6203,7 @@ def first_half_board():
         FIRST_HALF_TEMPLATE,
         fonts_link=FONTS_LINK,
         shared_style=SHARED_STYLE,
-        sport_strip=render_sport_strip("lab"),
+        sport_strip=render_sport_strip("1h_goals"),
         rows=rows,
         total=len(rows),
         lit_count=sum(1 for r in rows if r.get("is_lit")),
