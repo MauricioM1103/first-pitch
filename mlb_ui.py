@@ -2104,6 +2104,20 @@ PICKS_TEMPLATE = r"""<!doctype html>
 }
 .pick-move-chip.favorable { color: #22c55e; border-color: color-mix(in oklab, #22c55e 50%, var(--rule)); }
 .pick-move-chip.adverse   { color: #ef4444; border-color: color-mix(in oklab, #ef4444 50%, var(--rule)); }
+.pick-signal {
+  display: inline-flex; align-items: center; gap: 2px; font-size: 10.5px;
+  padding: 1px 6px; border-radius: 10px; border: 1px solid var(--rule);
+  color: var(--muted-2); background: color-mix(in oklab, var(--rule) 10%, transparent);
+  text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;
+  white-space: nowrap;
+}
+.pick-signal.s0, .pick-signal.s1 { color: var(--muted-2); }
+.pick-signal.s2 { color: #94a3b8; }
+.pick-signal.s3 { color: #38bdf8; border-color: color-mix(in oklab, #38bdf8 40%, var(--rule)); }
+.pick-signal.s4 { color: #22c55e; border-color: color-mix(in oklab, #22c55e 50%, var(--rule));
+                  background: color-mix(in oklab, #22c55e 8%, transparent); }
+.pick-signal.s5 { color: #f59e0b; border-color: color-mix(in oklab, #f59e0b 60%, var(--rule));
+                  background: color-mix(in oklab, #f59e0b 10%, transparent); font-weight: 700; }
 .pick-dk-chip {
   display: inline-flex; align-items: center; gap: 2px; font-size: 10.5px;
   padding: 1px 5px; border-radius: 10px; border: 1px dashed var(--rule);
@@ -2508,13 +2522,14 @@ PICKS_TEMPLATE = r"""<!doctype html>
       <a class="chip {% if sport_filter == s.slug %}active{% endif %}" href="/?date={{ date_str }}&sport={{ s.slug }}{{ extra_filters }}">{{ s.name }} ({{ s.count }})</a>
     {% endfor %}
     <span class="chip-divider" aria-hidden="true"></span>
-    {# ★ Strong-only toggle: when active, href flips the filter off. #}
+    {# ★ Signal-only toggle: 0-5 composite replacing the old prob+EV binary.
+       Click to keep only picks with signal_score >= 4. #}
     {% if strong_only %}
       <a class="chip strong-chip active" href="/?date={{ date_str }}{{ sport_suffix }}{{ linemove_suffix }}"
-         title="Showing only ★ Strong picks (≥ 68% prob AND ≥ +4% EV). Click to clear.">&#9733; Strong only ({{ strong_count }})</a>
+         title="Showing only picks with Signal ≥ 4/5 (EV cushion + favorable line move + cross-book agreement + prob floor). Click to clear.">&#9733; Signal &ge; 4 ({{ strong_count }})</a>
     {% else %}
       <a class="chip strong-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ linemove_suffix }}&strong=1"
-         title="Show only ★ Strong picks (≥ 68% prob AND ≥ +4% EV)">&#9733; Strong only</a>
+         title="Show only picks with Signal ≥ 4/5 — a composite of EV cushion, favorable line movement, cross-book agreement, and prob floor. Replaces the old 'Strong = 68% AND +4% EV' binary.">&#9733; Signal &ge; 4</a>
     {% endif %}
     {# Line-move toggle: show only picks where Pinnacle's devigged prob
        moved toward our side by ≥ 1pp over the last ≤3 days. Sharp money
@@ -2587,10 +2602,16 @@ PICKS_TEMPLATE = r"""<!doctype html>
           <td class="col-picks">
             {% if row.picks %}
               {% for p in row.picks %}
-                <div class="pick-badge-row {{ 'strong' if p.strong else '' }} {{ 'model-only' if p.model_only else '' }}" title="{{ 'Model-only preference (no EV filter)' if p.model_only else ('Strong +EV pick (≥60% prob AND ≥+4% EV)' if p.strong else 'EV-verified pick') }}">
+                <div class="pick-badge-row {{ 'strong' if p.strong else '' }} {{ 'model-only' if p.model_only else '' }}" title="{{ 'Model-only preference (no EV filter)' if p.model_only else ('High-signal pick (score ≥ 4/5): EV cushion + favorable line move + book agreement + prob floor' if p.strong else 'EV-verified pick') }}">
                   <span class="pick-ico {{ p.icon_cls }}">{{ p.icon }}</span>
                   <span class="pick-lbl">{{ p.pick_short }}</span>
                   <span class="pick-conf c{{ p.conf }}">{{ p.conf }}/5</span>
+                  {% if p.signal_score is not none %}
+                    <span class="pick-signal s{{ p.signal_score }}"
+                          title="Signal {{ p.signal_score }}/5 = EV cushion (0-2 pts: ≥6% EV=2, 3-6%=1) + favorable line move (+1) + cross-book agreement (+1) + model fair prob ≥ 60% (+1). Pure composite — no single component gates the badge.">
+                      sig {{ p.signal_score }}
+                    </span>
+                  {% endif %}
                   {% if p.source == 'alt' or p.alt_line_flag %}
                     <span class="src-tag alt" title="Alt-line candidate — priced off Pinnacle's own alt-total candidate when available, else fair prob only; verify at DK/FD.">ALT{% if p.ev_pct is not none and p.ev_pct > 0.5 %} +{{ '%.0f'|format(p.ev_pct) }}%{% endif %}</span>
                   {% elif p.model_only %}
@@ -2599,7 +2620,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
                     <span class="src-tag ev" title="EV-verified: cleared the +2% expected-value bar after model + Pinnacle devig consensus">EV{% if p.ev_pct and p.ev_pct > 0 %} +{{ '%.0f'|format(p.ev_pct) }}%{% endif %}</span>
                   {% endif %}
                   {% if p.strong %}<span class="strong-star" title="Model &ge; 68% (5/5) AND EV &ge; +4%">&#9733;</span>{% endif %}
-                  {% if p.line_move_pp is not none and (p.line_move_pp|abs) >= 0.005 %}
+                  {% if p.line_move_pp is not none and (p.line_move_pp|abs) >= 0.001 %}
                     {% set move_sign = 'favorable' if p.line_move_pp > 0 else 'adverse' %}
                     <span class="pick-move-chip {{ move_sign }}"
                           title="Pinnacle's devigged probability for this side moved by {{ '%+.1f'|format(p.line_move_pp * 100) }}pp since {{ p.line_open_date }} (opening {{ (p.line_open_pinnacle * 100)|round|int }}%). Positive = market moving toward our pick.">
@@ -2660,6 +2681,13 @@ PICKS_TEMPLATE = r"""<!doctype html>
                       {% else %}<span style="color:var(--muted-2)">EV {{ '%+.1f'|format(p.ev_pct) }}%</span>{% endif %}
                     </span>
                     {% if p.kelly_pct and p.kelly_pct > 0 %}<span><span class="label">Stake (1/4 K)</span><b>{{ '%.1f'|format(p.kelly_pct) }}%</b></span>{% endif %}
+                    {% if p.signal_score is not none %}
+                      <span>
+                        <span class="label">Signal</span>
+                        <b>{{ p.signal_score }}/5</b>
+                        <small style="color:var(--muted-2)">EV cushion + line move + book agreement + prob floor</small>
+                      </span>
+                    {% endif %}
                     {% if p.line_move_pp is not none %}
                       <span>
                         <span class="label">Line Δ (since {{ p.line_open_date }})</span>
@@ -2780,6 +2808,61 @@ def _conf_tier(prob):
     if p >= 0.57: return 3
     if p >= 0.52: return 2
     return 1
+
+
+def _signal_score(pick):
+    """0..5 composite signal strength for a pick, replacing the binary
+    ★ Strong tier. Research-cited: under ~2000-bet samples a 2-of-N hit
+    rule is dominated by variance; a weighted vote across INDEPENDENT
+    evidence streams is the right aggregation.
+
+    Components (0 or 1 each, EV worth up to 2):
+      EV cushion     ... 0 if ev <= 3%, +1 if 3-6%, +2 if >= 6%
+      Line toward me ... +1 when line_move_pp > 0 (Pinnacle devig moved
+                         toward our side during our 3-day window; sharp
+                         agreement is one of the strongest leading signals)
+      Book agreement ... +1 when a cross-book (DK or Kalshi) agrees more
+                         than our model does (positive divergence_pp)
+      Prob floor     ... +1 when fair_prob >= 0.60 (model has real conviction,
+                         not a razor-thin coin-flip we're nudging by EV%)
+
+    Total 0..5. A ★ Strong pick (score >= 4) requires AT LEAST
+    (3%+ EV, favorable move, book agreement, prob floor) OR equivalent
+    combinations. Alt-line picks start capped at 3 (no prob-floor credit
+    because their fair_prob is often sub-50% by construction)."""
+    score = 0.0
+    # EV cushion
+    try:
+        ev = float(pick.get("ev_pct") or 0.0)
+    except (TypeError, ValueError):
+        ev = 0.0
+    if ev >= 6.0:
+        score += 2
+    elif ev >= 3.0:
+        score += 1
+    # Line toward me (fraction scale, line_move_pp 0..1)
+    try:
+        move = float(pick.get("line_move_pp") or 0.0)
+    except (TypeError, ValueError):
+        move = 0.0
+    if move > 0.0:
+        score += 1
+    # Book agreement (DK or Kalshi, in pp space)
+    dk = pick.get("dk_divergence_pp")
+    k  = pick.get("kalshi_divergence_pp")
+    try:
+        if (dk is not None and float(dk) > 0.0) or (k is not None and float(k) > 0.0):
+            score += 1
+    except (TypeError, ValueError):
+        pass
+    # Prob floor
+    try:
+        fp = float(pick.get("fair_prob") or 0.0)
+    except (TypeError, ValueError):
+        fp = 0.0
+    if fp >= 0.60 and pick.get("source") != "alt":
+        score += 1
+    return int(min(5, max(0, score)))
 
 
 def _pick_icon(market):
@@ -4658,10 +4741,33 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False,
                         if (p.get("market") in ("Correct Score",)
                             or (p.get("fair_prob") or 0) >= _row_floor)]
 
-        # Order picks within a game: ML → Spread → Total → anything else,
-        # EV picks before model-only picks within the same category.
+        # Attach the 0..5 signal composite to every pick on this row.
+        # Must happen AFTER line_move_pp and dk/kalshi divergence fields
+        # are populated (sections 4/5 above), which they are at this point.
+        # The signal composite replaces the binary "strong" tag for the UI
+        # badge + filter; `strong` field is kept for backwards-compat and
+        # recomputed from signal_score >= 4.
+        for p in row["picks"]:
+            p["signal_score"] = _signal_score(p)
+            # Override the legacy `strong` boolean to the new definition
+            # so the ★ badge and filter stay consistent with the composite.
+            # Keep model-only picks out of ★ regardless of score (research:
+            # a model-only pick lacks the independent corroboration that
+            # the signal composite rewards; it's an opinion, not a bet).
+            if p.get("model_only"):
+                p["strong"] = False
+            else:
+                p["strong"] = (p["signal_score"] >= 4)
+
+        # Order picks within a game by signal_score desc (strongest first),
+        # then market category to keep the ML/Spread/Total/… triplet shape,
+        # then EV desc. Replaces the pure market-category sort — picks the
+        # reader is MOST likely to actually bet now surface at the top of
+        # the game card without having to scan a 5-chip stack.
         row["picks"].sort(key=lambda p: (
+            -(p.get("signal_score") or 0),
             _PICK_MARKET_ORDER.get(_market_category(p.get("market")), 9),
+            -(float(p.get("ev_pct") or 0.0)),
             1 if p.get("model_only") else 0,
         ))
 
@@ -4690,16 +4796,20 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False,
                 # the original ordering key (market order, model_only).
                 row["picks"] = non_alt + alt_picks
                 row["picks"].sort(key=lambda p: (
+                    -(p.get("signal_score") or 0),
                     _PICK_MARKET_ORDER.get(_market_category(p.get("market")), 9),
+                    -(float(p.get("ev_pct") or 0.0)),
                     1 if p.get("model_only") else 0,
                 ))
 
     # 6) Finalize each row — status, countdown, line/close text, sort key.
-    # Apply strong-only filter: keep only ★ Strong picks on each row, then
-    # drop rows with no picks left. Strong = model prob >= 60% AND ev >= 4%.
+    # Apply ★ strong-only filter: keep only picks with signal_score >= 4
+    # (new composite replacing the old prob+EV binary tier). Rows left
+    # with no picks drop entirely.
     if strong_only:
         for row in rows_by_key.values():
-            row["picks"] = [p for p in row["picks"] if p.get("strong")]
+            row["picks"] = [p for p in row["picks"]
+                            if (p.get("signal_score") or 0) >= 4]
     # Favorable-move filter: keep only picks whose Pinnacle devig moved
     # toward us by ≥ +1pp over the last ≤ 3 days. Research-cited: a sharp
     # book moving in our direction is one of the strongest independent
