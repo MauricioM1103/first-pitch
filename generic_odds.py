@@ -102,26 +102,124 @@ def fetch_pinnacle_markets(league_id):
 # a soft-vs-sharp arbitrage signal — bet the side the SHARP book favors.
 # No API key required; cached 5 min like Pinnacle.
 
+def _fetch_dk_direct(url, timeout=15):
+    """Fetch DraftKings' public sportsbook JSON. Uses the standard headers
+    DK's own frontend sends; access is geo-restricted to US legal-betting
+    states and the call may return 403 outside them. Returns the parsed
+    JSON on success; caller handles any URLError / HTTPError."""
+    req = Request(url, headers={
+        "User-Agent": _UA,
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Origin": "https://sportsbook.draftkings.com",
+        "Referer": "https://sportsbook.draftkings.com/",
+    })
+    with urlopen(req, timeout=timeout) as resp:
+        return json.load(resp)
+
+
 def fetch_draftkings_eventgroup(sport_slug):
     eid = DK_EVENTGROUP_IDS.get(sport_slug)
     if not eid:
         return None
     return _cached(("dk_eg", sport_slug), 300,
-                   lambda: _fetch_json(f"{DRAFTKINGS_BASE}/{eid}?format=json", timeout=20))
+                   lambda: _fetch_dk_direct(f"{DRAFTKINGS_BASE}/{eid}?format=json", timeout=15))
+
+
+def _draftkings_direct_moneyline_fair_probs(sport_slug, ml_outcomes=2):
+    """Direct-from-DK moneyline devigged home-side fair probability per
+    game. Zero Odds-API cost. Returns {} silently on 403 (DK blocks
+    non-US-sportsbook geo) or any other error."""
+    data = fetch_draftkings_eventgroup(sport_slug)
+    if not data:
+        return {}
+    eg = data.get("eventGroup") or {}
+    # Build event-id -> (home, away) from the events list
+    event_map = {}
+    for ev in eg.get("events") or []:
+        eid = ev.get("eventId")
+        home = ev.get("teamName2") or ""
+        away = ev.get("teamName1") or ""
+        for c in ev.get("eventParticipants") or []:
+            pt = c.get("participantType")
+            name = c.get("name")
+            if pt == "Home" and name:
+                home = name
+            elif pt == "Away" and name:
+                away = name
+        if eid and home and away:
+            event_map[eid] = (home, away)
+    out = {}
+    for cat in eg.get("offerCategories") or []:
+        for sub in cat.get("offerSubcategoryDescriptors") or []:
+            subcat = sub.get("offerSubcategory") or {}
+            for offer_list in subcat.get("offers") or []:
+                for offer in offer_list:
+                    label = (offer.get("label") or "").lower()
+                    if "moneyline" not in label and label != "ml":
+                        continue
+                    eid = offer.get("eventId")
+                    pair = event_map.get(eid)
+                    if not pair:
+                        continue
+                    home, away = pair
+                    prices = {}
+                    for oc in offer.get("outcomes") or []:
+                        lab = (oc.get("label") or "").strip()
+                        am  = oc.get("oddsAmerican")
+                        if lab is None or am is None:
+                            continue
+                        try:
+                            am_int = int(str(am).replace("+", ""))
+                        except (ValueError, TypeError):
+                            continue
+                        dec = american_to_decimal(am_int)
+                        if dec and dec > 1.0:
+                            prices[lab] = 1.0 / dec
+                    if ml_outcomes == 3 and len(prices) >= 3:
+                        try:
+                            p_h = prices.get(home)
+                            p_a = prices.get(away)
+                            p_d = prices.get("Draw") or prices.get("Tie")
+                            if p_h is None or p_a is None or p_d is None:
+                                continue
+                            fair_h, _d, _a = devig_three_way(p_h, p_d, p_a)
+                            if fair_h is not None:
+                                out[(_team_key(away), _team_key(home))] = fair_h
+                        except Exception:
+                            pass
+                    elif ml_outcomes == 2 and len(prices) >= 2:
+                        try:
+                            p_h = prices.get(home) or list(prices.values())[0]
+                            p_a = prices.get(away) or list(prices.values())[1]
+                            fair_h, _a = devig_two_sided(p_h, p_a)
+                            if fair_h is not None:
+                                out[(_team_key(away), _team_key(home))] = fair_h
+                        except Exception:
+                            pass
+    return out
 
 
 def draftkings_moneyline_fair_probs(sport_slug, ml_outcomes=2, sport_key=None):
     """Return {(away_key, home_key): dk_devigged_fair_prob_home} for every
-    game DK has a moneyline on. Soft return: {} when ODDS_API_KEY isn't set
-    or no DK offer is present.
+    game DK has a moneyline on. Soft return: {} when every path fails.
 
-    Data path: The Odds API, not DK direct. DK's own sportsbook endpoints
-    (sportsbook-nash.draftkings.com/sites/US-SB/api/v5/eventgroups/*) return
-    HTTP 403 unless the request comes from a US-sportsbook-approved region;
-    our server IPs don't qualify. The Odds API is already fetched for every
-    picks render and includes draftkings as a bookmakers filter — we just
-    pull the DK row out of that same payload (zero added credits).
+    Two data paths tried in order:
+      1) Direct DK sportsbook API (zero cost, geo-restricted). Works from
+         US-east datacenter IPs (Render); 403s from residential IPs.
+      2) The Odds API (metered). Already fetched for the main picks
+         pipeline so pulling DK out of the same payload is free — but
+         when the key is capped, pass through.
     """
+    # Path 1: direct DK (free). On Render this usually works; locally
+    # it 403s and returns {}.
+    try:
+        direct = _draftkings_direct_moneyline_fair_probs(sport_slug, ml_outcomes=ml_outcomes)
+    except Exception:
+        direct = {}
+    if direct:
+        return direct
+    # Path 2: fall through to Odds API if direct fetch returned nothing.
     if not sport_key:
         return {}
     data = fetch_odds_api(sport_key, markets="h2h")
