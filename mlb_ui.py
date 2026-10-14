@@ -812,16 +812,33 @@ FONTS_LINK = _FONTS  # keep historical name; THEME_SCRIPT appended below
 
 
 _PRIMARY_SECTIONS = [
-    ("picks",      "Picks",        "/"),
-    ("montecarlo", "Monte Carlo",  "/montecarlo"),
-    ("analysis",   "AI Analysis",  "/ai-analysis"),
-    ("logged",     "Logged Plays", "/logged"),
-    ("backtest",   "Backtest",     "/backtest"),
+    ("today",   "Today",   "/"),
+    ("games",   "Games",   "/games"),
+    ("results", "Results", "/logged"),
+    ("lab",     "Lab",     "/lab"),
 ]
+
+# Which legacy slugs should light up the LAB tab. LAB is a container for
+# the power tools (Monte Carlo, AI Analysis, Backtest, future AI debate);
+# visiting any of them highlights the LAB primary tab.
+_LAB_SLUGS = {"montecarlo", "analysis", "backtest", "lab"}
 
 
 def render_sport_strip(active_slug):
-    """Top bar: BETTING TOOLS brand (left) | centered primary-tab nav. Dark-only."""
+    """Top bar: BETTING TOOLS brand (left) | centered primary-tab nav. Dark-only.
+
+    Legacy slug mapping: the old "picks" slug (from the original single-
+    page board) now lights up GAMES; any lab-child slug (montecarlo,
+    analysis, backtest) lights up LAB. This lets the old call sites keep
+    passing their legacy slug names while the new 4-tab nav highlights
+    the right primary section."""
+    # Normalize legacy slugs to the new primary-tab slugs
+    if active_slug == "picks":
+        active_slug = "games"
+    elif active_slug == "logged":
+        active_slug = "results"
+    elif active_slug in _LAB_SLUGS:
+        active_slug = "lab"
     active_primary = active_slug if active_slug in {s[0] for s in _PRIMARY_SECTIONS} else None
     parts = ['<div class="sport-strip"><div class="wrap sport-strip-inner primary-nav">']
     parts.append('<a class="brand" href="/">BETTING TOOLS</a>')
@@ -1969,6 +1986,351 @@ def render_calibration_svg(calibration):
 # routes
 # ============================================================================
 
+TODAY_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Betting Tools &mdash; Today &mdash; {{ date_pretty }}</title>
+{{ fonts_link|safe }}
+<style>
+{{ shared_style|safe }}
+.today-hero { padding: 20px 0 10px; }
+.today-hero h1 { margin: 0 0 4px; font-size: 28px; font-weight: 700; letter-spacing: -0.02em; }
+.today-hero .sub { color: var(--muted); font-size: 14px; line-height: 1.5; max-width: 680px; }
+.start-here {
+  position: relative; background: color-mix(in oklab, #38bdf8 8%, var(--card));
+  border: 1px solid color-mix(in oklab, #38bdf8 40%, var(--rule));
+  border-radius: 10px; padding: 14px 16px 14px 16px; margin: 14px 0 18px;
+  max-width: 760px;
+}
+.start-here h3 { margin: 0 0 8px; font-size: 14px; color: #38bdf8; letter-spacing: 0.02em; }
+.start-here ol { margin: 0 0 0 18px; padding: 0; color: var(--ink); font-size: 13px; line-height: 1.65; }
+.start-here li { margin: 2px 0; }
+.start-here .dismiss {
+  position: absolute; top: 8px; right: 10px; background: transparent;
+  border: 0; color: var(--muted); cursor: pointer; font-size: 18px; line-height: 1;
+}
+.start-here .dismiss:hover { color: var(--ink); }
+.today-section { margin: 24px 0 10px; display: flex; align-items: baseline; gap: 10px; }
+.today-section h2 { font-size: 18px; margin: 0; font-weight: 700; }
+.today-section .count { color: var(--muted); font-size: 13px; }
+.today-list { display: flex; flex-direction: column; gap: 10px; }
+.today-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 14px;
+  padding: 14px 16px; background: var(--card); border: 1px solid var(--rule);
+  border-radius: 10px; align-items: start;
+}
+.today-card.star {
+  border-color: color-mix(in oklab, #f59e0b 55%, var(--rule));
+  box-shadow: 0 0 0 1px color-mix(in oklab, #f59e0b 25%, transparent) inset;
+}
+.today-card .pick-head {
+  grid-column: 1 / 2;
+  font-size: 16px; font-weight: 600; letter-spacing: -0.01em;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.today-card .pick-head .pick-text { color: var(--ink); }
+.today-card .pick-head .star { color: #f59e0b; font-size: 15px; }
+.today-card .pick-head .signal-chip {
+  display: inline-flex; align-items: center; padding: 2px 8px;
+  border-radius: 10px; font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.6px;
+  background: color-mix(in oklab, #22c55e 15%, transparent); color: #22c55e;
+  border: 1px solid color-mix(in oklab, #22c55e 50%, var(--rule));
+}
+.today-card .pick-head .signal-chip.s5 {
+  background: color-mix(in oklab, #f59e0b 15%, transparent); color: #f59e0b;
+  border-color: color-mix(in oklab, #f59e0b 55%, var(--rule));
+}
+.today-card .pick-head .signal-chip.s3 { background: color-mix(in oklab, #38bdf8 12%, transparent); color: #38bdf8; border-color: color-mix(in oklab, #38bdf8 50%, var(--rule)); }
+.today-card .pick-head .ev-chip {
+  display: inline-flex; padding: 2px 8px; border-radius: 10px; font-size: 11px;
+  font-weight: 700; letter-spacing: 0.4px;
+  background: color-mix(in oklab, #22c55e 15%, transparent); color: #22c55e;
+}
+.today-card .pick-head .move-chip {
+  display: inline-flex; align-items: center; padding: 2px 7px;
+  border-radius: 10px; font-size: 11px;
+  border: 1px solid color-mix(in oklab, #22c55e 50%, var(--rule));
+  color: #22c55e; background: color-mix(in oklab, #22c55e 6%, transparent);
+}
+.today-card .pick-head .move-chip.adverse { color: #ef4444; border-color: color-mix(in oklab, #ef4444 50%, var(--rule)); background: color-mix(in oklab, #ef4444 6%, transparent); }
+.today-card .pick-game {
+  grid-column: 1 / 2;
+  color: var(--muted); font-size: 13px;
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.today-card .pick-game .sport-tag { font-weight: 600; color: var(--ink); letter-spacing: 0.4px; text-transform: uppercase; font-size: 11px; }
+.today-card .pick-why {
+  grid-column: 1 / 2;
+  margin-top: 6px; color: var(--muted-2); font-size: 13px; line-height: 1.55;
+}
+.today-card .pick-time {
+  grid-column: 2 / 3;
+  grid-row: 1 / span 2;
+  text-align: right; align-self: center;
+  color: var(--muted); font-size: 12px; line-height: 1.4;
+}
+.today-card .pick-time b { color: var(--ink); font-weight: 600; display: block; font-size: 13px; }
+.today-empty {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: 10px; padding: 22px 20px; max-width: 760px;
+}
+.today-empty h3 { margin: 0 0 8px; font-size: 17px; }
+.today-empty p { margin: 0 0 10px; color: var(--muted); line-height: 1.6; font-size: 14px; }
+.today-empty blockquote {
+  margin: 10px 0; padding: 10px 14px;
+  border-left: 3px solid color-mix(in oklab, #38bdf8 60%, var(--rule));
+  color: var(--muted-2); font-size: 13px; line-height: 1.55; font-style: italic;
+}
+.today-empty a.cta {
+  display: inline-block; margin-top: 6px; padding: 8px 14px;
+  border-radius: 8px; background: var(--card); border: 1px solid var(--rule);
+  color: var(--ink); text-decoration: none; font-size: 13px; font-weight: 600;
+}
+.today-empty a.cta:hover { border-color: var(--ink); }
+details.also-wrap { margin: 18px 0 8px; max-width: 760px; }
+details.also-wrap summary {
+  cursor: pointer; color: var(--muted); font-size: 13px; padding: 4px 0;
+  list-style: none;
+}
+details.also-wrap summary::marker, details.also-wrap summary::-webkit-details-marker { display: none; }
+details.also-wrap summary::before { content: '▸ '; color: var(--muted-2); }
+details.also-wrap[open] summary::before { content: '▾ '; }
+details.also-wrap .today-list { margin-top: 10px; }
+details.also-wrap .today-card { opacity: 0.88; }
+.date-nav { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; color: var(--muted); font-size: 13px; }
+.date-nav a { color: var(--muted); text-decoration: none; padding: 2px 8px; border-radius: 6px; }
+.date-nav a:hover { background: var(--card); color: var(--ink); }
+.date-nav .label { color: var(--ink); font-weight: 600; padding: 0 6px; }
+</style>
+</head>
+<body>
+{{ sport_strip|safe }}
+<div class="wrap">
+  <div id="start-here" class="start-here" style="display:none">
+    <button class="dismiss" aria-label="dismiss" onclick="dismissStartHere()">&times;</button>
+    <h3>START HERE</h3>
+    <ol>
+      <li><b>What is this:</b> we blend Pinnacle de-vigged (65%) with our models (35%) to find bets with &ge; 3% EV.</li>
+      <li><b>&#9733; means Signal &ge; 3/5</b> — a composite of EV cushion, favorable line movement, model prob floor, and (soon) cross-book agreement. These are the picks worth placing.</li>
+      <li><b>Default is NO BET.</b> A typical day has 0&ndash;5 picks. Proof the process works: see <a href="/logged" style="color:#38bdf8">RESULTS</a> &rarr; CLV.</li>
+    </ol>
+  </div>
+
+  <div class="date-nav">
+    <a href="/?date={{ prev_date }}">&lsaquo; {{ prev_date }}</a>
+    <span class="label">{{ date_pretty }}</span>
+    <a href="/?date={{ next_date }}">{{ next_date }} &rsaquo;</a>
+    {% if not is_today %}<a href="/?date={{ today }}">Today</a>{% endif %}
+    <span style="margin-left:auto; color:var(--muted-2); font-size:12px">scan {{ scan_time_ms }} ms &middot; {{ total_games }} games</span>
+  </div>
+
+  <div class="today-hero">
+    <h1>
+      {% if star_picks %}
+        {{ star_picks|length }} pick{{ 's' if star_picks|length != 1 else '' }} worth placing today
+      {% else %}
+        No bets today
+      {% endif %}
+    </h1>
+    <div class="sub">
+      {% if star_picks %}
+        Sorted strongest first (Signal composite). All picks cleared the 3% EV cushion, prob floor, and (where visible) favorable line movement. 0 picks is also a valid day &mdash; see <a href="/logged" style="color:var(--good)">RESULTS</a>.
+      {% else %}
+        Nothing cleared the Signal &ge; 3 bar for today. Scroll down for picks the model has secondary interest in, or browse all games on the <a href="/games" style="color:var(--good)">GAMES</a> tab.
+      {% endif %}
+    </div>
+  </div>
+
+  {% if star_picks %}
+  <div class="today-section">
+    <h2>&#9733; Signal picks</h2>
+    <span class="count">{{ star_picks|length }} shown &middot; sorted by signal desc, then EV</span>
+  </div>
+  <div class="today-list">
+    {% for p in star_picks %}
+    <a class="today-card star" href="/games?date={{ date_str }}#{{ p.row_id or '' }}" style="text-decoration:none; color:inherit">
+      <div class="pick-head">
+        <span class="star">&#9733;</span>
+        <span class="pick-text">{{ p.pick }}</span>
+        {% if p.signal_score is not none %}
+          <span class="signal-chip s{{ p.signal_score }}">Signal {{ p.signal_score }}/5</span>
+        {% endif %}
+        {% if p.ev_pct is not none and p.ev_pct > 0 %}
+          <span class="ev-chip">+{{ '%.1f'|format(p.ev_pct) }}% EV</span>
+        {% endif %}
+        {% if p.line_move_pp is not none and (p.line_move_pp|abs) >= 0.001 %}
+          <span class="move-chip {{ 'adverse' if p.line_move_pp < 0 else '' }}">
+            {{ '↑' if p.line_move_pp > 0 else '↓' }}{{ '%+.1f'|format(p.line_move_pp * 100) }}pp
+          </span>
+        {% endif %}
+      </div>
+      <div class="pick-game">
+        <span class="sport-tag">{{ p.sport_name }}</span>
+        <span>{{ p.game_away }} @ {{ p.game_home }}</span>
+        <span>&middot; {{ p.market }}</span>
+      </div>
+      <div class="pick-why">
+        {% if p.fair_prob is not none and p.pinnacle_prob is not none %}
+          Model {{ (p.fair_prob * 100)|round|int }}% / Pinnacle {{ (p.pinnacle_prob * 100)|round|int }}%
+          &middot; {{ p.conf }}/5 conviction
+          {% if p.decimal %}&middot; @ {{ '%.2f'|format(p.decimal) }}{% if p.book %} ({{ p.book }}){% endif %}{% endif %}
+        {% else %}
+          {{ p.bulletin or '' }}
+        {% endif %}
+      </div>
+      <div class="pick-time">
+        <b>{{ p.countdown or p.time_abs or '' }}</b>
+        {{ p.time_abs if p.countdown else '' }}
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="today-empty">
+    <h3>This is expected on most days.</h3>
+    <p>
+      The market is usually accurate enough that no edge survives our 3% EV cushion
+      + line-movement + prob-floor checks. A quiet TODAY tab paired with positive
+      CLV on <a href="/logged" style="color:var(--good)">RESULTS</a> is the signal
+      the process is working.
+    </p>
+    <blockquote>
+      "A long record of no-bet outputs and small positive CLV is the realistic
+      sign that the process is working." &mdash; research PDF
+    </blockquote>
+    <a class="cta" href="/games?date={{ date_str }}">Browse all games anyway &rarr;</a>
+  </div>
+  {% endif %}
+
+  {% if also_likes %}
+  <details class="also-wrap" {{ 'open' if not star_picks else '' }}>
+    <summary>Model also likes &mdash; {{ also_likes|length }} pick{{ 's' if also_likes|length != 1 else '' }} with Signal 2/5 (below the bet threshold, but the model has interest)</summary>
+    <div class="today-list">
+      {% for p in also_likes %}
+      <a class="today-card" href="/games?date={{ date_str }}#{{ p.row_id or '' }}" style="text-decoration:none; color:inherit">
+        <div class="pick-head">
+          <span class="pick-text">{{ p.pick }}</span>
+          <span class="signal-chip s2" style="color:var(--muted-2); background:color-mix(in oklab, var(--rule) 20%, transparent); border-color:var(--rule)">Signal 2/5</span>
+          {% if p.ev_pct is not none and p.ev_pct > 0 %}
+            <span class="ev-chip" style="background:color-mix(in oklab, var(--rule) 20%, transparent); color:var(--muted-2)">+{{ '%.1f'|format(p.ev_pct) }}% EV</span>
+          {% endif %}
+        </div>
+        <div class="pick-game">
+          <span class="sport-tag">{{ p.sport_name }}</span>
+          <span>{{ p.game_away }} @ {{ p.game_home }}</span>
+          <span>&middot; {{ p.market }}</span>
+        </div>
+        <div class="pick-time">
+          <b>{{ p.countdown or p.time_abs or '' }}</b>
+        </div>
+      </a>
+      {% endfor %}
+    </div>
+  </details>
+  {% endif %}
+
+  <footer style="margin-top:40px; padding:16px 0; color:var(--muted-2); font-size:12px; border-top:1px solid var(--rule)">
+    Picks blended per-sport (default 35/65 model/Pinnacle; NFL &amp; NCAAF 30/70, soccer 45/55, UFC 50/50) &middot;
+    Scored on a 0-5 Signal composite (EV cushion + line movement + book agreement + prob floor) &middot;
+    Default is NO BET
+  </footer>
+</div>
+<script>
+// Dismissible START HERE card. Shown on first visit; dismissal stored
+// in localStorage so returning users don't see it. Try/catch wraps the
+// read because private-mode browsers throw on localStorage access.
+(function() {
+  try {
+    if (!localStorage.getItem('bt_start_here_dismissed')) {
+      document.getElementById('start-here').style.display = 'block';
+    }
+  } catch (e) {}
+})();
+function dismissStartHere() {
+  var el = document.getElementById('start-here');
+  if (el) el.style.display = 'none';
+  try { localStorage.setItem('bt_start_here_dismissed', '1'); } catch (e) {}
+}
+</script>
+</body>
+</html>
+"""
+
+
+LAB_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Betting Tools &mdash; Lab</title>
+{{ fonts_link|safe }}
+<style>
+{{ shared_style|safe }}
+.lab-hero { padding: 24px 0 8px; }
+.lab-hero h1 { margin: 0 0 6px; font-size: 26px; font-weight: 700; }
+.lab-hero p { margin: 0; color: var(--muted); font-size: 14px; max-width: 640px; line-height: 1.5; }
+.lab-grid {
+  display: grid; gap: 14px; margin: 24px 0;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  max-width: 920px;
+}
+.lab-card {
+  display: block; padding: 18px 20px; background: var(--card);
+  border: 1px solid var(--rule); border-radius: 10px;
+  text-decoration: none; color: inherit; transition: border-color 0.15s;
+}
+.lab-card:hover { border-color: var(--ink); }
+.lab-card h3 { margin: 0 0 6px; font-size: 16px; font-weight: 700; color: var(--ink); }
+.lab-card p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.lab-card .tag {
+  display: inline-block; margin-bottom: 10px;
+  padding: 2px 8px; border-radius: 6px; font-size: 10.5px;
+  font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
+  background: color-mix(in oklab, #38bdf8 15%, transparent); color: #38bdf8;
+}
+.lab-card.coming .tag { background: color-mix(in oklab, var(--rule) 30%, transparent); color: var(--muted-2); }
+</style>
+</head>
+<body>
+{{ sport_strip|safe }}
+<div class="wrap">
+  <div class="lab-hero">
+    <h1>Lab</h1>
+    <p>Power tools: single-game simulations, AI analysis, and historical backtesting. The main picks board (<a href="/" style="color:var(--good)">TODAY</a>) uses these engines under the hood.</p>
+  </div>
+  <div class="lab-grid">
+    <a class="lab-card" href="/montecarlo">
+      <span class="tag">Simulator</span>
+      <h3>Monte Carlo</h3>
+      <p>Run 10,000+ sims on one game across every market. See edges per outcome, score distributions, and Kelly stakes.</p>
+    </a>
+    <a class="lab-card" href="/ai-analysis">
+      <span class="tag">LLM read</span>
+      <h3>AI Analysis</h3>
+      <p>Natural-language second opinion on a single pick. Pulls the game context, our model's prob, Pinnacle devig, and current line movement.</p>
+    </a>
+    <a class="lab-card" href="/backtest">
+      <span class="tag">History</span>
+      <h3>Backtest</h3>
+      <p>Walk-forward performance per sport across the last 5 seasons. ROI by filter, calibration by prob band, hit rate by market.</p>
+    </a>
+    <div class="lab-card coming" style="cursor:default">
+      <span class="tag">Coming</span>
+      <h3>AI Debate</h3>
+      <p>Five Claude models each verdict on one pick, moderated into a composite view. Disagreement itself is the signal.</p>
+    </div>
+  </div>
+</div>
+</body>
+</html>
+"""
+
+
 PICKS_TEMPLATE = r"""<!doctype html>
 <html lang="en">
 <head>
@@ -2629,20 +2991,10 @@ PICKS_TEMPLATE = r"""<!doctype html>
                       {{ '↑' if p.line_move_pp > 0 else '↓' }}{{ '%+.1f'|format(p.line_move_pp * 100) }}pp
                     </span>
                   {% endif %}
-                  {% if p.dk_divergence_pp is not none and (p.dk_divergence_pp|abs) >= 1.5 %}
-                    {% set dk_sign = 'favorable' if p.dk_divergence_pp > 0 else 'adverse' %}
-                    <span class="pick-dk-chip {{ dk_sign }}"
-                          title="DraftKings devigged probability for this side is {{ (p.dk_fair_prob * 100)|round|int }}% vs our model {{ (p.fair_prob * 100)|round|int }}% ({{ '%+.1f'|format(p.dk_divergence_pp) }}pp). Positive = DK agrees more than our model expected.">
-                      DK {{ '%+.1f'|format(p.dk_divergence_pp) }}pp
-                    </span>
-                  {% endif %}
-                  {% if p.kalshi_divergence_pp is not none and (p.kalshi_divergence_pp|abs) >= 1.5 %}
-                    {% set k_sign = 'favorable' if p.kalshi_divergence_pp > 0 else 'adverse' %}
-                    <span class="pick-kalshi-chip {{ k_sign }}"
-                          title="Kalshi event-market yes-ask prices this side at {{ (p.kalshi_fair_prob * 100)|round|int }}% vs our model {{ (p.fair_prob * 100)|round|int }}% ({{ '%+.1f'|format(p.kalshi_divergence_pp) }}pp). Thin-liquidity prediction market — treat as a secondary cross-check.">
-                      KSH {{ '%+.1f'|format(p.kalshi_divergence_pp) }}pp
-                    </span>
-                  {% endif %}
+                  {# DK and Kalshi cross-book chips moved from the compact
+                     badge-row to the detail panel only (keeps the row to
+                     3 chips max for first-time-user readability — the
+                     research-recommended slim layout). #}
                   {% if p.result %}<span class="pick-res {{ p.result }}" title="{{ p.result }}">{{ '✓' if p.result == 'W' else ('✗' if p.result == 'L' else '—') }}</span>{% endif %}
                 </div>
               {% endfor %}
@@ -4865,6 +5217,102 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False,
 
 
 @app.route("/")
+def today_landing():
+    """New homepage: opinionated, signal-first view. Answers one question:
+    'what should I bet right now?' Flat list of ★ picks (signal >= 3)
+    sorted strongest first, with a collapsible 'model also likes' section
+    for sig-2 picks. Empty-state copy quotes the research PDF: default
+    is NO BET; zero picks is a feature, not a bug.
+
+    All data is reused from _build_board_rows; this route just flattens
+    the per-game-nested structure into a priority-ordered flat list and
+    renders a different template optimized for the sparse-pick case.
+    """
+    date_str = request.args.get("date") or datetime.now(CENTRAL).date().isoformat()
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        d = datetime.now(CENTRAL).date()
+        date_str = d.isoformat()
+
+    t0 = time.time()
+    try:
+        board_rows, _all_picks = _build_board_rows(date_str, d, "all",
+                                                    strong_only=False)
+    except Exception:
+        board_rows = []
+    scan_time_ms = int((time.time() - t0) * 1000)
+
+    # Flatten picks across all rows, attaching the game context inline on
+    # each so the template doesn't need the row->picks relationship.
+    now_dt = datetime.now(CENTRAL)
+    flat = []
+    for row in board_rows:
+        status = row.get("status")
+        # Skip games that already kicked off — TODAY is a pre-game view.
+        if status in ("live", "final"):
+            continue
+        for p in row.get("picks", []):
+            # Model-only picks aren't bet-able (no book price); exclude
+            # from TODAY entirely. GAMES still shows them.
+            if p.get("model_only"):
+                continue
+            flat.append({
+                **p,
+                "game_away":    row.get("away"),
+                "game_home":    row.get("home"),
+                "sport_name":   row.get("sport_name"),
+                "sport_slug":   row.get("sport_slug"),
+                "start_time":   row.get("start_time"),
+                "time_abs":     row.get("time_abs"),
+                "countdown":    row.get("countdown"),
+                "status":       status,
+                "row_id":       row.get("id"),
+            })
+
+    # Sort strongest-first: signal_score desc, then EV desc, then start.
+    flat.sort(key=lambda p: (
+        -(p.get("signal_score") or 0),
+        -(float(p.get("ev_pct") or 0.0)),
+        p.get("start_time") or "",
+    ))
+
+    star_picks  = [p for p in flat if (p.get("signal_score") or 0) >= 3]
+    also_likes  = [p for p in flat if (p.get("signal_score") or 0) == 2]
+
+    today = datetime.now(CENTRAL).date().isoformat()
+    return render_template_string(
+        TODAY_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        sport_strip=render_sport_strip("today"),
+        star_picks=star_picks,
+        also_likes=also_likes,
+        total_games=len(board_rows),
+        scan_time_ms=scan_time_ms,
+        date_str=date_str,
+        date_pretty=d.strftime("%A, %B %d").replace(" 0", " "),
+        prev_date=(d - timedelta(days=1)).isoformat(),
+        next_date=(d + timedelta(days=1)).isoformat(),
+        today=today,
+        is_today=(date_str == today),
+    )
+
+
+@app.route("/lab")
+def lab_landing():
+    """LAB landing: cards linking to Monte Carlo, AI Analysis, and
+    Backtest. The three tools are power-user territory; grouping them
+    under one tab de-clutters the primary nav for first-time viewers."""
+    return render_template_string(
+        LAB_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        sport_strip=render_sport_strip("lab"),
+    )
+
+
+@app.route("/games")
 def picks_landing():
     date_str = request.args.get("date") or datetime.now(CENTRAL).date().isoformat()
     sport_filter = (request.args.get("sport") or "all").lower()
