@@ -2657,6 +2657,215 @@ SLIDES_TEMPLATE = r"""<!doctype html>
 {{ fonts_link|safe }}
 <style>
 {{ shared_style|safe }}
+/* --- SLIDES V2: hero + multi-pick cards per slide, TODAY style --- */
+.slides-header { padding: 18px 0 12px; display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: baseline; }
+.slides-header h1 { margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.015em; }
+.slides-header .meta { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+.slides-header .actions { display: flex; gap: 8px; align-items: center; }
+.slides-header .actions button, .slides-header .actions a {
+  padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  border: 1px solid var(--rule); background: var(--card); color: var(--ink);
+  text-decoration: none; cursor: pointer;
+}
+.slides-header .actions .primary {
+  background: color-mix(in oklab, var(--good) 20%, var(--card));
+  border-color: var(--good); color: var(--good);
+}
+.slides-header .actions button:hover, .slides-header .actions a:hover { border-color: var(--ink); }
+.slides-tips {
+  background: color-mix(in oklab, #38bdf8 7%, var(--card));
+  border: 1px solid color-mix(in oklab, #38bdf8 35%, var(--rule));
+  border-radius: 10px; padding: 12px 14px; margin: 0 0 16px;
+  color: var(--muted); font-size: 12.5px; line-height: 1.55;
+}
+.slides-tips b { color: var(--ink); }
+
+.slides-grid {
+  display: grid; gap: 24px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  justify-items: center;
+}
+.slide-wrap {
+  position: relative;
+  width: 300px; height: 533px;
+  overflow: hidden; border-radius: 18px;
+  box-shadow: 0 10px 30px color-mix(in oklab, #000 50%, transparent);
+}
+.slide {
+  width: 1080px; height: 1920px;
+  position: absolute; top: 0; left: 0;
+  transform: scale(0.2778);
+  transform-origin: top left;
+  background: linear-gradient(160deg, #0a0e1a 0%, #141b2e 60%, #1a2341 100%);
+  color: #fff;
+  font-family: "Inter", -apple-system, system-ui, sans-serif;
+  padding: 70px 60px 60px;
+  box-sizing: border-box;
+  display: flex; flex-direction: column;
+}
+.slide-brand {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 30px; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; margin-bottom: 36px;
+  padding-bottom: 22px; border-bottom: 2px solid rgba(255,255,255,0.1);
+}
+.slide-brand .brand { color: #22c55e; }
+.slide-brand .brand .dot { color: #f59e0b; }
+.slide-brand .pos { color: #94a3b8; font-size: 24px; letter-spacing: 0.1em; }
+
+/* ---- HERO slide (slide 1) ---- */
+.hero-eyebrow {
+  color: #f59e0b; font-size: 32px; font-weight: 700;
+  letter-spacing: 0.3em; text-transform: uppercase; margin-bottom: 28px;
+}
+.hero-title {
+  font-size: 128px; font-weight: 900; line-height: 0.95;
+  letter-spacing: -0.03em; margin-bottom: 24px;
+}
+.hero-title .count { color: #22c55e; display: block; font-size: 180px; }
+.hero-title .label { color: #fff; display: block; font-size: 68px; margin-top: 10px; }
+.hero-date {
+  font-size: 38px; font-weight: 600; color: #94a3b8;
+  margin-bottom: 50px;
+}
+.hero-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 46px;
+}
+.hero-stat {
+  background: rgba(255,255,255,0.07);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 24px; padding: 32px 28px;
+}
+.hero-stat .label {
+  font-size: 20px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: #94a3b8; margin-bottom: 10px; font-weight: 600;
+}
+.hero-stat .value {
+  font-size: 72px; font-weight: 800;
+  font-family: "JetBrains Mono", monospace; letter-spacing: -0.01em;
+}
+.hero-stat.gold .value { color: #f59e0b; }
+.hero-stat.sky  .value { color: #38bdf8; }
+.hero-stat.green .value { color: #22c55e; }
+
+.hero-cta {
+  margin-top: auto; padding: 28px 32px;
+  background: linear-gradient(135deg,
+    color-mix(in srgb, #22c55e 25%, transparent),
+    color-mix(in srgb, #f59e0b 25%, transparent));
+  border: 2px solid rgba(255,255,255,0.2); border-radius: 24px;
+  font-size: 32px; font-weight: 700; text-align: center;
+  letter-spacing: 0.04em; line-height: 1.35;
+}
+.hero-cta .url { color: #22c55e; font-weight: 800; letter-spacing: 0.1em; display: block; font-size: 26px; margin-top: 8px; }
+
+/* ---- CONTENT slides: list of 3 picks each, TODAY-style cards ---- */
+.slide-chip-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 24px;
+}
+.slide-chip-head .big {
+  font-size: 46px; font-weight: 800; letter-spacing: -0.01em;
+}
+.slide-chip-head .meta {
+  font-size: 24px; color: #94a3b8; font-weight: 500;
+}
+.picks-stack { display: flex; flex-direction: column; gap: 22px; flex: 1; }
+.pick-card {
+  background: rgba(255,255,255,0.05);
+  border: 2px solid rgba(255,255,255,0.1);
+  border-radius: 24px;
+  padding: 24px 26px;
+  display: flex; flex-direction: column; gap: 14px;
+}
+.pick-card.strong {
+  border-color: #f59e0b;
+  background: color-mix(in srgb, #f59e0b 10%, rgba(255,255,255,0.05));
+}
+.pick-card.solid {
+  border-color: #22c55e;
+  background: color-mix(in srgb, #22c55e 8%, rgba(255,255,255,0.05));
+}
+.pick-head-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px;
+}
+.pick-head-row .sport-tag {
+  padding: 6px 16px; border-radius: 999px;
+  background: rgba(255,255,255,0.08);
+  font-size: 20px; font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; color: #cbd5e1;
+}
+.pick-head-row .sig-badge {
+  padding: 8px 16px; border-radius: 10px;
+  font-size: 22px; font-weight: 800; letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.pick-head-row .sig-badge.s5 { color: #0a0e1a; background: #f59e0b; }
+.pick-head-row .sig-badge.s4 { color: #0a0e1a; background: #f59e0b; }
+.pick-head-row .sig-badge.s3 { color: #0a0e1a; background: #22c55e; }
+.pick-head-row .sig-badge.s2 { color: #0a0e1a; background: #38bdf8; }
+.pick-matchup {
+  font-size: 26px; color: #cbd5e1; font-weight: 500;
+}
+.pick-matchup .star-icon { color: #f59e0b; margin-right: 8px; }
+.pick-line {
+  font-size: 44px; font-weight: 800; line-height: 1.15;
+  letter-spacing: -0.01em; color: #fff;
+}
+.pick-stats-row {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
+}
+.pick-stat {
+  background: rgba(0,0,0,0.25);
+  border-radius: 12px; padding: 12px 14px; text-align: center;
+}
+.pick-stat .l {
+  font-size: 16px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: #94a3b8; font-weight: 600; margin-bottom: 4px;
+}
+.pick-stat .v {
+  font-size: 28px; font-weight: 800;
+  font-family: "JetBrains Mono", monospace;
+}
+.pick-stat.ev .v { color: #22c55e; }
+.pick-stat.model .v { color: #f59e0b; }
+.pick-stat.pin .v { color: #38bdf8; }
+.pick-time {
+  font-size: 18px; color: #94a3b8; font-weight: 500;
+  font-family: "JetBrains Mono", monospace;
+}
+
+.slide-footer {
+  margin-top: 20px; padding-top: 20px;
+  border-top: 2px solid rgba(255,255,255,0.1);
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 22px; color: #94a3b8; font-weight: 500;
+}
+.slide-footer .cta { color: #22c55e; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.slide-footer .date { font-family: "JetBrains Mono", monospace; }
+
+.slide-dl {
+  position: absolute; bottom: 10px; left: 10px; right: 10px;
+  padding: 8px 10px; background: rgba(0,0,0,0.7); color: #fff;
+  border-radius: 8px; font-size: 11px; text-align: center;
+  cursor: pointer; backdrop-filter: blur(8px);
+}
+.slide-dl:hover { background: rgba(0,0,0,0.9); }
+
+.slides-empty {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: 10px; padding: 24px; max-width: 640px; color: var(--muted);
+  font-size: 14px; line-height: 1.6;
+}
+
+@media (max-width: 640px) {
+  .wrap { padding-left: 12px; padding-right: 12px; }
+  .slides-header { grid-template-columns: 1fr; }
+  .slides-header .actions { justify-self: start; flex-wrap: wrap; }
+  .slide-wrap { width: 260px; height: 462px; }
+  .slide { transform: scale(0.2407); }
+}
 .slides-header { padding: 18px 0 12px; display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: baseline; }
 .slides-header h1 { margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.015em; }
 .slides-header .meta { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
@@ -2806,77 +3015,140 @@ SLIDES_TEMPLATE = r"""<!doctype html>
 <body>
 {{ sport_strip|safe }}
 <div class="wrap">
+  {# Total slide count: 1 hero + N content slides #}
+  {% set total_slides = (1 if picks else 0) + (content_slides|length) %}
   <div class="slides-header">
     <div>
       <h1>Social Slides</h1>
       <div class="meta">
-        {{ slides|length }} slide{{ 's' if slides|length != 1 else '' }} ready &middot;
-        1080&times;1920 (TikTok / Reels / Shorts) &middot;
-        generated {{ generated_at }} &middot;
-        <a href="/slides?date={{ date_str }}" style="color:var(--muted); text-decoration:underline">regenerate &rarr;</a>
+        {{ total_slides }} slide{{ 's' if total_slides != 1 else '' }} ready
+        ({{ total_picks }} pick{{ 's' if total_picks != 1 else '' }} total,
+        {{ star_count }} &#9733;)
+        &middot; 1080&times;1920 for TikTok / Reels / Shorts
+        &middot; generated {{ generated_at }}
+        &middot; <a href="/slides?date={{ date_str }}" style="color:var(--muted); text-decoration:underline">regenerate &rarr;</a>
       </div>
     </div>
     <div class="actions">
-      {% if slides %}
+      {% if picks %}
       <button class="primary" onclick="downloadAll()">Download all PNGs &darr;</button>
       {% endif %}
     </div>
   </div>
 
   <div class="slides-tips">
-    <b>How this works.</b> Each card is rendered at full 1080&times;1920 TikTok/Reels/Shorts resolution.
-    Hit <b>Download</b> on a card to save that single PNG, or <b>Download all PNGs</b> for the full carousel.
-    Upload the images to TikTok as a multi-image post, Instagram Reels as a slideshow, or X as an image thread.
-    Auto-refresh is scheduled for 3 AM &amp; 12 PM CT so new picks appear here as the main board updates.
-    Note: TikTok's Content Posting API doesn't allow fully-automated gambling-content posts &mdash; this
-    is a slide generator, you&rsquo;re the publisher.
+    <b>Slide 1</b> is the hero (title card with daily count). <b>Slides 2+</b> each pack
+    three picks in the same card layout you see on the <a href="/" style="color:var(--good)">Today</a>
+    tab. Hit <b>Download</b> on any card to save that single PNG, or <b>Download all</b> to grab
+    the full carousel. Upload to TikTok as a multi-image post, Instagram Reels as a slideshow,
+    or X as an image thread. Auto-refresh scheduled for 3 AM &amp; 12 PM CT via Render Cron.
   </div>
 
-  {% if slides %}
+  {% if picks %}
   <div class="slides-grid" id="slidesGrid">
-    {% for p in slides %}
+
+    {# --- HERO SLIDE 1 --- #}
     <div class="slide-wrap">
-      <div class="slide" id="slide-{{ loop.index }}">
+      <div class="slide" id="slide-1">
         <div class="slide-brand">
           <span class="brand">BETTING<span class="dot">.</span>TOOLS</span>
-          <span class="pos">#{{ loop.index }} / {{ slides|length }}</span>
+          <span class="pos">#1 / {{ total_slides }}</span>
         </div>
-        <div class="slide-sport">{{ p.sport_name }}</div>
-        <div class="slide-matchup">
-          {{ p.game_away }} <span class="vs">at</span> {{ p.game_home }}
+        <div class="hero-eyebrow">Daily Signal Picks</div>
+        <div class="hero-title">
+          <span class="count">{{ total_picks }}</span>
+          <span class="label">pick{{ 's' if total_picks != 1 else '' }} today</span>
         </div>
-        <div class="slide-time">
-          {{ p.time_abs or '' }}{% if p.countdown %} &middot; {{ p.countdown }}{% endif %}
-        </div>
-        <div class="slide-pick-box">
-          <div class="slide-pick-label">Signal {{ p.signal_score or '?' }}/5 Pick</div>
-          <div class="slide-pick-text">{{ p.pick }}</div>
-          <div class="slide-market-tag">{{ p.market }}</div>
-        </div>
-        <div class="slide-stats">
-          <div class="slide-stat good">
-            <div class="label">EV</div>
-            <div class="value">{% if p.ev_pct is not none %}{{ '%+.1f'|format(p.ev_pct) }}%{% else %}&mdash;{% endif %}</div>
+        <div class="hero-date">{{ date_pretty }}</div>
+        <div class="hero-grid">
+          <div class="hero-stat gold">
+            <div class="label">&#9733; Signal 3+</div>
+            <div class="value">{{ star_count }}</div>
           </div>
-          <div class="slide-stat gold">
-            <div class="label">Model</div>
-            <div class="value">{% if p.fair_prob %}{{ (p.fair_prob * 100)|round|int }}%{% else %}&mdash;{% endif %}</div>
-          </div>
-          <div class="slide-stat sky">
-            <div class="label">Pinnacle</div>
-            <div class="value">{% if p.pinnacle_prob %}{{ (p.pinnacle_prob * 100)|round|int }}%{% else %}&mdash;{% endif %}</div>
+          <div class="hero-stat sky">
+            <div class="label">Also considered</div>
+            <div class="value">{{ total_picks - star_count }}</div>
           </div>
         </div>
+        <div class="hero-cta">
+          Swipe for the full card &rarr;
+          <span class="url">cheeks-model.onrender.com</span>
+        </div>
+        <div class="slide-footer">
+          <span class="cta">35% model &middot; 65% Pinnacle devig</span>
+          <span class="date">{{ date_str }}</span>
+        </div>
+      </div>
+      <div class="slide-dl" onclick="downloadSlide(1, event)">
+        Download Slide #1 (Hero) as PNG
+      </div>
+    </div>
+
+    {# --- CONTENT SLIDES 2..N: each contains picks_per_slide picks --- #}
+    {% for group in content_slides %}
+    {% set slide_num = loop.index + 1 %}
+    <div class="slide-wrap">
+      <div class="slide" id="slide-{{ slide_num }}">
+        <div class="slide-brand">
+          <span class="brand">BETTING<span class="dot">.</span>TOOLS</span>
+          <span class="pos">#{{ slide_num }} / {{ total_slides }}</span>
+        </div>
+        <div class="slide-chip-head">
+          <div class="big">
+            {% set a = (loop.index0 * picks_per_slide) + 1 %}
+            {% set b = a + (group|length) - 1 %}
+            Picks {{ a }}&ndash;{{ b }}
+          </div>
+          <div class="meta">of {{ total_picks }}</div>
+        </div>
+
+        <div class="picks-stack">
+          {% for p in group %}
+          <div class="pick-card {{ 'strong' if (p.signal_score or 0) >= 4 else ('solid' if (p.signal_score or 0) >= 3 else '') }}">
+            <div class="pick-head-row">
+              <span class="sport-tag">{{ p.sport_name }}</span>
+              <span class="sig-badge s{{ p.signal_score or 2 }}">
+                {% if (p.signal_score or 0) >= 3 %}&#9733; {% endif %}Signal {{ p.signal_score or '?' }}/5
+              </span>
+            </div>
+            <div class="pick-matchup">
+              {{ p.game_away }} at {{ p.game_home }}
+            </div>
+            <div class="pick-line">{{ p.pick }}</div>
+            <div class="pick-stats-row">
+              <div class="pick-stat ev">
+                <div class="l">EV</div>
+                <div class="v">{% if p.ev_pct is not none %}{{ '%+.1f'|format(p.ev_pct) }}%{% else %}&mdash;{% endif %}</div>
+              </div>
+              <div class="pick-stat model">
+                <div class="l">Model</div>
+                <div class="v">{% if p.fair_prob %}{{ (p.fair_prob * 100)|round|int }}%{% else %}&mdash;{% endif %}</div>
+              </div>
+              <div class="pick-stat pin">
+                <div class="l">Pin</div>
+                <div class="v">{% if p.pinnacle_prob %}{{ (p.pinnacle_prob * 100)|round|int }}%{% else %}&mdash;{% endif %}</div>
+              </div>
+            </div>
+            <div class="pick-time">
+              {{ p.market }}
+              {% if p.time_abs %} &middot; {{ p.time_abs }}{% endif %}
+              {% if p.countdown %} &middot; {{ p.countdown }}{% endif %}
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+
         <div class="slide-footer">
           <span class="cta">cheeks-model.onrender.com</span>
           <span class="date">{{ date_str }}</span>
         </div>
       </div>
-      <div class="slide-dl" onclick="downloadSlide({{ loop.index }}, event)">
-        Download #{{ loop.index }} as PNG
+      <div class="slide-dl" onclick="downloadSlide({{ slide_num }}, event)">
+        Download Slide #{{ slide_num }} as PNG
       </div>
     </div>
     {% endfor %}
+
   </div>
   {% else %}
   <div class="slides-empty">
@@ -2926,7 +3198,8 @@ async function downloadSlide(idx, ev) {
   }
 }
 async function downloadAll() {
-  const n = {{ slides|length }};
+  // 1 hero slide + N content slides; use the Jinja total we computed.
+  const n = {{ (1 if picks else 0) + (content_slides|length) }};
   for (let i = 1; i <= n; i++) {
     const canvas = await slideToPNG(i);
     const link = document.createElement('a');
@@ -6327,10 +6600,12 @@ def slides_page():
         board_rows, _ = _build_board_rows(date_str, d, "all", strong_only=False)
     except Exception:
         board_rows = []
-    # Flatten + rank the same way TODAY does: pre-kickoff bet-able picks
-    # sorted strongest-first by signal_score, then EV.
+    # Flatten + rank EXACTLY the way TODAY does: pre-kickoff bet-able
+    # picks sorted strongest-first by signal_score, then EV. Only
+    # excludes model-only (no book price). Signal 2+ included — the
+    # full TODAY set, not a cherry-pick top 10.
     now_dt = datetime.now(CENTRAL)
-    flat = []
+    picks = []
     for row in board_rows:
         if (row.get("status") or "") in ("live", "final"):
             continue
@@ -6339,7 +6614,7 @@ def slides_page():
                 continue
             if (p.get("signal_score") or 0) < 2:
                 continue
-            flat.append({
+            picks.append({
                 **p,
                 "game_away":    row.get("away"),
                 "game_home":    row.get("home"),
@@ -6349,21 +6624,34 @@ def slides_page():
                 "time_abs":     row.get("time_abs"),
                 "countdown":    row.get("countdown"),
             })
-    flat.sort(key=lambda p: (
+    picks.sort(key=lambda p: (
         -(p.get("signal_score") or 0),
         -(float(p.get("ev_pct") or 0.0)),
         p.get("start_time") or "",
     ))
-    # Cap at 10 slides — TikTok carousels max out at 35 images but 10 is
-    # the readable ceiling. Keep the top signal picks only.
-    slides = flat[:10]
+    # Chunk into slides. 3 picks per content slide reads cleanly on
+    # TikTok/Reels at 1080x1920 (enough room per card for stats).
+    # Prepend a hero slide; cap total slides at 11 (TikTok's clean
+    # readable ceiling).
+    PICKS_PER_SLIDE = 3
+    MAX_CONTENT_SLIDES = 10
+    content_slides = []
+    for i in range(0, len(picks), PICKS_PER_SLIDE):
+        content_slides.append(picks[i : i + PICKS_PER_SLIDE])
+        if len(content_slides) >= MAX_CONTENT_SLIDES:
+            break
+    # Separate star picks and lean picks for the hero summary
+    star_count = sum(1 for p in picks if (p.get("signal_score") or 0) >= 3)
     return render_template_string(
         SLIDES_TEMPLATE,
         fonts_link=FONTS_LINK,
         shared_style=SHARED_STYLE,
         sport_strip=render_sport_strip("lab"),
-        slides=slides,
-        total_candidates=len(flat),
+        picks=picks,
+        content_slides=content_slides,
+        picks_per_slide=PICKS_PER_SLIDE,
+        total_picks=len(picks),
+        star_count=star_count,
         date_str=date_str,
         date_pretty=d.strftime("%A, %B %d").replace(" 0", " "),
         generated_at=now_dt.strftime("%I:%M %p CT").lstrip("0"),
