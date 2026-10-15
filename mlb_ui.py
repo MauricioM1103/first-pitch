@@ -2378,6 +2378,11 @@ LAB_TEMPLATE = r"""<!doctype html>
       <h3>First-Half Goals</h3>
       <p>FMS-style 1H O1.5 probability for every soccer fixture, computed from our Dixon-Coles + Pinnacle devig instead of market-only. Top-quartile pills lit, green/grey gap vs league median. Our picks for the "will there be two goals in the first half?" question.</p>
     </a>
+    <a class="lab-card" href="/slides">
+      <span class="tag">Social</span>
+      <h3>Social Slides</h3>
+      <p>Today's signal picks rendered as 1080&times;1920 handicapper-style cards for TikTok, Reels, and Shorts. One PNG per pick with EV / Model / Pinnacle stats. Click Download, upload wherever &mdash; refresh is scheduled at 3 AM &amp; 12 PM CT.</p>
+    </a>
     <a class="lab-card" href="/full-match-score">
       <span class="tag">External</span>
       <h3>Full Match Score</h3>
@@ -2638,6 +2643,301 @@ FIRST_HALF_TEMPLATE = r"""<!doctype html>
     &middot; Click any row to open the pick deep-dive.
   </footer>
 </div>
+</body>
+</html>
+"""
+
+
+SLIDES_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Social Slides &mdash; {{ date_pretty }}</title>
+{{ fonts_link|safe }}
+<style>
+{{ shared_style|safe }}
+.slides-header { padding: 18px 0 12px; display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: baseline; }
+.slides-header h1 { margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.015em; }
+.slides-header .meta { color: var(--muted); font-size: 12.5px; margin-top: 4px; }
+.slides-header .actions { display: flex; gap: 8px; align-items: center; }
+.slides-header .actions button, .slides-header .actions a {
+  padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  border: 1px solid var(--rule); background: var(--card); color: var(--ink);
+  text-decoration: none; cursor: pointer;
+}
+.slides-header .actions .primary {
+  background: color-mix(in oklab, var(--good) 20%, var(--card));
+  border-color: var(--good); color: var(--good);
+}
+.slides-header .actions button:hover, .slides-header .actions a:hover { border-color: var(--ink); }
+.slides-tips {
+  background: color-mix(in oklab, #38bdf8 7%, var(--card));
+  border: 1px solid color-mix(in oklab, #38bdf8 35%, var(--rule));
+  border-radius: 10px; padding: 12px 14px; margin: 0 0 16px;
+  color: var(--muted); font-size: 12.5px; line-height: 1.55;
+}
+.slides-tips b { color: var(--ink); }
+
+/* The slide itself — rendered at 1080x1920 but visually scaled down in
+   the browser via `transform: scale()`. We render the raw size so the
+   PNG export is at full TikTok/Reels resolution. */
+.slides-grid {
+  display: grid; gap: 24px;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  justify-items: center;
+}
+.slide-wrap {
+  position: relative;
+  width: 300px; height: 533px;  /* 1080*0.278 x 1920*0.278 */
+  overflow: hidden; border-radius: 18px;
+  box-shadow: 0 10px 30px color-mix(in oklab, #000 50%, transparent);
+}
+.slide {
+  width: 1080px; height: 1920px;
+  position: absolute; top: 0; left: 0;
+  transform: scale(0.2778);
+  transform-origin: top left;
+  background: linear-gradient(160deg, #0a0e1a 0%, #141b2e 60%, #1a2341 100%);
+  color: #fff;
+  font-family: "Inter", -apple-system, system-ui, sans-serif;
+  padding: 80px 70px;
+  box-sizing: border-box;
+  display: flex; flex-direction: column;
+}
+.slide-brand {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 32px; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; margin-bottom: 60px;
+  padding-bottom: 24px; border-bottom: 2px solid rgba(255,255,255,0.1);
+}
+.slide-brand .brand { color: #22c55e; }
+.slide-brand .brand .dot { color: #f59e0b; }
+.slide-brand .pos { color: #94a3b8; font-size: 26px; letter-spacing: 0.1em; }
+.slide-sport {
+  display: inline-flex; align-items: center; padding: 10px 24px;
+  background: rgba(255,255,255,0.08); border-radius: 999px;
+  font-size: 28px; font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; align-self: flex-start; margin-bottom: 40px;
+}
+.slide-matchup {
+  font-size: 56px; font-weight: 700; line-height: 1.15;
+  margin-bottom: 44px; letter-spacing: -0.01em;
+  min-height: 140px;
+}
+.slide-matchup .vs { color: #94a3b8; font-weight: 500; font-size: 44px; padding: 0 10px; }
+.slide-time { color: #94a3b8; font-size: 32px; font-weight: 500; margin-bottom: 60px; }
+
+.slide-pick-box {
+  background: linear-gradient(135deg,
+    color-mix(in srgb, #22c55e 25%, transparent),
+    color-mix(in srgb, #f59e0b 25%, transparent));
+  border: 3px solid rgba(255,255,255,0.15);
+  border-radius: 36px;
+  padding: 56px 48px;
+  margin-bottom: 60px;
+}
+.slide-pick-label {
+  font-size: 24px; font-weight: 700; letter-spacing: 0.2em;
+  text-transform: uppercase; color: #f59e0b; margin-bottom: 20px;
+}
+.slide-pick-text {
+  font-size: 72px; font-weight: 800; line-height: 1.15;
+  color: #fff; letter-spacing: -0.02em; margin-bottom: 32px;
+}
+.slide-market-tag {
+  display: inline-block; padding: 8px 20px; border-radius: 12px;
+  background: rgba(255,255,255,0.15); font-size: 22px;
+  font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase;
+}
+
+.slide-stats {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px;
+  margin-bottom: auto;
+}
+.slide-stat {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 20px; padding: 28px 20px; text-align: center;
+}
+.slide-stat .label {
+  font-size: 20px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: #94a3b8; margin-bottom: 10px; font-weight: 600;
+}
+.slide-stat .value {
+  font-size: 46px; font-weight: 800; color: #fff; letter-spacing: -0.01em;
+  font-family: "JetBrains Mono", monospace;
+}
+.slide-stat.good .value { color: #22c55e; }
+.slide-stat.gold .value { color: #f59e0b; }
+.slide-stat.sky  .value { color: #38bdf8; }
+.slide-footer {
+  margin-top: 40px; padding-top: 28px;
+  border-top: 2px solid rgba(255,255,255,0.1);
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 22px; color: #94a3b8; font-weight: 500;
+}
+.slide-footer .cta { color: #22c55e; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.slide-footer .date { font-family: "JetBrains Mono", monospace; }
+
+.slide-dl {
+  position: absolute; bottom: 10px; left: 10px; right: 10px;
+  padding: 8px 10px; background: rgba(0,0,0,0.7); color: #fff;
+  border-radius: 8px; font-size: 11px; text-align: center;
+  cursor: pointer; backdrop-filter: blur(8px);
+}
+.slide-dl:hover { background: rgba(0,0,0,0.9); }
+
+.slides-empty {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: 10px; padding: 24px; max-width: 640px; color: var(--muted);
+  font-size: 14px; line-height: 1.6;
+}
+
+@media (max-width: 640px) {
+  .wrap { padding-left: 12px; padding-right: 12px; }
+  .slides-header { grid-template-columns: 1fr; }
+  .slides-header .actions { justify-self: start; flex-wrap: wrap; }
+  .slide-wrap { width: 260px; height: 462px; }
+  .slide { transform: scale(0.2407); }
+}
+</style>
+</head>
+<body>
+{{ sport_strip|safe }}
+<div class="wrap">
+  <div class="slides-header">
+    <div>
+      <h1>Social Slides</h1>
+      <div class="meta">
+        {{ slides|length }} slide{{ 's' if slides|length != 1 else '' }} ready &middot;
+        1080&times;1920 (TikTok / Reels / Shorts) &middot;
+        generated {{ generated_at }} &middot;
+        <a href="/slides?date={{ date_str }}" style="color:var(--muted); text-decoration:underline">regenerate &rarr;</a>
+      </div>
+    </div>
+    <div class="actions">
+      {% if slides %}
+      <button class="primary" onclick="downloadAll()">Download all PNGs &darr;</button>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="slides-tips">
+    <b>How this works.</b> Each card is rendered at full 1080&times;1920 TikTok/Reels/Shorts resolution.
+    Hit <b>Download</b> on a card to save that single PNG, or <b>Download all PNGs</b> for the full carousel.
+    Upload the images to TikTok as a multi-image post, Instagram Reels as a slideshow, or X as an image thread.
+    Auto-refresh is scheduled for 3 AM &amp; 12 PM CT so new picks appear here as the main board updates.
+    Note: TikTok's Content Posting API doesn't allow fully-automated gambling-content posts &mdash; this
+    is a slide generator, you&rsquo;re the publisher.
+  </div>
+
+  {% if slides %}
+  <div class="slides-grid" id="slidesGrid">
+    {% for p in slides %}
+    <div class="slide-wrap">
+      <div class="slide" id="slide-{{ loop.index }}">
+        <div class="slide-brand">
+          <span class="brand">BETTING<span class="dot">.</span>TOOLS</span>
+          <span class="pos">#{{ loop.index }} / {{ slides|length }}</span>
+        </div>
+        <div class="slide-sport">{{ p.sport_name }}</div>
+        <div class="slide-matchup">
+          {{ p.game_away }} <span class="vs">at</span> {{ p.game_home }}
+        </div>
+        <div class="slide-time">
+          {{ p.time_abs or '' }}{% if p.countdown %} &middot; {{ p.countdown }}{% endif %}
+        </div>
+        <div class="slide-pick-box">
+          <div class="slide-pick-label">Signal {{ p.signal_score or '?' }}/5 Pick</div>
+          <div class="slide-pick-text">{{ p.pick }}</div>
+          <div class="slide-market-tag">{{ p.market }}</div>
+        </div>
+        <div class="slide-stats">
+          <div class="slide-stat good">
+            <div class="label">EV</div>
+            <div class="value">{% if p.ev_pct is not none %}{{ '%+.1f'|format(p.ev_pct) }}%{% else %}&mdash;{% endif %}</div>
+          </div>
+          <div class="slide-stat gold">
+            <div class="label">Model</div>
+            <div class="value">{% if p.fair_prob %}{{ (p.fair_prob * 100)|round|int }}%{% else %}&mdash;{% endif %}</div>
+          </div>
+          <div class="slide-stat sky">
+            <div class="label">Pinnacle</div>
+            <div class="value">{% if p.pinnacle_prob %}{{ (p.pinnacle_prob * 100)|round|int }}%{% else %}&mdash;{% endif %}</div>
+          </div>
+        </div>
+        <div class="slide-footer">
+          <span class="cta">cheeks-model.onrender.com</span>
+          <span class="date">{{ date_str }}</span>
+        </div>
+      </div>
+      <div class="slide-dl" onclick="downloadSlide({{ loop.index }}, event)">
+        Download #{{ loop.index }} as PNG
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="slides-empty">
+    No picks today meet Signal &ge; 2. The board is quiet &mdash; nothing to post.
+    New slides will appear here at the next scheduled refresh (3 AM / 12 PM CT) or
+    when you click <a href="/slides?date={{ date_str }}" style="color:var(--good)">regenerate</a>.
+  </div>
+  {% endif %}
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" integrity="sha512-BNaRQnYJYiPSqHHDb58B0yaPfCu+Wgds8Gp/gU33kqBtgNS4tSPHuGibyoeqMV/TJlSKda6FXzoEyYGjTe+vXA==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script>
+async function slideToPNG(idx) {
+  const el = document.getElementById('slide-' + idx);
+  if (!el) return null;
+  // html2canvas captures the inner slide at its natural 1080x1920 size,
+  // ignoring the CSS transform that scales it down for display.
+  const canvas = await html2canvas(el, {
+    width:   1080,
+    height:  1920,
+    scale:   1,
+    useCORS: true,
+    backgroundColor: null,
+    // Force html2canvas to render at natural size, not the scaled-down
+    // display size. Clone the node and remove the transform.
+    onclone: function(doc) {
+      const c = doc.getElementById('slide-' + idx);
+      if (c) { c.style.transform = 'none'; c.style.position = 'static'; }
+    },
+  });
+  return canvas;
+}
+async function downloadSlide(idx, ev) {
+  if (ev && ev.stopPropagation) ev.stopPropagation();
+  const btn = ev && ev.currentTarget;
+  const oldText = btn ? btn.textContent : null;
+  if (btn) btn.textContent = 'Rendering...';
+  try {
+    const canvas = await slideToPNG(idx);
+    const link = document.createElement('a');
+    link.download = 'bettingtools-pick-' + idx + '-{{ date_str }}.png';
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+  } catch (e) {
+    alert('Render failed: ' + e);
+  } finally {
+    if (btn && oldText) btn.textContent = oldText;
+  }
+}
+async function downloadAll() {
+  const n = {{ slides|length }};
+  for (let i = 1; i <= n; i++) {
+    const canvas = await slideToPNG(i);
+    const link = document.createElement('a');
+    link.download = 'bettingtools-pick-' + i + '-{{ date_str }}.png';
+    link.href = canvas.toDataURL('image/png');
+    link.click();
+    // Small gap between downloads so the browser doesn't batch-cancel.
+    await new Promise(r => setTimeout(r, 300));
+  }
+}
+</script>
 </body>
 </html>
 """
@@ -6002,6 +6302,71 @@ def today_landing():
         next_date=(d + timedelta(days=1)).isoformat(),
         today=today,
         is_today=(date_str == today),
+    )
+
+
+@app.route("/slides")
+def slides_page():
+    """Social-media slide generator. Renders today's signal-ranked picks
+    as 9:16 handicapper-style cards (1080x1920, the canonical dimensions
+    for TikTok / Instagram Reels / YouTube Shorts). Client-side PNG
+    download so no server-side image deps are needed.
+
+    Scheduling: Render cron can hit this URL at 3am + 12pm CT to keep
+    the slide cache warm; the actual posting happens via the user's
+    phone or a scheduler tool (Buffer, Later) since TikTok's Content
+    Posting API doesn't permit automated gambling-tips posts.
+    """
+    date_str = request.args.get("date") or datetime.now(CENTRAL).date().isoformat()
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        d = datetime.now(CENTRAL).date()
+        date_str = d.isoformat()
+    try:
+        board_rows, _ = _build_board_rows(date_str, d, "all", strong_only=False)
+    except Exception:
+        board_rows = []
+    # Flatten + rank the same way TODAY does: pre-kickoff bet-able picks
+    # sorted strongest-first by signal_score, then EV.
+    now_dt = datetime.now(CENTRAL)
+    flat = []
+    for row in board_rows:
+        if (row.get("status") or "") in ("live", "final"):
+            continue
+        for p in row.get("picks", []):
+            if p.get("model_only"):
+                continue
+            if (p.get("signal_score") or 0) < 2:
+                continue
+            flat.append({
+                **p,
+                "game_away":    row.get("away"),
+                "game_home":    row.get("home"),
+                "sport_name":   row.get("sport_name"),
+                "sport_slug":   row.get("sport_slug"),
+                "start_time":   row.get("start_time"),
+                "time_abs":     row.get("time_abs"),
+                "countdown":    row.get("countdown"),
+            })
+    flat.sort(key=lambda p: (
+        -(p.get("signal_score") or 0),
+        -(float(p.get("ev_pct") or 0.0)),
+        p.get("start_time") or "",
+    ))
+    # Cap at 10 slides — TikTok carousels max out at 35 images but 10 is
+    # the readable ceiling. Keep the top signal picks only.
+    slides = flat[:10]
+    return render_template_string(
+        SLIDES_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        sport_strip=render_sport_strip("lab"),
+        slides=slides,
+        total_candidates=len(flat),
+        date_str=date_str,
+        date_pretty=d.strftime("%A, %B %d").replace(" 0", " "),
+        generated_at=now_dt.strftime("%I:%M %p CT").lstrip("0"),
     )
 
 
