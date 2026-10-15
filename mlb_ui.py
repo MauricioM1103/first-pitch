@@ -3163,19 +3163,30 @@ SLIDES_TEMPLATE = r"""<!doctype html>
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js" integrity="sha512-BNaRQnYJYiPSqHHDb58B0yaPfCu+Wgds8Gp/gU33kqBtgNS4tSPHuGibyoeqMV/TJlSKda6FXzoEyYGjTe+vXA==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script>
-async function slideToPNG(idx) {
+// Mobile detection — iOS Safari ignores <a download> and treats data
+// URLs as "open in tab", so we route mobile users through the Web Share
+// API (native share sheet → Save to Photos / Camera Roll / TikTok direct)
+// and the "open PNG in new tab" fallback.
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+const IS_ANDROID = /Android/.test(navigator.userAgent);
+const IS_MOBILE = IS_IOS || IS_ANDROID;
+const CAN_SHARE_FILES = (typeof navigator !== 'undefined' && navigator.canShare &&
+  (function() {
+    try {
+      // Probe with a tiny 1-byte text file. Chrome Android + iOS 16+ pass.
+      return navigator.canShare({ files: [new File(['x'], 'x.txt', {type:'text/plain'})] });
+    } catch (e) { return false; }
+  })());
+
+async function slideToCanvas(idx) {
   const el = document.getElementById('slide-' + idx);
   if (!el) return null;
-  // html2canvas captures the inner slide at its natural 1080x1920 size,
-  // ignoring the CSS transform that scales it down for display.
   const canvas = await html2canvas(el, {
     width:   1080,
     height:  1920,
     scale:   1,
     useCORS: true,
     backgroundColor: null,
-    // Force html2canvas to render at natural size, not the scaled-down
-    // display size. Clone the node and remove the transform.
     onclone: function(doc) {
       const c = doc.getElementById('slide-' + idx);
       if (c) { c.style.transform = 'none'; c.style.position = 'static'; }
@@ -3183,36 +3194,110 @@ async function slideToPNG(idx) {
   });
   return canvas;
 }
-async function downloadSlide(idx, ev) {
+
+function canvasToBlob(canvas) {
+  return new Promise(res => canvas.toBlob(res, 'image/png'));
+}
+
+async function saveSlide(idx, ev) {
   if (ev && ev.stopPropagation) ev.stopPropagation();
   const btn = ev && ev.currentTarget;
   const oldText = btn ? btn.textContent : null;
   if (btn) btn.textContent = 'Rendering...';
   try {
-    const canvas = await slideToPNG(idx);
+    const canvas = await slideToCanvas(idx);
+    const blob = await canvasToBlob(canvas);
+    const filename = 'bettingtools-pick-' + idx + '-{{ date_str }}.png';
+    const file = new File([blob], filename, { type: 'image/png' });
+
+    // Phone: open the native share sheet (iOS → Save to Photos,
+    // Android → Save to downloads / TikTok direct).
+    if (CAN_SHARE_FILES && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: 'Betting Tools pick' });
+        return;
+      } catch (e) {
+        if (e && e.name === 'AbortError') return;  // user cancelled
+        // Fall through to download/open fallbacks on other errors.
+      }
+    }
+
+    // Desktop + Android without share-API: standard <a download>.
+    const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.download = 'bettingtools-pick-' + idx + '-{{ date_str }}.png';
-    link.href = canvas.toDataURL('image/png');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
     link.click();
+    document.body.removeChild(link);
+    // iOS Safari ignores `download`: it opens the image in a new tab
+    // where the user long-presses → Save to Photos. Also open it so
+    // the user has a path even when download is suppressed.
+    if (IS_IOS) {
+      window.open(url, '_blank');
+    }
+    // Keep the blob URL around a few seconds for iOS to resolve the
+    // opened tab, then revoke to free memory.
+    setTimeout(function() { URL.revokeObjectURL(url); }, 10000);
   } catch (e) {
     alert('Render failed: ' + e);
   } finally {
     if (btn && oldText) btn.textContent = oldText;
   }
 }
+// Backwards-compat alias — buttons still call downloadSlide.
+const downloadSlide = saveSlide;
+
 async function downloadAll() {
-  // 1 hero slide + N content slides; use the Jinja total we computed.
   const n = {{ (1 if picks else 0) + (content_slides|length) }};
+  // On mobile: tapping "share all" tries to share ALL files in one go
+  // (if the OS supports multi-file share) — on iOS the share sheet
+  // accepts a batch of images and offers Save All to Photos. On
+  // Android, same via Google Photos / TikTok carousel upload.
+  if (CAN_SHARE_FILES) {
+    const files = [];
+    for (let i = 1; i <= n; i++) {
+      const canvas = await slideToCanvas(i);
+      const blob = await canvasToBlob(canvas);
+      files.push(new File([blob], 'bettingtools-pick-' + i + '-{{ date_str }}.png', {type: 'image/png'}));
+    }
+    if (files.length && navigator.canShare({ files })) {
+      try {
+        await navigator.share({ files, title: 'Betting Tools picks' });
+        return;
+      } catch (e) {
+        if (e && e.name === 'AbortError') return;
+        // Fall through to per-file downloads.
+      }
+    }
+  }
+  // Desktop fallback: loop through downloads with a small gap so the
+  // browser doesn't batch-cancel.
   for (let i = 1; i <= n; i++) {
-    const canvas = await slideToPNG(i);
+    const canvas = await slideToCanvas(i);
+    const blob = await canvasToBlob(canvas);
+    const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
+    link.href = url;
     link.download = 'bettingtools-pick-' + i + '-{{ date_str }}.png';
-    link.href = canvas.toDataURL('image/png');
+    document.body.appendChild(link);
     link.click();
-    // Small gap between downloads so the browser doesn't batch-cancel.
+    document.body.removeChild(link);
+    setTimeout(function() { URL.revokeObjectURL(url); }, 5000);
     await new Promise(r => setTimeout(r, 300));
   }
 }
+// Flip the "Download" button labels on mobile so users know it opens
+// the native share sheet instead of a file-system download.
+(function retitleButtons() {
+  if (!IS_MOBILE) return;
+  const all = document.querySelectorAll('.slide-dl');
+  all.forEach(function(el) {
+    el.textContent = el.textContent.replace(/Download/i, 'Share / Save');
+  });
+  const bigBtn = document.querySelector('.slides-header .actions .primary');
+  if (bigBtn) bigBtn.textContent = 'Share all PNGs ↗';
+})();
 </script>
 </body>
 </html>
