@@ -475,8 +475,76 @@ def fetch_scores_espn(paths, days_back=3, ref_date=None):
                     seen_ids.add(ev["id"])
                     all_events.append(ev)
             _RESULTS_LAST_ERROR.pop(path, None)
+    # Soccer scoreboard omits half-time linescores. For completed soccer
+    # events with empty innings, pull the per-event summary (one call per
+    # game, cached in process) to populate the first-half scores so 1H
+    # Total picks grade cleanly instead of staying pending forever.
+    _is_soccer = any("soccer" in p for p in paths)
+    if _is_soccer:
+        for ev in all_events:
+            if ev.get("innings"):
+                continue
+            if not ev.get("completed"):
+                continue
+            # Pick the first soccer path that matches this event's league
+            # (we only have one path when it's a specific league; for
+            # international aggregates we try each until one answers).
+            for path in paths:
+                if "soccer" not in path:
+                    continue
+                h1_h, h1_a = _fetch_espn_half_scores(path, ev["id"])
+                if h1_h is not None and h1_a is not None:
+                    ev["innings"] = [{"num": 1, "home": h1_h, "away": h1_a}]
+                    break
     _ESPN_CACHE[cache_key] = (all_events, now)
     return all_events
+
+
+_ESPN_HALF_CACHE = {}  # (path, event_id) -> (home_1h, away_1h, ts)
+_ESPN_HALF_TTL_S = 24 * 60 * 60   # final scores never change
+
+def _fetch_espn_half_scores(path, event_id):
+    """Fetch first-half scores from ESPN's event summary endpoint.
+    Returns (home_1h, away_1h) or (None, None) on failure. Soccer-only;
+    the ESPN scoreboard omits period-level data for soccer but the
+    summary endpoint carries it via competitions[0].competitors[].linescores.
+    Cached 24h — final scores are immutable."""
+    if not event_id:
+        return None, None
+    key = (path, event_id)
+    hit = _ESPN_HALF_CACHE.get(key)
+    now = time.time()
+    if hit and (now - hit[2]) < _ESPN_HALF_TTL_S:
+        return hit[0], hit[1]
+    url = f"{ESPN_SCOREBOARD_BASE}/{path}/summary?event={event_id}"
+    try:
+        data = _fetch_json(url, timeout=10)
+    except Exception:
+        return None, None
+    try:
+        header = (data or {}).get("header") or {}
+        comps  = header.get("competitions") or []
+        if not comps:
+            return None, None
+        comp = comps[0]
+        home = next((c for c in comp.get("competitors", []) if c.get("homeAway") == "home"), None)
+        away = next((c for c in comp.get("competitors", []) if c.get("homeAway") == "away"), None)
+        if not home or not away:
+            return None, None
+        h_ls = home.get("linescores") or []
+        a_ls = away.get("linescores") or []
+        # Soccer periods: linescores[0] is first-half, linescores[1] is second-half.
+        if not h_ls or not a_ls:
+            return None, None
+        try:
+            h1_h = int(float(h_ls[0].get("value", 0)))
+            h1_a = int(float(a_ls[0].get("value", 0)))
+        except (TypeError, ValueError):
+            return None, None
+        _ESPN_HALF_CACHE[key] = (h1_h, h1_a, now)
+        return h1_h, h1_a
+    except Exception:
+        return None, None
 
 
 def fetch_scores(sport_key, days_from=3):
@@ -941,6 +1009,22 @@ def grade_pick(pick, event):
             return "W" if home >= away else "L"
         if away_name and away_name in pick_norm:
             return "W" if away >= home else "L"
+        return "pending"
+
+    # ---- Draw No Bet (soccer) — team wins = Win, team loses = Loss,
+    # draw = Push (stake refund). "Shakhtar Donetsk (DNB)" picks the home
+    # team to win-or-draw-refund; "AEK Athens (DNB)" picks the away. ----
+    if "draw no bet" in market.lower() or market == "DNB":
+        # Strip the (DNB) marker so team-name substring match works.
+        tag_stripped = re.sub(r"\s*\(dnb\)\s*", "", pick_norm)
+        if home_name and (tag_stripped == home_name or home_name in tag_stripped):
+            if home == away:
+                return "P"
+            return "W" if home > away else "L"
+        if away_name and (tag_stripped == away_name or away_name in tag_stripped):
+            if home == away:
+                return "P"
+            return "W" if away > home else "L"
         return "pending"
 
     # ---- Moneyline (incl. 1H / 1P ML and soccer draws) ----
