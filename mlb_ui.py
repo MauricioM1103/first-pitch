@@ -3022,8 +3022,8 @@ SLIDES_TEMPLATE = r"""<!doctype html>
       <h1>Social Slides</h1>
       <div class="meta">
         {{ total_slides }} slide{{ 's' if total_slides != 1 else '' }} ready
-        ({{ total_picks }} pick{{ 's' if total_picks != 1 else '' }} total,
-        {{ star_count }} &#9733;)
+        &middot; {{ total_picks }} &#9733; pick{{ 's' if total_picks != 1 else '' }} worth placing today
+        {% if sig4_count %}({{ sig4_count }} strongest){% endif %}
         &middot; 1080&times;1920 for TikTok / Reels / Shorts
         &middot; generated {{ generated_at }}
         &middot; <a href="/slides?date={{ date_str }}" style="color:var(--muted); text-decoration:underline">regenerate &rarr;</a>
@@ -3054,7 +3054,7 @@ SLIDES_TEMPLATE = r"""<!doctype html>
           <span class="brand">BETTING<span class="dot">.</span>TOOLS</span>
           <span class="pos">#1 / {{ total_slides }}</span>
         </div>
-        <div class="hero-eyebrow">Daily Signal Picks</div>
+        <div class="hero-eyebrow">Picks Worth Placing</div>
         <div class="hero-title">
           <span class="count">{{ total_picks }}</span>
           <span class="label">pick{{ 's' if total_picks != 1 else '' }} today</span>
@@ -3062,12 +3062,12 @@ SLIDES_TEMPLATE = r"""<!doctype html>
         <div class="hero-date">{{ date_pretty }}</div>
         <div class="hero-grid">
           <div class="hero-stat gold">
-            <div class="label">&#9733; Signal 3+</div>
-            <div class="value">{{ star_count }}</div>
+            <div class="label">Signal 4+ (strongest)</div>
+            <div class="value">{{ sig4_count }}</div>
           </div>
-          <div class="hero-stat sky">
-            <div class="label">Also considered</div>
-            <div class="value">{{ total_picks - star_count }}</div>
+          <div class="hero-stat green">
+            <div class="label">Signal 3 (solid)</div>
+            <div class="value">{{ sig3_count }}</div>
           </div>
         </div>
         <div class="hero-cta">
@@ -3152,9 +3152,12 @@ SLIDES_TEMPLATE = r"""<!doctype html>
   </div>
   {% else %}
   <div class="slides-empty">
-    No picks today meet Signal &ge; 2. The board is quiet &mdash; nothing to post.
-    New slides will appear here at the next scheduled refresh (3 AM / 12 PM CT) or
-    when you click <a href="/slides?date={{ date_str }}" style="color:var(--good)">regenerate</a>.
+    No picks worth placing today (Signal &ge; 3). The board is quiet &mdash;
+    this is a feature, not a bug (research: "a long record of no-bet
+    outputs and small positive CLV is the realistic sign the process is
+    working"). New slides will appear here at the next refresh (3 AM /
+    12 PM CT) or when you click
+    <a href="/slides?date={{ date_str }}" style="color:var(--good)">regenerate</a>.
   </div>
   {% endif %}
 </div>
@@ -6600,10 +6603,12 @@ def slides_page():
         board_rows, _ = _build_board_rows(date_str, d, "all", strong_only=False)
     except Exception:
         board_rows = []
-    # Flatten + rank EXACTLY the way TODAY does: pre-kickoff bet-able
-    # picks sorted strongest-first by signal_score, then EV. Only
-    # excludes model-only (no book price). Signal 2+ included — the
-    # full TODAY set, not a cherry-pick top 10.
+    # Flatten + rank EXACTLY the way TODAY's "picks worth placing today"
+    # headline does: pre-kickoff bet-able picks with Signal >= 3 (the
+    # same bar that lights the gold border on TODAY), excludes model-only
+    # (no book price). Matches TODAY's star_picks list, NOT the broader
+    # 'also likes' pool, so each slide carries only picks the system
+    # actually recommends taking.
     now_dt = datetime.now(CENTRAL)
     picks = []
     for row in board_rows:
@@ -6612,7 +6617,7 @@ def slides_page():
         for p in row.get("picks", []):
             if p.get("model_only"):
                 continue
-            if (p.get("signal_score") or 0) < 2:
+            if (p.get("signal_score") or 0) < 3:
                 continue
             picks.append({
                 **p,
@@ -6640,8 +6645,12 @@ def slides_page():
         content_slides.append(picks[i : i + PICKS_PER_SLIDE])
         if len(content_slides) >= MAX_CONTENT_SLIDES:
             break
-    # Separate star picks and lean picks for the hero summary
-    star_count = sum(1 for p in picks if (p.get("signal_score") or 0) >= 3)
+    # Hero summary stats: count of ★ Signal 4+ (gold) and ★ Signal 3 (green).
+    sig4_count = sum(1 for p in picks if (p.get("signal_score") or 0) >= 4)
+    sig3_count = sum(1 for p in picks if (p.get("signal_score") or 0) == 3)
+    # Keep star_count name for backwards-compat with the template; it
+    # now equals total picks (all are >= 3 after the filter above).
+    star_count = len(picks)
     return render_template_string(
         SLIDES_TEMPLATE,
         fonts_link=FONTS_LINK,
@@ -6652,6 +6661,8 @@ def slides_page():
         picks_per_slide=PICKS_PER_SLIDE,
         total_picks=len(picks),
         star_count=star_count,
+        sig4_count=sig4_count,
+        sig3_count=sig3_count,
         date_str=date_str,
         date_pretty=d.strftime("%A, %B %d").replace(" 0", " "),
         generated_at=now_dt.strftime("%I:%M %p CT").lstrip("0"),
