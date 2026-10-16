@@ -1283,20 +1283,18 @@ def grade_pick(pick, event):
             return "W" if away >= home else "L"
         return "pending"
 
-    # ---- Draw No Bet (soccer) — team wins = Win, team loses = Loss,
-    # draw = Push (stake refund). "Shakhtar Donetsk (DNB)" picks the home
-    # team to win-or-draw-refund; "AEK Athens (DNB)" picks the away. ----
+    # ---- Draw No Bet (soccer) — graded as "team or draw" (Double Chance
+    # 1X / X2) per user's betting style: they bet the market as "No on
+    # [other team]", so a draw counts as a Win, not a stake refund.
+    # "Shakhtar Donetsk (DNB)" wins on Shakhtar win OR draw; "AEK Athens
+    # (DNB)" wins on AEK win OR draw. ----
     if "draw no bet" in market.lower() or market == "DNB":
         # Strip the (DNB) marker so team-name substring match works.
         tag_stripped = re.sub(r"\s*\(dnb\)\s*", "", pick_norm)
         if home_name and (tag_stripped == home_name or home_name in tag_stripped):
-            if home == away:
-                return "P"
-            return "W" if home > away else "L"
+            return "W" if home >= away else "L"
         if away_name and (tag_stripped == away_name or away_name in tag_stripped):
-            if home == away:
-                return "P"
-            return "W" if away > home else "L"
+            return "W" if away >= home else "L"
         return "pending"
 
     # ---- Moneyline (incl. 1H / 1P ML and soccer draws) ----
