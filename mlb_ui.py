@@ -13425,7 +13425,7 @@ main.logged-page { max-width: 1040px; }
       <strong style="color:var(--ink)">Daily anchor times (Central):</strong>
       {% for b in anchor_status.buckets %}
         <span style="margin-right:8px;font-family:'JetBrains Mono',monospace">
-          <span style="color:{{ 'var(--good)' if b in anchor_status.fired_today else 'var(--muted-2)' }}">{{ '&#10003;' if b in anchor_status.fired_today else '&#9679;' }}</span>
+          <span style="color:{{ 'var(--good)' if b in anchor_status.fired_today else 'var(--muted-2)' }}">{% if b in anchor_status.fired_today %}&#10003;{% else %}&#9679;{% endif %}</span>
           {{ b }}
         </span>
       {% endfor %}
