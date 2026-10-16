@@ -262,6 +262,10 @@ def save_daily_picks(date_str, picks, overwrite_today=True):
                                                    else "ev"),
             "start_time":    p.get("start_time"),
             "snapshotted_at": now_iso,
+            # Updated every save while the pick is still in the live
+            # picks arg. Compared to start_time at record time to
+            # determine whether this pick stayed on until kickoff.
+            "last_live_at":  now_iso,
             # CLV capture — first-save snapshot locked in across the day
             "first_snapshot_at":  first.get("first_snapshot_at") or now_iso,
             "first_pinnacle_prob": first.get("first_pinnacle_prob")
@@ -909,7 +913,70 @@ def grader_status():
 # ---------------------------------------------------------------------------
 
 def _norm(s):
-    return (s or "").lower().strip().replace(".", "").replace("-", " ")
+    """Normalize a team name for fuzzy matching. Strips accents (ASCII
+    fold) so ESPN's "Atlético de San Luis" matches our pick's "Atletico
+    San Luis". Lowercases, trims punctuation, collapses whitespace."""
+    import unicodedata as _u
+    s = (s or "")
+    # NFD split lets us drop combining marks (accents) with a filter.
+    s = _u.normalize("NFD", s)
+    s = "".join(ch for ch in s if not _u.combining(ch))
+    s = s.lower().strip().replace(".", "").replace("-", " ")
+    # Collapse multiple spaces to one — tokens line up for overlap check.
+    s = " ".join(s.split())
+    return s
+
+
+def _name_tokens(s):
+    """Normalized name split into significant tokens — drops stop words
+    like 'de', 'la', 'fc', 'cf', 'ac' that bloat Spanish/Italian/Latam
+    club names without disambiguating. Lets us token-overlap-match
+    'Atletico San Luis' against 'Atletico de San Luis' cleanly."""
+    stop = {"de", "la", "el", "los", "las", "fc", "cf", "sc", "ac", "cd",
+            "cdf", "club", "deportivo"}
+    toks = _norm(s).split()
+    toks = [t for t in toks if t and t not in stop]
+    # Expand common NCAAF / mascot abbreviations so our Pinnacle-style
+    # "Central Florida" picks match ESPN's "UCF Knights" and vice versa.
+    expanded = set(toks)
+    for t in toks:
+        for alias in _TEAM_ALIAS.get(t, ()):
+            expanded.update(alias.split())
+    return list(expanded)
+
+
+# Bidirectional abbreviation table. Each key maps to every token form the
+# same team might appear under across Pinnacle vs ESPN. Lowercase, accent-
+# stripped already (because this is applied after _norm).
+_TEAM_ALIAS = {
+    # NCAAF
+    "ucf":       ("central", "florida"),
+    "central":   ("ucf",),
+    "usc":       ("southern", "california"),
+    "lsu":       ("louisiana", "state"),
+    "ucla":      ("california", "los", "angeles"),
+    "byu":       ("brigham", "young"),
+    "smu":       ("southern", "methodist"),
+    "tcu":       ("texas", "christian"),
+    "unlv":      ("nevada", "las", "vegas"),
+    "fiu":       ("florida", "international"),
+    "fau":       ("florida", "atlantic"),
+    "ulm":       ("louisiana", "monroe"),
+    # Common ESPN mascot-only -> city expansions
+    "cowboys":   ("oklahoma", "state", "dallas"),  # NCAAF OKstate OR NFL Dallas
+    "knights":   ("ucf", "central", "florida"),
+    # Ole Miss <-> Mississippi (ESPN uses "Ole Miss Rebels", Pinnacle uses "Mississippi")
+    "ole":       ("mississippi",),
+    "miss":      ("mississippi",),
+    "mississippi": ("ole", "miss"),
+    # San Jose State / San Jose (Pinnacle often "San Jose State", ESPN too but accents vary)
+    "jose":      ("san",),
+    # Hawaii Rainbow Warriors <-> just "Hawaii"
+    "rainbow":   ("hawaii",),
+    "warriors":  ("hawaii",),
+    # Common Liga MX / La Liga doesn't need more — stop-word strip + token
+    # overlap covers them. Keep this table NCAAF-centric.
+}
 
 
 def _event_date_close_to_pick(ev, pick, hours_tolerance=36):
@@ -978,6 +1045,29 @@ def find_result_event(pick, events):
                 for ec2 in _candidate_names(ev, "away"):
                     if pick_away_last in ec2:
                         return ev
+
+    # Pass 1c: date-aligned token-overlap match. Covers soccer clubs where
+    # ESPN includes stopwords (Atlético **de** San Luis) and our pick does
+    # not (Atletico San Luis), and short-vs-full variants (Juárez vs FC
+    # Juárez). Requires at least one significant token to overlap on each
+    # side so random noise doesn't match.
+    pick_home_toks = set(_name_tokens(pick.get("home_team")))
+    pick_away_toks = set(_name_tokens(pick.get("away_team")))
+    for ev in events:
+        if not ev.get("completed"):
+            continue
+        if not _event_date_close_to_pick(ev, pick):
+            continue
+        ev_home_toks = set(_name_tokens(ev.get("home_team"))) | set(_name_tokens(ev.get("home_team_short")))
+        ev_away_toks = set(_name_tokens(ev.get("away_team"))) | set(_name_tokens(ev.get("away_team_short")))
+        # Try both home/away orientations — Pinnacle and ESPN disagree on
+        # which side is "home" for a chunk of La Liga / Liga MX fixtures.
+        # For moneyline / spread / total grading we only need the correct
+        # team-to-score mapping, which grade_pick already handles.
+        if pick_home_toks & ev_home_toks and pick_away_toks & ev_away_toks:
+            return ev
+        if pick_home_toks & ev_away_toks and pick_away_toks & ev_home_toks:
+            return ev
 
     # Pass 2: legacy name-only match. ONLY used for picks without a
     # start_time (can't do date-aware matching anyway) — picks that DO
@@ -1632,25 +1722,44 @@ def _passes_current_filter_live(pk):
     return True
 
 
+GAME_START_GRACE_MIN = 60  # tolerance for "last live" vs kickoff.
+
+
+def _was_live_at_game_start(pk):
+    """True iff this pick was in the recommended set within
+    GAME_START_GRACE_MIN of its game start — i.e. it stayed on the live
+    board until kickoff rather than being EV'd out hours before. Uses
+    `last_live_at` (updated every save while the pick is still in the
+    live picks arg). Picks that have no last_live_at (historical files
+    from before this field landed) default to True so legacy records
+    are not retroactively zeroed out."""
+    start_str = pk.get("start_time")
+    last_live = pk.get("last_live_at")
+    if not start_str or not last_live:
+        return True
+    try:
+        start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
+        live_dt  = datetime.fromisoformat(last_live.replace("Z", "+00:00"))
+    except (TypeError, ValueError, AttributeError):
+        return True
+    gap_min = (start_dt - live_dt).total_seconds() / 60.0
+    # gap_min > GAME_START_GRACE_MIN means last_live is MORE than 60
+    # minutes before kickoff — the pick was pulled early, does not count.
+    # gap_min <= GAME_START_GRACE_MIN (incl. negative = after kickoff) means
+    # the pick made it to the pre-game window.
+    return gap_min <= GAME_START_GRACE_MIN
+
+
 def _passes_current_filter(pk):
-    """True iff this pick survived the CURRENT (post-Phase 4) filter
-    at the earliest anchor time (12 AM / 3 AM / 11 AM / 4 PM CT) that
-    saw this pick in the daily snapshots. Falls back to live recompute
-    if no anchor has fired for this pick yet. Freezing judgment at the
-    anchor removes intra-day drift when the market bets the EV out.
-    Used for the 'if we had used current filter all along' backtest."""
-    anchors = pk.get("anchors") or {}
-    if isinstance(anchors, dict) and anchors:
-        # Earliest clock-time anchor that fired for this pick wins. Keys
-        # are "HH:MM" strings so lexical sort equals chronological sort.
-        try:
-            first_key = sorted(anchors.keys())[0]
-            first = anchors[first_key] or {}
-            if isinstance(first, dict) and "passes_curfilter" in first:
-                return bool(first.get("passes_curfilter"))
-        except (TypeError, ValueError, IndexError, AttributeError):
-            pass
-    return _passes_current_filter_live(pk)
+    """True iff this pick's CURRENT (post-Phase 4) filter judgment
+    counts: Signal composite >= 3, EV cushion, not model-only, AND it
+    stayed in the recommended set up to within GAME_START_GRACE_MIN of
+    kickoff. The last check is the "only count picks that stayed on
+    until the game started" rule — a pick EV'd out hours before the
+    game is no longer our pick."""
+    if not _passes_current_filter_live(pk):
+        return False
+    return _was_live_at_game_start(pk)
 
 
 def _is_whale_pick(pk):

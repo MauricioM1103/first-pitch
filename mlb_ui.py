@@ -13420,29 +13420,9 @@ main.logged-page { max-width: 1040px; }
       survived. Compare to Overall Record above to see the lift the filter
       actually produces on real graded games.
     </div>
-    {% if anchor_status %}
-    <div class="sub" style="font-size:12.5px;color:var(--muted-2);margin-top:-4px;margin-bottom:12px;padding:8px 10px;border:1px dashed var(--rule);border-radius:8px">
-      <strong style="color:var(--ink)">Daily anchor times (Central):</strong>
-      {% for b in anchor_status.buckets %}
-        <span style="margin-right:8px;font-family:'JetBrains Mono',monospace">
-          <span style="color:{{ 'var(--good)' if b in anchor_status.fired_today else 'var(--muted-2)' }}">{% if b in anchor_status.fired_today %}&#10003;{% else %}&#9679;{% endif %}</span>
-          {{ b }}
-        </span>
-      {% endfor %}
-      <span style="color:var(--muted);margin-left:4px">
-        &middot; next anchor at <b style="color:var(--ink)">{{ anchor_status.next_bucket }} CT</b>
-        {% if anchor_status.next_in_min is not none %}({{ anchor_status.next_in_min }} min){% endif %}
-        {% if anchor_status.anchored_total %}
-          &middot; <b style="color:var(--ink)">{{ anchor_status.anchored_passed }}</b> / {{ anchor_status.anchored_total }} today's picks locked as current-filter at their first-fired anchor.
-        {% else %}
-          &middot; no picks saved yet today &mdash; the next main-board visit after the first anchor stamps the day's picks.
-        {% endif %}
-      </span>
-      <div style="margin-top:4px;color:var(--muted);font-size:11.5px">
-        Each pick's filter judgment freezes at the earliest of these clock times the save path sees after it. Keeps the record stable even when the market bets the EV out before kickoff.
-      </div>
+    <div class="sub" style="font-size:12px;color:var(--muted-2);margin-top:-6px;margin-bottom:10px">
+      Membership rule: a pick counts here only if it was still in the recommended set within 60 minutes of game start (not pulled off the board early when the market bets the EV out).
     </div>
-    {% endif %}
     <div class="records-grid">
       {% for key, label in [('curfilter_7d','Last 7 days'),('curfilter_30d','Last 30 days'),('curfilter_90d','Last 90 days')] %}
       {% set r = summary[key] %}
