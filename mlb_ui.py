@@ -2027,6 +2027,22 @@ TODAY_TEMPLATE = r"""<!doctype html>
   padding: 14px 16px; background: var(--card); border: 1px solid var(--rule);
   border-radius: 10px; align-items: start;
 }
+.today-card .result-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; border-radius: 999px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.6px;
+  border: 1px solid currentColor; margin-right: 4px;
+}
+.today-card .result-chip.W    { color: var(--good); background: color-mix(in oklab, var(--good) 10%, transparent); }
+.today-card .result-chip.L    { color: #ef4444;      background: color-mix(in oklab, #ef4444 10%, transparent); }
+.today-card .result-chip.P    { color: var(--muted-2); background: color-mix(in oklab, var(--rule) 20%, transparent); }
+.today-card .result-chip.live { color: #fb923c; background: color-mix(in oklab, #fb923c 10%, transparent); animation: today-live-pulse 1.8s ease-in-out infinite; }
+.today-card .result-chip.final{ color: var(--muted); background: color-mix(in oklab, var(--rule) 10%, transparent); }
+@keyframes today-live-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+.today-card.status-final { opacity: 0.78; }
 .today-card.star {
   border-color: color-mix(in oklab, #f59e0b 55%, var(--rule));
   box-shadow: 0 0 0 1px color-mix(in oklab, #f59e0b 25%, transparent) inset;
@@ -2202,10 +2218,21 @@ details.also-wrap .today-card { opacity: 0.88; }
   </div>
   <div class="today-list">
     {% for p in star_picks %}
-    <a class="today-card star" href="/pick?date={{ date_str }}&sport={{ p.sport_slug }}&home={{ p.game_home|urlencode }}&away={{ p.game_away|urlencode }}&market={{ p.market|urlencode }}&pick={{ p.pick|urlencode }}" style="text-decoration:none; color:inherit">
+    <a class="today-card star {{ 'status-' ~ (p.status or 'upcoming') }}" href="/pick?date={{ date_str }}&sport={{ p.sport_slug }}&home={{ p.game_home|urlencode }}&away={{ p.game_away|urlencode }}&market={{ p.market|urlencode }}&pick={{ p.pick|urlencode }}" style="text-decoration:none; color:inherit">
       <div class="pick-head">
         <span class="star">&#9733;</span>
         <span class="pick-text">{{ p.pick }}</span>
+        {% if p.result == 'W' %}
+          <span class="result-chip W" title="Won">&#10003; WON</span>
+        {% elif p.result == 'L' %}
+          <span class="result-chip L" title="Lost">&#10007; LOST</span>
+        {% elif p.result == 'P' %}
+          <span class="result-chip P" title="Push">PUSH</span>
+        {% elif p.status == 'live' %}
+          <span class="result-chip live" title="Game is live">&#9679; LIVE</span>
+        {% elif p.status == 'final' %}
+          <span class="result-chip final" title="Game ended — grading next refresh">FINAL</span>
+        {% endif %}
         {% if p.signal_score is not none %}
           <span class="signal-chip s{{ p.signal_score }}">Signal {{ p.signal_score }}/5</span>
         {% endif %}
@@ -6459,6 +6486,32 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
         for p in row["picks"]:
             p["_row_status"] = status_now  # 'upcoming' / 'live' / 'final'
 
+    # 4c) FINAL dedup pass across every emission path. The EV path, the
+    # alt-expansion path, and the model-fill path can each independently
+    # produce the same bet (same sport/home/away/market/pick-label), and
+    # each path's own dedup only sees its own picks. Collapse them here
+    # using the plays_log match-key tuple so the board never shows the
+    # same pick twice. Prefer entries that have a book price + graded
+    # result (same rank as save_daily_picks' entry_rank).
+    for row in rows_by_key.values():
+        if len(row["picks"]) <= 1:
+            continue
+        def _row_bet_key(pk):
+            def _n(x): return (x or "").strip().lower()
+            return (_n(row.get("sport_slug")), _n(row.get("home")),
+                    _n(row.get("away")), _n(pk.get("market")),
+                    _n(pk.get("pick")))
+        def _row_rank(pk):
+            has_result = pk.get("result") in ("W", "L", "P")
+            has_price  = pk.get("decimal") is not None or pk.get("american") is not None
+            return (0 if has_result else 1, 0 if has_price else 1)
+        best = {}
+        for pk in row["picks"]:
+            k = _row_bet_key(pk)
+            if k not in best or _row_rank(pk) < _row_rank(best[k]):
+                best[k] = pk
+        row["picks"] = list(best.values())
+
     # 5) Fill in missing markets with pure-model picks so every game shows the
     #    full ML + Spread + Total triplet (bettingtools.ai-style). These are
     #    opinion-only — not EV-filtered and not persisted to plays_log.
@@ -6834,9 +6887,11 @@ def today_landing():
     flat = []
     for row in board_rows:
         status = row.get("status")
-        # Skip games that already kicked off — TODAY is a pre-game view.
-        if status in ("live", "final"):
-            continue
+        # Keep live/final game picks visible on TODAY — users want to see
+        # today's full slate (upcoming + in-progress + ended with
+        # result) all the way through until the day rolls over at
+        # midnight CT. Each pick carries its own _row_status for the
+        # LIVE/FINAL/W/L badge rendering.
         for p in row.get("picks", []):
             # Model-only picks aren't bet-able (no book price); exclude
             # from TODAY entirely. GAMES still shows them.
