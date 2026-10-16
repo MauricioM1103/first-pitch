@@ -527,8 +527,21 @@ def read_graded(date_str):
 
 def write_graded(date_str, graded):
     text = json.dumps(graded)
+    # No-op diff: skip the disk write + GitHub push if nothing changed.
+    # Matters because grade_date(rescore=True) runs on every main-board
+    # visit for today's date — without this check we'd commit to the
+    # data branch dozens of times a day with identical content.
+    path = graded_file(date_str)
+    if os.path.exists(path):
+        try:
+            with open(path, "r") as f:
+                prev_text = f.read()
+            if prev_text == text:
+                return
+        except OSError:
+            pass
     try:
-        with open(graded_file(date_str), "w") as f:
+        with open(path, "w") as f:
             f.write(text)
     except OSError:
         pass
@@ -683,6 +696,13 @@ def fetch_scores_espn(paths, days_back=3, ref_date=None):
                     ev["innings"] = [{"num": 1, "home": h1_h, "away": h1_a}]
                     break
     _ESPN_CACHE[cache_key] = (all_events, now)
+    # Bounded LRU: cap at 64 entries, drop oldest half when exceeded.
+    # Over a long-running process the key space (sport × days_back ×
+    # ref_date) can accumulate 300+ entries across a 30-day grading
+    # window. Keep it bounded so the cache doesn't become a leak.
+    if len(_ESPN_CACHE) > 64:
+        for k in sorted(_ESPN_CACHE.items(), key=lambda kv: kv[1][1])[:32]:
+            _ESPN_CACHE.pop(k[0], None)
     return all_events
 
 
@@ -728,6 +748,11 @@ def _fetch_espn_half_scores(path, event_id):
         except (TypeError, ValueError):
             return None, None
         _ESPN_HALF_CACHE[key] = (h1_h, h1_a, now)
+        # Bounded: 128 entries is 128 completed soccer games — plenty
+        # headroom over a season but prevents unbounded growth.
+        if len(_ESPN_HALF_CACHE) > 128:
+            for k in sorted(_ESPN_HALF_CACHE.items(), key=lambda kv: kv[1][2])[:64]:
+                _ESPN_HALF_CACHE.pop(k[0], None)
         return h1_h, h1_a
     except Exception:
         return None, None
