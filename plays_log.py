@@ -29,6 +29,14 @@ REMOTE_LOGS_PATH = log_persist.DEFAULT_LOGS_PATH
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 ESPN_SCOREBOARD_BASE = "https://site.api.espn.com/apis/site/v2/sports"
 
+# Daily anchor times (Central). Each save that happens on-or-after one of
+# these buckets locks a frozen EV + signal + filter judgment on every pick
+# that doesn't already have that bucket recorded. The 'curfilter' record
+# then uses the EARLIEST fired anchor's frozen judgment per pick instead
+# of drifting with live price. Picks the user looks at near these times
+# see the same filter membership that gets counted later.
+ANCHOR_TIMES_CT = ("00:00", "03:00", "11:00", "16:00")
+
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 
@@ -47,6 +55,92 @@ def picks_file(date_str):
 
 def graded_file(date_str):
     return os.path.join(LOG_DIR, f"graded_{date_str}.json")
+
+
+def _now_central():
+    """Return current time in America/Chicago. Falls back to UTC on
+    systems without zoneinfo (should not happen on Python 3.9+)."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/Chicago"))
+    except Exception:
+        return datetime.utcnow()
+
+
+def _anchors_due(now_ct):
+    """List of ANCHOR_TIMES_CT buckets whose clock time has passed today.
+    E.g. at 11:35 CT returns ['00:00', '03:00', '11:00']."""
+    out = []
+    for bucket in ANCHOR_TIMES_CT:
+        hh, mm = bucket.split(":")
+        bucket_dt = now_ct.replace(hour=int(hh), minute=int(mm),
+                                    second=0, microsecond=0)
+        if now_ct >= bucket_dt:
+            out.append(bucket)
+    return out
+
+
+def _anchor_snapshot_for_pick(p, now_iso):
+    """Snapshot the fields the current-filter judgment depends on, at
+    this moment, for later recordkeeping."""
+    return {
+        "ev_pct":            p.get("ev_pct"),
+        "fair_prob":         p.get("fair_prob"),
+        "line_move_pp":      p.get("line_move_pp"),
+        "signal_score":      _backtest_signal_score(p),
+        "passes_curfilter":  _passes_current_filter_live(p),
+        "snapshotted_at":    now_iso,
+    }
+
+
+def anchor_status_today():
+    """Public: what anchor buckets exist, which have fired already, and
+    which comes next in CT. The /logged UI renders this so the user can
+    see when picks get frozen for recordkeeping."""
+    now_ct = _now_central()
+    due = _anchors_due(now_ct)
+    next_bucket = None
+    next_in_min = None
+    for bucket in ANCHOR_TIMES_CT:
+        if bucket in due:
+            continue
+        hh, mm = bucket.split(":")
+        bucket_dt = now_ct.replace(hour=int(hh), minute=int(mm),
+                                    second=0, microsecond=0)
+        delta_min = int((bucket_dt - now_ct).total_seconds() // 60)
+        if delta_min >= 0:
+            next_bucket = bucket
+            next_in_min = delta_min
+            break
+    if next_bucket is None:
+        # All anchors fired today — next one is tomorrow's 00:00
+        tomorrow = now_ct.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        next_bucket = "00:00"
+        next_in_min = int((tomorrow - now_ct).total_seconds() // 60)
+    # Count picks whose first anchor passed the filter — i.e. how many
+    # picks would be in the day's current-filter record given anchors
+    # already fired.
+    anchored_passed = anchored_total = 0
+    try:
+        picks = (read_picks(now_ct.date().isoformat()) or {}).get("picks") or []
+        for pk in picks:
+            anchors = pk.get("anchors") or {}
+            if not anchors:
+                continue
+            anchored_total += 1
+            first_key = sorted(anchors.keys())[0]
+            if (anchors.get(first_key) or {}).get("passes_curfilter"):
+                anchored_passed += 1
+    except Exception:
+        pass
+    return {
+        "buckets":         list(ANCHOR_TIMES_CT),
+        "fired_today":     due,
+        "next_bucket":     next_bucket,
+        "next_in_min":     next_in_min,
+        "anchored_total":  anchored_total,
+        "anchored_passed": anchored_passed,
+    }
 
 
 def save_daily_picks(date_str, picks, overwrite_today=True):
@@ -115,10 +209,29 @@ def save_daily_picks(date_str, picks, overwrite_today=True):
             pass
 
     now_iso = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    now_ct = _now_central()
+    # Only anchor on the date whose log we're writing — a save for a past
+    # date (backfill) shouldn't record anchors against today's clock.
+    try:
+        _is_todays_log = (date_str == now_ct.date().isoformat())
+    except Exception:
+        _is_todays_log = True
+    due_buckets = _anchors_due(now_ct) if _is_todays_log else []
     merged_by_id = dict(prev_picks_by_id)   # start with everything we had
     for p in picks:
         pid = p.get("id")
         first = existing_first.get(pid, {})
+        prev_anchors = (prev_picks_by_id.get(pid) or {}).get("anchors") or {}
+        anchors = dict(prev_anchors)
+        for bucket in due_buckets:
+            if bucket not in anchors:
+                anchors[bucket] = _anchor_snapshot_for_pick(p, now_iso)
+        # Fallback: every pick gets at least one frozen anchor from its
+        # first save, even if no 12/3/11/16 CT bucket fires before the
+        # game starts. Keyed "zz_first_save" so lexical sort still prefers
+        # any clock-time bucket.
+        if not anchors:
+            anchors["zz_first_save"] = _anchor_snapshot_for_pick(p, now_iso)
         merged_by_id[pid] = {
             "id":            pid,
             "sport":         p.get("sport"),
@@ -152,7 +265,15 @@ def save_daily_picks(date_str, picks, overwrite_today=True):
             "first_fair_prob":    first.get("first_fair_prob")
                                      if first.get("first_fair_prob") is not None
                                      else p.get("fair_prob"),
+            # Anchor snapshots: frozen EV + signal + filter judgment at
+            # each daily checkpoint (12 AM / 3 AM / 11 AM / 4 PM CT).
+            "anchors":            anchors,
         }
+    # Carry anchors forward for picks that disappeared from the live
+    # feed (post-kickoff). The merged_by_id already includes them from
+    # prev_picks_by_id, but if a new anchor just fired we also want to
+    # capture it against the stored state (not update though — anchors
+    # only lock on save when the pick is still live).
     slim = list(merged_by_id.values())
     # Dedup by (sport_slug, home, away, market, pick) tuple. Different
     # emission paths (EV path vs model-fill vs AI vs 1H Goals) sometimes
@@ -1483,11 +1604,10 @@ def _backtest_signal_score(pk):
     return int(min(5, max(0, score)))
 
 
-def _passes_current_filter(pk):
-    """True iff this pick would survive the CURRENT (post-Phase 4) filter
-    stack: not model-only, EV cushion met for its market class, signal
-    composite >= 3. Used for the 'if we had used current filter all along'
-    backtest shown on /logged."""
+def _passes_current_filter_live(pk):
+    """Live recompute of the current-filter judgment from this pk's
+    CURRENT fields: not model-only, EV cushion met for its market class,
+    signal composite >= 3. Drifts intra-day as price/EV move."""
     if pk.get("model_only"):
         return False
     try:
@@ -1504,6 +1624,27 @@ def _passes_current_filter(pk):
     if _backtest_signal_score(pk) < 3:
         return False
     return True
+
+
+def _passes_current_filter(pk):
+    """True iff this pick survived the CURRENT (post-Phase 4) filter
+    at the earliest anchor time (12 AM / 3 AM / 11 AM / 4 PM CT) that
+    saw this pick in the daily snapshots. Falls back to live recompute
+    if no anchor has fired for this pick yet. Freezing judgment at the
+    anchor removes intra-day drift when the market bets the EV out.
+    Used for the 'if we had used current filter all along' backtest."""
+    anchors = pk.get("anchors") or {}
+    if anchors:
+        # Earliest clock-time anchor that fired for this pick wins. Keys
+        # are "HH:MM" strings so lexical sort equals chronological sort.
+        try:
+            first_key = sorted(anchors.keys())[0]
+            first = anchors[first_key] or {}
+            if "passes_curfilter" in first:
+                return bool(first.get("passes_curfilter"))
+        except (TypeError, ValueError, IndexError):
+            pass
+    return _passes_current_filter_live(pk)
 
 
 def _is_whale_pick(pk):

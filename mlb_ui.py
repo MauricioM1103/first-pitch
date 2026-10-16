@@ -13420,6 +13420,25 @@ main.logged-page { max-width: 1040px; }
       survived. Compare to Overall Record above to see the lift the filter
       actually produces on real graded games.
     </div>
+    {% if anchor_status %}
+    <div class="sub" style="font-size:12.5px;color:var(--muted-2);margin-top:-4px;margin-bottom:12px;padding:8px 10px;border:1px dashed var(--rule);border-radius:8px">
+      <strong style="color:var(--ink)">Daily anchor times (Central):</strong>
+      {% for b in anchor_status.buckets %}
+        <span style="margin-right:8px;font-family:'JetBrains Mono',monospace">
+          <span style="color:{{ 'var(--good)' if b in anchor_status.fired_today else 'var(--muted-2)' }}">{{ '&#10003;' if b in anchor_status.fired_today else '&#9679;' }}</span>
+          {{ b }}
+        </span>
+      {% endfor %}
+      <span style="color:var(--muted);margin-left:4px">
+        &middot; next anchor at <b style="color:var(--ink)">{{ anchor_status.next_bucket }} CT</b>
+        {% if anchor_status.next_in_min is not none %}({{ anchor_status.next_in_min }} min){% endif %}
+        &middot; <b style="color:var(--ink)">{{ anchor_status.anchored_passed }}</b> / {{ anchor_status.anchored_total }} today's picks locked as current-filter at their first-fired anchor.
+      </span>
+      <div style="margin-top:4px;color:var(--muted);font-size:11.5px">
+        Each pick's filter judgment freezes at the earliest of these clock times the save path sees after it. Keeps the record stable even when the market bets the EV out before kickoff.
+      </div>
+    </div>
+    {% endif %}
     <div class="records-grid">
       {% for key, label in [('curfilter_7d','Last 7 days'),('curfilter_30d','Last 30 days'),('curfilter_90d','Last 90 days')] %}
       {% set r = summary[key] %}
@@ -14167,6 +14186,13 @@ def logged_plays():
     except Exception as e:
         persist_status = {"enabled": False, "reason": f"status check failed: {e}"}
     try:
+        anchor_status = plays_log.anchor_status_today()
+    except Exception:
+        anchor_status = {"buckets": ["00:00","03:00","11:00","16:00"],
+                         "fired_today": [], "next_bucket": "00:00",
+                         "next_in_min": 0, "anchored_total": 0,
+                         "anchored_passed": 0}
+    try:
         grader_status = plays_log.grader_status()
     except Exception:
         grader_status = {"odds_api_enabled": False, "mlb_statsapi": True}
@@ -14216,6 +14242,7 @@ def logged_plays():
         dates=dates,
         graded_by_date=graded_by_date,
         persist_status=persist_status,
+        anchor_status=anchor_status,
         analysis=analysis,
         active_adj=active_adj,
         grader_status=grader_status,
