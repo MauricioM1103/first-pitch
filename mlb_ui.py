@@ -2019,6 +2019,59 @@ TODAY_TEMPLATE = r"""<!doctype html>
 .today-section { margin: 24px 0 10px; display: flex; align-items: baseline; gap: 10px; }
 .today-section h2 { font-size: 18px; margin: 0; font-weight: 700; }
 .today-section .count { color: var(--muted); font-size: 13px; }
+.signal-explainer {
+  margin: 0 0 16px;
+  border: 1px dashed var(--rule);
+  border-radius: 10px;
+  background: color-mix(in oklab, var(--card) 70%, transparent);
+}
+.signal-explainer summary {
+  cursor: pointer; list-style: none; padding: 10px 14px;
+  font-size: 13px; font-weight: 600; color: var(--muted);
+  display: flex; align-items: center; gap: 8px;
+}
+.signal-explainer summary::-webkit-details-marker { display: none; }
+.signal-explainer summary .chev {
+  margin-left: auto; font-size: 16px; color: var(--muted-2);
+  transition: transform 180ms ease-out;
+}
+.signal-explainer[open] summary .chev { transform: rotate(90deg); }
+.signal-explainer summary:hover { color: var(--ink); }
+.signal-explainer-body { padding: 4px 16px 16px; font-size: 13px; line-height: 1.55; color: var(--ink); }
+.signal-explainer-body p { margin: 8px 0; }
+.signal-rules { list-style: none; padding: 0; margin: 8px 0 14px; display: grid; gap: 6px; }
+.signal-rules li {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 7px 10px; background: var(--card);
+  border: 1px solid var(--rule); border-radius: 8px;
+}
+.signal-rules .rule-pts {
+  flex-shrink: 0; width: 32px; text-align: center;
+  font-family: 'JetBrains Mono', monospace; font-weight: 700;
+  font-size: 13px; color: var(--good);
+}
+.signal-rules .rule-txt { flex: 1; color: var(--muted); }
+.signal-rules .rule-txt b { color: var(--ink); }
+.signal-tiers {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px; margin: 10px 0;
+}
+.signal-tiers .tier {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 10px; background: var(--card);
+  border: 1px solid var(--rule); border-radius: 8px;
+  font-size: 12px;
+}
+.signal-tiers .t-score {
+  font-family: 'JetBrains Mono', monospace; font-size: 15px;
+  padding: 1px 8px; border-radius: 6px; min-width: 36px; text-align: center;
+}
+.signal-tiers .t-score.t0 { color: var(--muted-2); background: color-mix(in oklab, var(--rule) 25%, transparent); }
+.signal-tiers .t-score.t3 { color: #38bdf8; background: color-mix(in oklab, #38bdf8 12%, transparent); border: 1px solid color-mix(in oklab, #38bdf8 50%, var(--rule)); }
+.signal-tiers .t-score.t4 { color: var(--good); background: color-mix(in oklab, var(--good) 12%, transparent); border: 1px solid color-mix(in oklab, var(--good) 50%, var(--rule)); }
+.signal-tiers .t-score.t5 { color: var(--good); background: color-mix(in oklab, var(--good) 18%, transparent); border: 1px solid var(--good); box-shadow: 0 0 8px color-mix(in oklab, var(--good) 30%, transparent); }
+.signal-why { color: var(--muted); font-size: 12.5px; }
+.signal-why b { color: var(--ink); }
 .today-list { display: flex; flex-direction: column; gap: 10px; }
 .today-card {
   display: grid;
@@ -2210,6 +2263,52 @@ details.also-wrap .today-card { opacity: 0.88; }
       {% endif %}
     </div>
   </div>
+
+  <details class="signal-explainer">
+    <summary>How is the Signal score calculated? <span class="chev">&rsaquo;</span></summary>
+    <div class="signal-explainer-body">
+      <p>A pick's <b>Signal</b> is a 0&ndash;5 score. We only show picks that hit <b>3 or higher</b>. Each pick earns points for each box it checks:</p>
+      <ul class="signal-rules">
+        <li>
+          <span class="rule-pts">+2</span>
+          <span class="rule-txt"><b>Big edge:</b> EV &ge; 6% (positive expected value vs the book)</span>
+        </li>
+        <li>
+          <span class="rule-pts">+1</span>
+          <span class="rule-txt"><b>Small edge:</b> EV between 3% and 6%</span>
+        </li>
+        <li>
+          <span class="rule-pts">+1</span>
+          <span class="rule-txt"><b>Sharp agreement:</b> Pinnacle's line moved toward our side after we picked</span>
+        </li>
+        <li>
+          <span class="rule-pts">+1</span>
+          <span class="rule-txt"><b>Model confidence:</b> model gives the pick &ge; 60% chance to win (and it's not an alt line)</span>
+        </li>
+        <li>
+          <span class="rule-pts">+1</span>
+          <span class="rule-txt"><b>Cross-book:</b> DraftKings / Kalshi price confirms Pinnacle <span style="color:var(--muted-2)">(currently dark &mdash; feed partial)</span></span>
+        </li>
+      </ul>
+      <div class="signal-tiers">
+        <div class="tier">
+          <b class="t-score t0">0&ndash;2</b> <span>Pass. Below the bar.</span>
+        </div>
+        <div class="tier">
+          <b class="t-score t3">3</b> <span>Minimum. EV + one confirming signal. Shown here.</span>
+        </div>
+        <div class="tier">
+          <b class="t-score t4">4</b> <span>Strong. Multiple signals aligned.</span>
+        </div>
+        <div class="tier">
+          <b class="t-score t5">5</b> <span>Rare. Everything agrees.</span>
+        </div>
+      </div>
+      <p class="signal-why">
+        <b>Why composite, not pure EV?</b> Pure +EV picks on their own are noisy &mdash; the market sometimes knows something the model doesn't. Requiring EV cushion PLUS a confirming signal (line move or prob floor) filters out picks where our edge was just model error. Research cite: skill shows up as small positive <a href="/logged" style="color:var(--good)">CLV</a> over many bets, not big one-day scores.
+      </p>
+    </div>
+  </details>
 
   {% if star_picks %}
   <div class="today-section">
