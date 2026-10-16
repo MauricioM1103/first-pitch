@@ -1795,9 +1795,17 @@ def _passes_current_filter(pk):
 
 def _is_whale_pick(pk):
     """Whale (Strong-Picks-Only) criteria: heavy-favorite banker calls —
-    fair_prob >= 65% AND decimal <= 1.60 AND non-negative EV. Shorter
-    returns per pick but high enough probability that large bankrolls
-    ladder them at larger stakes. Mirrors the UI chip definition."""
+    fair_prob >= 68% AND decimal <= 1.60 AND positive EV AND Signal >= 2.
+    Shorter returns per pick but high enough probability that large
+    bankrolls ladder them at larger stakes. Mirrors the UI chip
+    definition.
+
+    Thresholds were tightened on 2026-10-16 after the 67% hit rate /
+    -3.6% ROI result on 34 picks under the original (65%, dec <= 1.60,
+    EV >= 0) rule. At ~1.5 odds the fair_prob needs to clear a stiffer
+    floor OR the pick needs a second confirming signal — otherwise the
+    short payout can't catch up to variance when the heavy fav drops.
+    """
     try:
         fp = float(pk.get("fair_prob") or 0.0)
     except (TypeError, ValueError):
@@ -1820,7 +1828,15 @@ def _is_whale_pick(pk):
         dec = float(dec)
     except (TypeError, ValueError):
         return False
-    return (fp >= 0.65) and (1.01 < dec <= 1.60) and (ev >= 0.0)
+    # Base criterion: heavy favorite + short price + non-negative EV
+    if not ((fp >= 0.68) and (1.01 < dec <= 1.60) and (ev >= 0.0)):
+        return False
+    # And either EV cushion (>= 3%) OR a confirming second signal from
+    # the Signal composite — stops the pure 68% chalk with 0% EV getting
+    # labeled a banker.
+    if ev >= 3.0:
+        return True
+    return _backtest_signal_score(pk) >= 2
 
 
 def record_in_window(graded_by_date, days_back, strong_only=False, today=None,

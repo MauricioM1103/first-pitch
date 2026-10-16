@@ -185,6 +185,19 @@ MIN_DECIMAL        = 1.50   # don't show short-favorite picks (-200+); dropped
                             # from 1.60 to admit heavier chalk when the model
                             # has it priced as +EV
 MIN_EV_PCT         = 3.0    # require real edge after market blend. Research
+# Hard market blacklist — markets we've proven unprofitable at the sample
+# sizes the auto-analyzer uses, bypassing the per-day analyzer so the
+# effect kicks in immediately. These are the big-sample losers from the
+# 90-day /logged breakdown:
+#   Alt Total (NCAAF/NFL alt-total expansion): 111 picks, -18.9% ROI,
+#       -21.01u. Our modeled Pinnacle alt-total price != the actual DK
+#       alt-total the user ends up taking.
+#   Alt Spread (NCAAF/NFL alt-spread expansion): 37 picks, -34.8% ROI,
+#       -12.86u. Same problem, worse per-pick impact.
+# Combined -33.87u over 148 picks is a bigger leak than any model-weight
+# fix can plug. Keep the markets in the picks file for research visibility
+# but drop them at emission time so they stop grading into the record.
+HARD_MARKET_BLACKLIST = {"Alt Spread", "Alt Total"}
                             # (arXiv 2511.17733): MLB PA-Markov study betting
                             # every perceived edge returned -15.5% ROI; a 3%
                             # cushion flipped it to +9.1%. Raised from 2.0.
@@ -307,6 +320,11 @@ def _passes_ev_filter(p):
 
     Alt-line picks (alt_line_flag) bypass the gate because they were
     already filtered at emission with their own EV / fair-prob band."""
+    # Hard market blacklist for sample-proven losers (see HARD_MARKET_BLACKLIST
+    # at the top of this module). Applies to every emission path including
+    # alt-line expansion.
+    if p.get("market") in HARD_MARKET_BLACKLIST:
+        return False
     if p.get("alt_line_flag"):
         return True
     ev = p.get("ev_pct")

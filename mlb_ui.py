@@ -2311,7 +2311,7 @@ details.also-wrap .today-card { opacity: 0.88; }
         </li>
         <li>
           <span class="legend-chip ex-whale">&#x1F40B;</span>
-          <span class="legend-txt"><b>Banker / Strong pick:</b> heavy favorite (fair prob &ge; 65%, decimal &le; 1.60). Shorter odds, high probability &mdash; large bankrolls ladder these at larger stakes.</span>
+          <span class="legend-txt"><b>Banker / Strong pick:</b> heavy favorite (fair prob &ge; 68%, decimal &le; 1.60) with EV &ge; 3% OR a confirming second signal. Shorter odds, high probability &mdash; large bankrolls ladder these at larger stakes.</span>
         </li>
       </ul>
       <p style="margin-top:10px"><b>The second line (why we picked it):</b></p>
@@ -4445,10 +4445,10 @@ PICKS_TEMPLATE = r"""<!doctype html>
        these at larger stakes because the probability is so high. #}
     {% if whale_only %}
       <a class="chip whale-chip active" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ linemove_suffix }}"
-         title="Showing only Strong Picks (fair prob ≥ 65% AND decimal ≤ 1.60). Click to clear.">&#x1F40B; Strong picks only ({{ whale_count }})</a>
+         title="Showing only Strong Picks (fair prob ≥ 68% AND decimal ≤ 1.60 AND EV ≥ 3% or Signal ≥ 2). Click to clear.">&#x1F40B; Strong picks only ({{ whale_count }})</a>
     {% else %}
       <a class="chip whale-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ linemove_suffix }}&whale=1"
-         title="Show only Strong Picks — heavy-favorite banker calls (fair prob ≥ 65% AND decimal ≤ 1.60 AND non-negative EV). Shorter returns per pick, high enough probability that large bankrolls ladder them at larger stakes.">&#x1F40B; Strong picks only</a>
+         title="Show only Strong Picks — heavy-favorite banker calls (fair prob ≥ 68% AND decimal ≤ 1.60 AND EV ≥ 3% or Signal ≥ 2). Shorter returns per pick, high enough probability that large bankrolls ladder them at larger stakes.">&#x1F40B; Strong picks only</a>
     {% endif %}
     {# Line-move toggle: show only picks where Pinnacle's devigged prob
        moved toward our side by ≥ 1pp over the last ≤3 days. Sharp money
@@ -6928,10 +6928,18 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                     _ev = float(p.get("ev_pct") or 0.0)
                 except (TypeError, ValueError):
                     _ev = 0.0
+                # Tightened on 2026-10-16: raised fp floor 0.65->0.68
+                # and now also requires either EV >= 3% OR signal_score
+                # >= 2. The old 0.65/decimal<=1.60/EV>=0 rule hit 67%
+                # but still lost -3.6% ROI because 1.4-1.6 odds don't
+                # pay enough for one loss to be offset by only two
+                # wins — needed either a stiffer prob floor or a
+                # second confirming signal.
                 p["whale"] = (
-                    _fp >= 0.65
+                    _fp >= 0.68
                     and 1.01 < _dec <= 1.60
                     and _ev >= 0.0
+                    and (_ev >= 3.0 or p["signal_score"] >= 2)
                 )
 
         # Order picks within a game by signal_score desc (strongest first),
@@ -13729,7 +13737,7 @@ main.logged-page { max-width: 1040px; }
 
   <section class="records-section">
     <h2>Strong Picks Only <span style="color:#38bdf8;font-size:16px">&#x1F40B;</span></h2>
-    <div class="sub">Banker calls — fair prob &ge; 65% AND decimal &le; 1.60 AND non-negative EV. Shorter returns per pick, high enough probability that whales ladder them at larger stakes.</div>
+    <div class="sub">Banker calls — fair prob &ge; 68% AND decimal &le; 1.60 AND (EV &ge; 3% OR Signal &ge; 2). Shorter returns per pick, high enough probability that whales ladder them at larger stakes.</div>
     <div class="records-grid">
       {% for key, label in [('whale_7d','Last 7 days'),('whale_30d','Last 30 days'),('whale_90d','Last 90 days')] %}
       {% set r = summary[key] %}
@@ -14435,13 +14443,9 @@ def logged_plays():
     # picks from the last 3 CALENDAR days (today + 2 priors) that match
     # the predicate, newest first.
     def _is_whale_pick(pk):
-        try:
-            fp  = float(pk.get("fair_prob") or 0)
-            dec = float(pk.get("decimal") or 0)
-            ev  = float(pk.get("ev_pct") or 0)
-        except (TypeError, ValueError):
-            return False
-        return fp >= 0.65 and 1.01 < dec <= 1.60 and ev >= 0.0
+        # Mirror the tightened plays_log._is_whale_pick definition —
+        # fp >= 68%, dec <= 1.60, EV >= 0, and (EV >= 3% OR Signal >= 2).
+        return plays_log._is_whale_pick(pk)
     _FILTER_PREDICATES = {
         "all":        ("All picks",             lambda p: True),
         "signal":     ("Signal >= 3",           lambda p: plays_log._backtest_signal_score(p) >= 3),
