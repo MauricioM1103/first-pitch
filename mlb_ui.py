@@ -2072,6 +2072,26 @@ TODAY_TEMPLATE = r"""<!doctype html>
 .signal-tiers .t-score.t5 { color: var(--good); background: color-mix(in oklab, var(--good) 18%, transparent); border: 1px solid var(--good); box-shadow: 0 0 8px color-mix(in oklab, var(--good) 30%, transparent); }
 .signal-why { color: var(--muted); font-size: 12.5px; }
 .signal-why b { color: var(--ink); }
+.chip-legend { list-style: none; padding: 0; margin: 6px 0 10px; display: grid; gap: 6px; }
+.chip-legend li {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 7px 10px; background: var(--card);
+  border: 1px solid var(--rule); border-radius: 8px;
+}
+.chip-legend .legend-chip {
+  flex-shrink: 0; min-width: 72px; text-align: center;
+  padding: 2px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.4px;
+  border: 1px solid currentColor;
+  font-family: 'JetBrains Mono', monospace;
+}
+.chip-legend .legend-txt { flex: 1; color: var(--muted); font-size: 12.5px; line-height: 1.45; }
+.chip-legend .legend-txt b { color: var(--ink); }
+.chip-legend .ex-signal { color: #38bdf8; background: color-mix(in oklab, #38bdf8 10%, transparent); }
+.chip-legend .ex-ev     { color: var(--good); background: color-mix(in oklab, var(--good) 10%, transparent); }
+.chip-legend .ex-move   { color: var(--good); background: color-mix(in oklab, var(--good) 10%, transparent); }
+.chip-legend .ex-result { color: var(--good); background: color-mix(in oklab, var(--good) 10%, transparent); }
+.chip-legend .ex-whale  { color: #38bdf8; background: color-mix(in oklab, #38bdf8 10%, transparent); font-size: 14px; }
 .today-list { display: flex; flex-direction: column; gap: 10px; }
 .today-card {
   display: grid;
@@ -2263,6 +2283,51 @@ details.also-wrap .today-card { opacity: 0.88; }
       {% endif %}
     </div>
   </div>
+
+  <details class="signal-explainer">
+    <summary>What am I looking at? <span class="chev">&rsaquo;</span></summary>
+    <div class="signal-explainer-body">
+      <p style="margin-top:4px"><b>Reading a pick card:</b></p>
+      <ul class="chip-legend">
+        <li>
+          <span class="legend-chip" style="color:#f59e0b">&#9733;</span>
+          <span class="legend-txt"><b>Star:</b> this pick cleared Signal &ge; 3. The pick itself follows: team / market / line.</span>
+        </li>
+        <li>
+          <span class="legend-chip ex-signal">Signal 3/5</span>
+          <span class="legend-txt"><b>Signal score</b> (0&ndash;5). Composite of EV + line move + prob floor + cross-book. See the detailed breakdown below.</span>
+        </li>
+        <li>
+          <span class="legend-chip ex-ev">+6.8% EV</span>
+          <span class="legend-txt"><b>Expected value.</b> How much edge our price-vs-fair-prob math says the pick carries. Positive = you win long-term at this price.</span>
+        </li>
+        <li>
+          <span class="legend-chip ex-move">&uarr;+1.5pp</span>
+          <span class="legend-txt"><b>Line move</b> (percentage points). How Pinnacle's devigged prob for OUR side moved since first snapshot. &uarr; = market agrees with us. &darr; = adverse.</span>
+        </li>
+        <li>
+          <span class="legend-chip ex-result">&#10003; WON</span>
+          <span class="legend-txt"><b>Result chip</b> (post-kickoff). &#10003; WON / &#10007; LOST / PUSH for graded. &#9679; LIVE while in progress. FINAL for ended games awaiting the next grading pass.</span>
+        </li>
+        <li>
+          <span class="legend-chip ex-whale">&#x1F40B;</span>
+          <span class="legend-txt"><b>Banker / Strong pick:</b> heavy favorite (fair prob &ge; 65%, decimal &le; 1.60). Shorter odds, high probability &mdash; large bankrolls ladder these at larger stakes.</span>
+        </li>
+      </ul>
+      <p style="margin-top:10px"><b>The second line (why we picked it):</b></p>
+      <ul class="chip-legend">
+        <li>
+          <span class="legend-txt"><b>Model X% / Pinnacle Y%</b> &mdash; our model's win probability vs Pinnacle's devigged market price. Edge appears when model &gt; Pinnacle.</span>
+        </li>
+        <li>
+          <span class="legend-txt"><b>N/5 conviction</b> &mdash; our model's confidence tier based on the consensus probability (prob&nbsp;&ge;&nbsp;68% = 5/5, 64&ndash;68% = 4/5, 60&ndash;64% = 3/5, 55&ndash;60% = 2/5, &lt;55% = 1/5).</span>
+        </li>
+        <li>
+          <span class="legend-txt"><b>@ 1.70 (pinnacle)</b> &mdash; decimal price and the book that posted it. Verify at your own book before placing.</span>
+        </li>
+      </ul>
+    </div>
+  </details>
 
   <details class="signal-explainer">
     <summary>How is the Signal score calculated? <span class="chev">&rsaquo;</span></summary>
