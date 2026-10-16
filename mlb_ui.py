@@ -6209,18 +6209,24 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
     # recommended at 10 AM for a 2 PM game vanishes from `all_picks` at
     # 2:01 PM. We want today's picks to stay visible through the full
     # day (showing LIVE / result badge) and only reset at midnight CT.
+    #
+    # Dedup by (sport_slug, home, away, market, pick) tuple — the live
+    # pipeline and the saved file use DIFFERENT id schemes for the same
+    # bet (hash-of-fields vs sequential), so matching by id would miss
+    # overlaps and the board would show every live pick twice.
+    def _bet_key(pk):
+        def _n(x): return (x or "").strip().lower()
+        return (_n(pk.get("sport_slug")), _n(pk.get("home_team")),
+                _n(pk.get("away_team")), _n(pk.get("market")),
+                _n(pk.get("pick")))
+
     saved_only_picks = []
     try:
         saved = plays_log.read_picks(date_str) or {}
-        existing_ids = {p.get("id") for p in all_picks if p.get("id")}
+        existing_keys = {_bet_key(p) for p in all_picks}
         for sp in saved.get("picks", []):
-            if not sp.get("id"):
+            if _bet_key(sp) in existing_keys:
                 continue
-            if sp.get("id") in existing_ids:
-                continue
-            # Only merge picks whose game is on today's local date. The
-            # saved file dedup already keeps the best entry per (sport,
-            # home, away, market, pick), so no duplicate risk.
             sp = dict(sp)
             sp["_from_saved"] = True
             saved_only_picks.append(sp)
