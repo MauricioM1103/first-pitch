@@ -6012,6 +6012,52 @@ _BOARD_CACHE = {}  # key_tuple -> (ts, (board_rows, all_picks))
 _BOARD_CACHE_TTL_S = 30
 
 
+# ----- Background grading backfill -----
+# A single daemon thread that re-runs plays_log.grade_pending_backfill
+# whenever any main-board route is hit. Idempotent — concurrent requests
+# never spin up more than one worker, and a cooldown stops thrashing.
+import threading as _threading
+_BG_BACKFILL_LOCK = _threading.Lock()
+_BG_BACKFILL_LAST = 0.0           # UNIX ts of last completed run
+_BG_BACKFILL_RUNNING = False
+_BG_BACKFILL_COOLDOWN_S = 120     # don't re-run more than every 2 min
+
+
+def _schedule_bg_backfill(days_back=3):
+    """Fire-and-forget: start a daemon thread that runs
+    plays_log.grade_pending_backfill(days_back=N) if not already running
+    and the last run finished more than COOLDOWN seconds ago. Returns
+    immediately — never blocks the caller. Idempotent."""
+    global _BG_BACKFILL_RUNNING, _BG_BACKFILL_LAST
+    now = time.time()
+    with _BG_BACKFILL_LOCK:
+        if _BG_BACKFILL_RUNNING:
+            return
+        if (now - _BG_BACKFILL_LAST) < _BG_BACKFILL_COOLDOWN_S:
+            return
+        _BG_BACKFILL_RUNNING = True
+
+    def _worker():
+        global _BG_BACKFILL_RUNNING, _BG_BACKFILL_LAST
+        try:
+            import plays_log
+            plays_log.grade_pending_backfill(days_back=days_back)
+        except Exception:
+            pass
+        finally:
+            with _BG_BACKFILL_LOCK:
+                _BG_BACKFILL_LAST = time.time()
+                _BG_BACKFILL_RUNNING = False
+
+    try:
+        t = _threading.Thread(target=_worker, name="bg-backfill", daemon=True)
+        t.start()
+    except Exception:
+        # Thread spawn failed — reset the flag so a later call can retry.
+        with _BG_BACKFILL_LOCK:
+            _BG_BACKFILL_RUNNING = False
+
+
 def _build_board_rows(date_str, today_date, sport_filter, strong_only=False,
                        favorable_move_only=False, whale_only=False):
     cache_key = (date_str, today_date.isoformat(), sport_filter,
@@ -6617,6 +6663,11 @@ def today_landing():
     except ValueError:
         d = datetime.now(CENTRAL).date()
         date_str = d.isoformat()
+
+    # Kick off a background grading backfill on every TODAY visit. Doesn't
+    # block the render — pending picks whose games ended settle in the
+    # BG and show as graded on the next load.
+    _schedule_bg_backfill(days_back=3)
 
     t0 = time.time()
     try:
@@ -7513,15 +7564,12 @@ def picks_landing():
                     plays_log.grade_date(ds, sport_key_by_slug)
             except Exception:
                 pass
-        # Fast-cycle backfill: any pick in the last 3 days whose game is
-        # 4h+ past kickoff and still pending gets a forced re-grade on
-        # every /picks view. This settles games right after they end
-        # instead of waiting for the next /logged visit (which runs the
-        # full 14-day backfill but may not happen until much later).
-        try:
-            plays_log.grade_pending_backfill(days_back=3)
-        except Exception:
-            pass
+        # Fire-and-forget background grading. See _schedule_bg_backfill
+        # — the actual grading runs on a daemon thread so the user's
+        # render returns immediately. Pending picks whose games ended
+        # settle within minutes of the next page visit regardless of
+        # which route the user hits.
+        _schedule_bg_backfill(days_back=3)
     except Exception:
         pass
 
