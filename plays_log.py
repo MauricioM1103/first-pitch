@@ -1590,6 +1590,46 @@ def summary(graded_by_date, today=None):
     return out
 
 
+def breakdown_by_key_current_filter(graded_by_date, key_fn, days_back=90, today=None):
+    """Same breakdown shape as breakdown_by_key, but limits picks to
+    those that WOULD pass the current (Signal >= 3 + EV >= 3%/5%)
+    filter. Tells the user which (sport / market / prob band) buckets
+    the live signal filter has been accurate on — a direct read on
+    where model weights should be nudged up or down."""
+    today = today or date.today()
+    cutoff = today - timedelta(days=days_back - 1)
+    buckets = {}
+    for ds, picks in graded_by_date.items():
+        try:
+            d = datetime.strptime(ds, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if d < cutoff or d > today:
+            continue
+        for pk in picks:
+            if not _passes_current_filter(pk):
+                continue
+            k = key_fn(pk) or "(unknown)"
+            b = buckets.setdefault(k, {"wins": 0, "losses": 0, "pushes": 0, "units": 0.0})
+            r = pk.get("result")
+            if r == "W":   b["wins"] += 1
+            elif r == "L": b["losses"] += 1
+            elif r == "P": b["pushes"] += 1
+            b["units"] += pk.get("profit_u", 0) or 0
+    rows = []
+    for k, b in buckets.items():
+        settled = b["wins"] + b["losses"]
+        pct = (b["wins"] / settled * 100) if settled else 0.0
+        roi = (b["units"] / settled * 100) if settled else 0.0
+        rows.append({
+            "key": k, "wins": b["wins"], "losses": b["losses"],
+            "pushes": b["pushes"], "settled": settled,
+            "win_pct": pct, "units": b["units"], "roi_pct": roi,
+        })
+    rows.sort(key=lambda r: (-r["settled"], -r["units"]))
+    return rows
+
+
 def breakdown_by_key(graded_by_date, key_fn, days_back=90, today=None):
     """Group settled picks by a key (sport, market, etc) and compute per-group record.
 

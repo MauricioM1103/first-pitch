@@ -13345,6 +13345,58 @@ main.logged-page { max-width: 1040px; }
     </div>
   </section>
 
+  {% if by_sport_curfilter %}
+  <section class="records-section">
+    <h2>Signal Filter &mdash; Per-Sport <span style="color:var(--good);font-size:13px">where to adjust model weights</span></h2>
+    <div class="sub">
+      How picks that cleared the current Signal filter have performed per sport over 90 days.
+      Positive ROI with a reasonable sample (n &ge; 15): model weight is well-calibrated for that
+      sport, consider nudging UP. Negative ROI with n &ge; 15: the model's over-confident there,
+      nudge DOWN. Small-sample rows (n &lt; 15) are noise &mdash; wait for more data.
+    </div>
+    <table class="board-table" style="width:100%; max-width:720px">
+      <thead>
+        <tr>
+          <th style="text-align:left">Sport</th>
+          <th>W&ndash;L&ndash;P</th>
+          <th>Win %</th>
+          <th>ROI</th>
+          <th>Units</th>
+          <th style="text-align:left">Verdict</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in by_sport_curfilter %}
+        <tr>
+          <td style="text-align:left">{{ r.key or '?' }}</td>
+          <td>{{ r.wins }}&ndash;{{ r.losses }}{% if r.pushes %}&ndash;{{ r.pushes }}{% endif %}</td>
+          <td>{% if r.settled %}{{ '%.1f'|format(r.win_pct) }}%{% else %}&mdash;{% endif %}</td>
+          <td class="{{ 'good' if r.roi_pct > 0 else ('bad' if r.roi_pct < 0 else '') }}">
+            {% if r.settled %}{{ '%+.1f'|format(r.roi_pct) }}%{% else %}&mdash;{% endif %}
+          </td>
+          <td class="{{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
+            {{ '%+.2f'|format(r.units) }}u
+          </td>
+          <td style="text-align:left; font-size:12px; color:var(--muted-2)">
+            {% if r.settled < 15 %}
+              small sample
+            {% elif r.roi_pct > 5 %}
+              hot — consider +0.05 model weight
+            {% elif r.roi_pct > 0 %}
+              on track
+            {% elif r.roi_pct > -5 %}
+              break-even — hold
+            {% else %}
+              cold — consider &minus;0.05 model weight
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
   {% if summary.ai_30d.settled or summary.ai_30d.pending %}
   <section class="records-section">
     <h2>AI Analysis Picks <span style="color:#38bdf8;font-size:13px">Claude's calls on /ai-analysis</span></h2>
@@ -13921,6 +13973,10 @@ def logged_plays():
     summary = plays_log.summary(graded_by_date)
     by_sport  = plays_log.breakdown_by_key(graded_by_date, lambda p: p.get("sport"))
     by_market = plays_log.breakdown_by_key(graded_by_date, lambda p: p.get("market"))
+    # Signal-filter performance per sport — tells the user which models
+    # are hitting under the current filter and which need weight tweaks.
+    by_sport_curfilter = plays_log.breakdown_by_key_current_filter(
+        graded_by_date, lambda p: p.get("sport"))
     dates = sorted(graded_by_date.keys(), reverse=True)
     try:
         persist_status = log_persist.status_summary()
@@ -13965,6 +14021,7 @@ def logged_plays():
         summary=summary,
         by_sport=by_sport,
         by_market=by_market,
+        by_sport_curfilter=by_sport_curfilter,
         dates=dates,
         graded_by_date=graded_by_date,
         persist_status=persist_status,
