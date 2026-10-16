@@ -4126,7 +4126,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
     <h1>{{ date_pretty }}</h1>
     <p class="sub">
       <b>{{ total_games }}</b> games across <b>{{ sports_with_games }}</b> sports &middot;
-      <b>{{ picks_count }}</b> picks ({{ ev_count }} EV-verified, {{ strong_count }} strong, {{ no_bet_count }} NO BET) &middot;
+      <b>{{ picks_count }}</b> picks ({{ ev_count }} EV-verified, {{ whale_count }} &#x1F40B;, {{ no_bet_count }} NO BET) &middot;
       all times Central. Every pick on this board is <b>+EV</b> &mdash; the model's
       probability times the posted price exceeds 1.0, so the long-run edge is
       positive. The right-hand chip shows the pick's source:
@@ -4197,26 +4197,25 @@ PICKS_TEMPLATE = r"""<!doctype html>
   {% endif %}
 
   {# Preserve toggles across sport-chip clicks and vice versa. #}
-  {% set strong_suffix = '&strong=1' if strong_only else '' %}
+  {% set whale_suffix = '&whale=1' if whale_only else '' %}
   {% set linemove_suffix = '&linemove=1' if favorable_move_only else '' %}
   {% set sport_suffix  = ('&sport=' ~ sport_filter) if sport_filter != 'all' else '' %}
-  {% set extra_filters = strong_suffix ~ linemove_suffix %}
+  {% set extra_filters = whale_suffix ~ linemove_suffix %}
   <div class="filter-chips">
     <a class="chip {% if sport_filter == 'all' %}active{% endif %}" href="/?date={{ date_str }}{{ extra_filters }}">All ({{ total_games }})</a>
     {% for s in sport_counts %}
       <a class="chip {% if sport_filter == s.slug %}active{% endif %}" href="/?date={{ date_str }}&sport={{ s.slug }}{{ extra_filters }}">{{ s.name }} ({{ s.count }})</a>
     {% endfor %}
     <span class="chip-divider" aria-hidden="true"></span>
-    {# ★ Signal-only toggle: 0-5 composite replacing the old prob+EV binary.
-       Threshold set to 3/5 while cross-book data (DK/Kalshi) is dark —
-       book-agreement +1 is unreachable right now, so 4/5 would starve
-       the board. Raise back to 4/5 once DK data flows. #}
-    {% if strong_only %}
+    {# 🐋 Whale toggle: Signal >= 4 AND EV >= 5%. Replaces the old
+       'Signal >= 3' chip — a strictly higher bar meant to surface the
+       picks a sharp big-money bettor would take. #}
+    {% if whale_only %}
       <a class="chip strong-chip active" href="/?date={{ date_str }}{{ sport_suffix }}{{ linemove_suffix }}"
-         title="Showing only picks with Signal ≥ 3/5 (EV cushion + favorable line move + prob floor). Click to clear.">&#9733; Signal &ge; 3 ({{ strong_count }})</a>
+         title="Showing only Whale picks: Signal ≥ 4/5 AND EV ≥ +5%. Click to clear.">&#x1F40B; Whale ({{ whale_count }})</a>
     {% else %}
-      <a class="chip strong-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ linemove_suffix }}&strong=1"
-         title="Show only picks with Signal ≥ 3/5 — a composite of EV cushion, favorable line movement, cross-book agreement (currently dark), and prob floor. Replaces the old 'Strong = 68% AND +4% EV' binary.">&#9733; Signal &ge; 3</a>
+      <a class="chip strong-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ linemove_suffix }}&whale=1"
+         title="Show only Whale picks: Signal ≥ 4/5 AND EV ≥ +5%. The picks a sharp big-money bettor would take — both the signal composite and the EV cushion must clear.">&#x1F40B; Whale</a>
     {% endif %}
     {# Line-move toggle: show only picks where Pinnacle's devigged prob
        moved toward our side by ≥ 1pp over the last ≤3 days. Sharp money
@@ -4289,7 +4288,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
           <td class="col-picks">
             {% if row.picks %}
               {% for p in row.picks %}
-                <div class="pick-badge-row {{ 'strong' if p.strong else '' }} {{ 'model-only' if p.model_only else '' }}" title="{{ 'Model-only preference (no EV filter)' if p.model_only else ('High-signal pick (score ≥ 3/5): EV cushion + favorable line move + prob floor (book agreement +1 pending DK/Kalshi data)' if p.strong else 'EV-verified pick') }}">
+                <div class="pick-badge-row {{ 'strong' if p.whale else ('strong-light' if p.strong else '') }} {{ 'model-only' if p.model_only else '' }}" title="{{ 'Model-only preference (no EV filter)' if p.model_only else ('🐋 Whale pick: Signal ≥ 4/5 AND EV ≥ +5%' if p.whale else ('High-signal pick (Signal ≥ 3/5): EV cushion + favorable line move + prob floor' if p.strong else 'EV-verified pick')) }}">
                   <span class="pick-ico {{ p.icon_cls }}">{{ p.icon }}</span>
                   <span class="pick-lbl">{{ p.pick_short }}</span>
                   <span class="pick-conf c{{ p.conf }}">{{ p.conf }}/5</span>
@@ -4306,7 +4305,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
                   {% else %}
                     <span class="src-tag ev" title="EV-verified: cleared the +2% expected-value bar after model + Pinnacle devig consensus">EV{% if p.ev_pct and p.ev_pct > 0 %} +{{ '%.0f'|format(p.ev_pct) }}%{% endif %}</span>
                   {% endif %}
-                  {% if p.strong %}<span class="strong-star" title="Model &ge; 68% (5/5) AND EV &ge; +4%">&#9733;</span>{% endif %}
+                  {% if p.whale %}<span class="strong-star" title="&#x1F40B; Whale pick: Signal &ge; 4/5 AND EV &ge; +5%" style="color:#38bdf8;text-shadow:0 0 10px rgba(56,189,248,0.6)">&#x1F40B;</span>{% elif p.strong %}<span class="strong-star" title="Signal &ge; 3/5 pick">&#9733;</span>{% endif %}
                   {% if p.line_move_pp is not none and (p.line_move_pp|abs) >= 0.001 %}
                     {% set move_sign = 'favorable' if p.line_move_pp > 0 else 'adverse' %}
                     <span class="pick-move-chip {{ move_sign }}"
@@ -6014,15 +6013,16 @@ _BOARD_CACHE_TTL_S = 30
 
 
 def _build_board_rows(date_str, today_date, sport_filter, strong_only=False,
-                       favorable_move_only=False):
+                       favorable_move_only=False, whale_only=False):
     cache_key = (date_str, today_date.isoformat(), sport_filter,
-                 bool(strong_only), bool(favorable_move_only))
+                 bool(strong_only), bool(favorable_move_only), bool(whale_only))
     hit = _BOARD_CACHE.get(cache_key)
     if hit and (time.time() - hit[0]) < _BOARD_CACHE_TTL_S:
         return hit[1]
     result = _build_board_rows_uncached(date_str, today_date, sport_filter,
                                          strong_only=strong_only,
-                                         favorable_move_only=favorable_move_only)
+                                         favorable_move_only=favorable_move_only,
+                                         whale_only=whale_only)
     _BOARD_CACHE[cache_key] = (time.time(), result)
     # Keep the cache bounded — on a date change we don't want yesterday's
     # keys hanging around. 20 keys covers "today + a few dates + a few
@@ -6035,7 +6035,7 @@ def _build_board_rows(date_str, today_date, sport_filter, strong_only=False,
 
 
 def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=False,
-                       favorable_move_only=False):
+                       favorable_move_only=False, whale_only=False):
     """Return the unified board: one row per game with picks nested.
 
     `date_str` is YYYY-MM-DD being viewed. `today_date` is the CT reference
@@ -6490,8 +6490,19 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
             p["signal_score"] = _signal_score(p)
             if p.get("model_only"):
                 p["strong"] = False
+                p["whale"]  = False
             else:
                 p["strong"] = (p["signal_score"] >= 3)
+                # Whale tier: Signal >= 4 AND >= 5% EV cushion. These
+                # are the picks sharp big-money bettors would take —
+                # strongest-of-the-strong, well above the 3% research
+                # floor. Replaces the old prob+EV binary 'Strong' bar
+                # that gated the filter chip.
+                try:
+                    _ev = float(p.get("ev_pct") or 0.0)
+                except (TypeError, ValueError):
+                    _ev = 0.0
+                p["whale"] = (p["signal_score"] >= 4 and _ev >= 5.0)
 
         # Order picks within a game by signal_score desc (strongest first),
         # then market category to keep the ML/Spread/Total/… triplet shape,
@@ -6537,12 +6548,17 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                 ))
 
     # 6) Finalize each row — status, countdown, line/close text, sort key.
-    # Apply ★ signal-only filter: keep only picks tagged p.strong = True
-    # (signal_score >= 3 AND not model_only). Mirrors the ★ star emission
-    # so the filter and the badge agree on what counts.
-    if strong_only:
+    # Whale filter: Signal >= 4 AND EV >= 5%. These are the picks sharp
+    # big-money bettors would take — strongest-of-the-strong, both bars
+    # cleared. Replaces the old 'Signal >= 3' chip which was too permissive.
+    if whale_only:
         for row in rows_by_key.values():
-            row["picks"] = [p for p in row["picks"] if p.get("strong")]
+            row["picks"] = [p for p in row["picks"] if p.get("whale")]
+    # Backwards-compat: ?strong=1 still filters, now using the stricter
+    # whale bar so old bookmarks don't quietly produce a different pool.
+    elif strong_only:
+        for row in rows_by_key.values():
+            row["picks"] = [p for p in row["picks"] if p.get("whale")]
     # Favorable-move filter: keep only picks whose Pinnacle devig moved
     # toward us by ≥ +1pp over the last ≤ 3 days. Research-cited: a sharp
     # book moving in our direction is one of the strongest independent
@@ -6554,7 +6570,7 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
 
     rows = []
     for row in rows_by_key.values():
-        if (strong_only or favorable_move_only) and not row["picks"]:
+        if (strong_only or whale_only or favorable_move_only) and not row["picks"]:
             continue
         has_score = row["score_home"] is not None
         row["status"]    = _derive_status(row["start_time"], now_dt, has_score)
@@ -6719,17 +6735,15 @@ def slides_page():
         -(float(p.get("ev_pct") or 0.0)),
         p.get("start_time") or "",
     ))
+    # Cap at top 10 picks — one carousel's worth of the strongest signals.
+    # Any further picks are weaker + more variance, not worth the slide.
+    picks = picks[:10]
     # Chunk into slides. 3 picks per content slide reads cleanly on
     # TikTok/Reels at 1080x1920 (enough room per card for stats).
-    # Prepend a hero slide; cap total slides at 11 (TikTok's clean
-    # readable ceiling).
     PICKS_PER_SLIDE = 3
-    MAX_CONTENT_SLIDES = 10
     content_slides = []
     for i in range(0, len(picks), PICKS_PER_SLIDE):
         content_slides.append(picks[i : i + PICKS_PER_SLIDE])
-        if len(content_slides) >= MAX_CONTENT_SLIDES:
-            break
     # Hero summary stats: count of ★ Signal 4+ (gold) and ★ Signal 3 (green).
     sig4_count = sum(1 for p in picks if (p.get("signal_score") or 0) >= 4)
     sig3_count = sum(1 for p in picks if (p.get("signal_score") or 0) == 3)
@@ -7415,8 +7429,10 @@ def pick_deep_dive():
 def picks_landing():
     date_str = request.args.get("date") or datetime.now(CENTRAL).date().isoformat()
     sport_filter = (request.args.get("sport") or "all").lower()
-    # ?strong=1 trims the board to only ★ Strong picks (≥60% prob AND ≥4% EV).
-    strong_only = request.args.get("strong") in ("1", "true", "on", "yes")
+    # ?whale=1 trims to Whale picks (Signal >= 4 AND EV >= 5%).
+    # ?strong=1 is kept as a legacy alias that applies the same whale filter.
+    whale_only = request.args.get("whale") in ("1", "true", "on", "yes")
+    strong_only = request.args.get("strong") in ("1", "true", "on", "yes") or whale_only
     # ?linemove=1 filters the board to picks where Pinnacle devig moved
     # toward our side by >= 1pp over the past <= 3 days (sharp agreement).
     favorable_move_only = request.args.get("linemove") in ("1", "true", "on", "yes")
@@ -7529,6 +7545,7 @@ def picks_landing():
     picks_count   = sum(len(r["picks"]) for r in board_rows)
     ev_count      = sum(1 for r in board_rows for p in r["picks"] if not p.get("model_only"))
     strong_count  = sum(1 for r in board_rows for p in r["picks"] if p.get("strong"))
+    whale_count   = sum(1 for r in board_rows for p in r["picks"] if p.get("whale"))
     total_games   = len(board_rows)
     # NO BET count: games we have on the slate with zero picks. Per research,
     # "no bet" is the expected and default outcome; empty rows are a feature
@@ -7546,10 +7563,12 @@ def picks_landing():
         sport_counts=sport_counts,
         sport_filter=sport_filter,
         strong_only=strong_only,
+        whale_only=whale_only,
         favorable_move_only=favorable_move_only,
         picks_count=picks_count,
         ev_count=ev_count,
         strong_count=strong_count,
+        whale_count=whale_count,
         no_bet_count=no_bet_count,
         total_games=total_games,
         sports_with_games=sports_with_games,
