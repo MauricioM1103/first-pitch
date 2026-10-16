@@ -6092,15 +6092,29 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
     view_date = datetime.strptime(date_str, "%Y-%m-%d").date()
     now_dt = datetime.now(CENTRAL)
 
-    # 1) Today's scheduled games across every sport (schedule skeleton)
+    # 1) Today's scheduled games across every sport (schedule skeleton).
+    # Fetch per-sport Pinnacle games in parallel — each sport call is an
+    # independent HTTP round-trip to guest.api.arcadia.pinnacle.com, so
+    # a 10-sport loop that was sequential (10 * ~1s = 10s) collapses to
+    # ~1s wall time. ThreadPoolExecutor bounded to 10 workers.
     rows_by_key = {}
-    for sp in sports.SPORTS:
-        if sport_filter not in ("all", sp["slug"]):
-            continue
+    _sports_wanted = [sp for sp in sports.SPORTS
+                       if sport_filter in ("all", sp["slug"])]
+
+    def _fetch_one(sp):
         try:
-            games = _sport_games_for_hub(sp, view_date)
+            return sp, _sport_games_for_hub(sp, view_date)
         except Exception:
-            games = []
+            return sp, []
+
+    if len(_sports_wanted) > 1:
+        with ThreadPoolExecutor(max_workers=min(10, len(_sports_wanted))) as _ex:
+            _futures = [_ex.submit(_fetch_one, sp) for sp in _sports_wanted]
+            _per_sport = [f.result() for f in _futures]
+    else:
+        _per_sport = [_fetch_one(sp) for sp in _sports_wanted]
+
+    for sp, games in _per_sport:
         for g in games:
             key = (sp["slug"],
                    generic_odds._team_key(g["away"]),
@@ -6886,14 +6900,21 @@ def _build_first_half_board(date_str):
     except Exception:
         return []
     rows = []
-    for sp in sports.SPORTS:
-        slug = sp.get("slug")
-        if slug not in _SOCCER_SLUGS_FMS:
-            continue
+    # Parallel per-league fetch (same reasoning as _build_board_rows:
+    # independent Pinnacle round-trips, cheap to overlap).
+    _soccer_sports = [sp for sp in sports.SPORTS if sp.get("slug") in _SOCCER_SLUGS_FMS]
+    def _fh_fetch(sp):
         try:
-            games = _sport_games_for_hub(sp, view_date)
+            return sp, _sport_games_for_hub(sp, view_date)
         except Exception:
-            games = []
+            return sp, []
+    if len(_soccer_sports) > 1:
+        with ThreadPoolExecutor(max_workers=min(10, len(_soccer_sports))) as _ex:
+            _per = [f.result() for f in [_ex.submit(_fh_fetch, sp) for sp in _soccer_sports]]
+    else:
+        _per = [_fh_fetch(sp) for sp in _soccer_sports]
+    for sp, games in _per:
+        slug = sp.get("slug")
         share = _FIRST_HALF_SHARE.get(slug, 0.45)
         for g in games:
             home = g["home"]; away = g["away"]
