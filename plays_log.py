@@ -1640,15 +1640,15 @@ def _passes_current_filter(pk):
     anchor removes intra-day drift when the market bets the EV out.
     Used for the 'if we had used current filter all along' backtest."""
     anchors = pk.get("anchors") or {}
-    if anchors:
+    if isinstance(anchors, dict) and anchors:
         # Earliest clock-time anchor that fired for this pick wins. Keys
         # are "HH:MM" strings so lexical sort equals chronological sort.
         try:
             first_key = sorted(anchors.keys())[0]
             first = anchors[first_key] or {}
-            if "passes_curfilter" in first:
+            if isinstance(first, dict) and "passes_curfilter" in first:
                 return bool(first.get("passes_curfilter"))
-        except (TypeError, ValueError, IndexError):
+        except (TypeError, ValueError, IndexError, AttributeError):
             pass
     return _passes_current_filter_live(pk)
 
