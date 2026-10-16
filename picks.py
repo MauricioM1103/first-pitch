@@ -566,6 +566,17 @@ def _sim_prob_for_pick(sim, pick):
     home_norm = home.lower()
     away_norm = away.lower()
 
+    # F5 (first-5-innings) markets have their OWN model in mlb_odds via
+    # predict_f5_moneyline / predict_f5_total; the full-game MC sim
+    # returns FULL-GAME probs which diverge heavily from F5-specific
+    # fair probs (strong SP > bullpen for the first 5), making every F5
+    # pick fail the 8pp divergence gate silently. Returning None here
+    # routes F5 through the "no generic MC coverage" branch, which keeps
+    # the F5-specific model's fair_prob + Pinnacle devig blend intact.
+    _mkt_upper = market.upper()
+    if "F5" in _mkt_upper or "FIRST 5" in _mkt_upper:
+        return None
+
     # Moneyline (and 1H / 1P ML) — the sim's full-game probs are our best proxy
     # for 1H markets too (1H is correlated enough that gross divergence here
     # usually means something's off with the pick, not with the sim).
