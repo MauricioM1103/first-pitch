@@ -3943,6 +3943,29 @@ PICKS_TEMPLATE = r"""<!doctype html>
 .pick-badge-row .pick-res.W { color: var(--good); }
 .pick-badge-row .pick-res.L { color: #ef4444; }
 .pick-badge-row .pick-res.P { color: var(--muted-2); }
+.pick-badge-row .pick-res.live {
+  color: #fb923c;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  border: 1px solid rgba(251, 146, 60, 0.4);
+  border-radius: 4px;
+  animation: pick-live-pulse 1.8s ease-in-out infinite;
+}
+.pick-badge-row .pick-res.final {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 1px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+}
+@keyframes pick-live-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
 .pick-badge-row .strong-star { color: var(--good); font-size: 11px; margin-left: 2px; text-shadow: var(--ev-strong-glow); }
 .pick-badge-row.model-only { opacity: 0.78; }
 .pick-badge-row.model-only .pick-lbl { font-weight: 400; color: var(--muted); }
@@ -4337,7 +4360,17 @@ PICKS_TEMPLATE = r"""<!doctype html>
                      badge-row to the detail panel only (keeps the row to
                      3 chips max for first-time-user readability — the
                      research-recommended slim layout). #}
-                  {% if p.result %}<span class="pick-res {{ p.result }}" title="{{ p.result }}">{{ '✓' if p.result == 'W' else ('✗' if p.result == 'L' else '—') }}</span>{% endif %}
+                  {% if p.result == 'W' %}
+                    <span class="pick-res W" title="Won">&#10003;</span>
+                  {% elif p.result == 'L' %}
+                    <span class="pick-res L" title="Lost">&#10007;</span>
+                  {% elif p.result == 'P' %}
+                    <span class="pick-res P" title="Push">P</span>
+                  {% elif p._row_status == 'live' %}
+                    <span class="pick-res live" title="Game is live — awaiting final score">&#9679; LIVE</span>
+                  {% elif p._row_status == 'final' %}
+                    <span class="pick-res final" title="Game ended — grading on next refresh">FINAL</span>
+                  {% endif %}
                 </div>
               {% endfor %}
             {% else %}
@@ -6171,9 +6204,75 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
     except Exception:
         all_picks = []
 
-    # 3) Grading overlay (scores + CLV + W/L on picks graded today)
+    # 2b) Merge today's SAVED picks (picks_<date>.json) back in. Pinnacle
+    # drops its market data the moment a game kicks off, so a pick we
+    # recommended at 10 AM for a 2 PM game vanishes from `all_picks` at
+    # 2:01 PM. We want today's picks to stay visible through the full
+    # day (showing LIVE / result badge) and only reset at midnight CT.
+    saved_only_picks = []
+    try:
+        saved = plays_log.read_picks(date_str) or {}
+        existing_ids = {p.get("id") for p in all_picks if p.get("id")}
+        for sp in saved.get("picks", []):
+            if not sp.get("id"):
+                continue
+            if sp.get("id") in existing_ids:
+                continue
+            # Only merge picks whose game is on today's local date. The
+            # saved file dedup already keeps the best entry per (sport,
+            # home, away, market, pick), so no duplicate risk.
+            sp = dict(sp)
+            sp["_from_saved"] = True
+            saved_only_picks.append(sp)
+    except Exception:
+        saved_only_picks = []
+    all_picks = list(all_picks) + saved_only_picks
+
+    # 2c) Create synthetic game rows for saved picks whose game Pinnacle
+    # has fully dropped (no live row to attach to). Keeps the Levante /
+    # Atletico type games visible on today's board with a result badge
+    # even after Pinnacle wipes their market.
+    for sp in saved_only_picks:
+        slug = sp.get("sport_slug")
+        home = sp.get("home_team")
+        away = sp.get("away_team")
+        if not (slug and home and away):
+            continue
+        key = (slug, generic_odds._team_key(away), generic_odds._team_key(home))
+        if key in rows_by_key:
+            continue
+        rows_by_key[key] = {
+            "id":          f"{slug}-{generic_odds._team_key(away)}-{generic_odds._team_key(home)}",
+            "sport_slug":  slug,
+            "sport_name":  next((s["name"] for s in sports.SPORTS if s["slug"] == slug), slug),
+            "ml_outcomes": next((s.get("ml_outcomes", 2) for s in sports.SPORTS if s["slug"] == slug), 2),
+            "away":        away,
+            "home":        home,
+            "start_time":  sp.get("start_time"),
+            # No live market data — Pinnacle has moved on. Marks the row
+            # as display-only for the result badge.
+            "_ml": None, "_spread": None, "_total": None, "_total_h1": None,
+            "_total_alts": [], "_spread_alts": [], "_btts": None,
+            "_tt_home": [], "_tt_away": [], "_dnb": None, "_goes_dist": None,
+            "_btts_tg": None, "_cs": None,
+            "picks":       [],
+            "score_home":  None,
+            "score_away":  None,
+            "_synthetic":  True,
+        }
+
+    # 3) Grading overlay (scores + CLV + W/L on picks graded today).
+    # Force a backfill grade on today's date so just-ended games settle
+    # before we render — the board shows ✓/✗ immediately instead of
+    # pending-until-next-visit.
     graded_by_id = {}
     try:
+        import sports as _sports_mod
+        sport_key_by_slug = {s["slug"]: s.get("odds_api_key") for s in _sports_mod.SPORTS}
+        try:
+            plays_log.grade_date(date_str, sport_key_by_slug, force=True)
+        except Exception:
+            pass
         graded = plays_log.read_graded(date_str) or {}
         for gp in graded.get("picks", []):
             if gp.get("id"):
@@ -6343,17 +6442,16 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
             row["score_home"] = gp.get("home_score")
             row["score_away"] = gp.get("away_score")
 
-    # 4b) Drop any pre-game pick (EV or model) from games that have already
-    #     kicked off and haven't graded yet. Showing "Guardians ML 5/5" on a
-    #     LIVE game looks like a live recommendation, which it isn't. Picks
-    #     that already graded (W/L/P) stay visible so the board doubles as a
-    #     scoreboard for the day's calls.
+    # 4b) Keep every pick visible after kickoff — tag each with its
+    # row status so the UI can decorate (LIVE pulse, FINAL + result).
+    # Users want to see today's picks all the way through game end on
+    # the main board; the day resets at midnight CT when `date_str`
+    # rolls over.
     for row in rows_by_key.values():
         status_now = _derive_status(row["start_time"], now_dt,
                                     row["score_home"] is not None)
-        if status_now in ("live", "final"):
-            row["picks"] = [p for p in row["picks"]
-                            if p.get("result") in ("W", "L", "P")]
+        for p in row["picks"]:
+            p["_row_status"] = status_now  # 'upcoming' / 'live' / 'final'
 
     # 5) Fill in missing markets with pure-model picks so every game shows the
     #    full ML + Spread + Total triplet (bettingtools.ai-style). These are
