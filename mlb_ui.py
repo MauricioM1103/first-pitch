@@ -3762,6 +3762,15 @@ PICKS_TEMPLATE = r"""<!doctype html>
   background: color-mix(in oklab, #f59e0b 6%, transparent);
 }
 .filter-chips .chip.strong-chip:hover { background: color-mix(in oklab, #f59e0b 12%, transparent); }
+.filter-chips .chip.whale-chip {
+  color: #38bdf8;
+  border-color: color-mix(in oklab, #38bdf8 50%, var(--rule));
+  background: color-mix(in oklab, #38bdf8 6%, transparent);
+}
+.filter-chips .chip.whale-chip:hover { background: color-mix(in oklab, #38bdf8 12%, transparent); }
+.filter-chips .chip.whale-chip.active {
+  background: #38bdf8; color: #0a0b0d; border-color: #38bdf8;
+}
 .filter-chips .chip.linemove-chip {
   border-color: #22c55e; color: #22c55e; background: color-mix(in oklab, #22c55e 6%, transparent);
 }
@@ -4126,7 +4135,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
     <h1>{{ date_pretty }}</h1>
     <p class="sub">
       <b>{{ total_games }}</b> games across <b>{{ sports_with_games }}</b> sports &middot;
-      <b>{{ picks_count }}</b> picks ({{ ev_count }} EV-verified, {{ whale_count }} &#x1F40B;, {{ no_bet_count }} NO BET) &middot;
+      <b>{{ picks_count }}</b> picks ({{ ev_count }} EV &middot; {{ strong_count }} &#9733; &middot; {{ whale_count }} &#x1F40B; &middot; {{ no_bet_count }} NO BET) &middot;
       all times Central. Every pick on this board is <b>+EV</b> &mdash; the model's
       probability times the posted price exceeds 1.0, so the long-run edge is
       positive. The right-hand chip shows the pick's source:
@@ -4197,25 +4206,34 @@ PICKS_TEMPLATE = r"""<!doctype html>
   {% endif %}
 
   {# Preserve toggles across sport-chip clicks and vice versa. #}
+  {% set strong_suffix = '&strong=1' if strong_only else '' %}
   {% set whale_suffix = '&whale=1' if whale_only else '' %}
   {% set linemove_suffix = '&linemove=1' if favorable_move_only else '' %}
   {% set sport_suffix  = ('&sport=' ~ sport_filter) if sport_filter != 'all' else '' %}
-  {% set extra_filters = whale_suffix ~ linemove_suffix %}
+  {% set extra_filters = strong_suffix ~ whale_suffix ~ linemove_suffix %}
   <div class="filter-chips">
     <a class="chip {% if sport_filter == 'all' %}active{% endif %}" href="/?date={{ date_str }}{{ extra_filters }}">All ({{ total_games }})</a>
     {% for s in sport_counts %}
       <a class="chip {% if sport_filter == s.slug %}active{% endif %}" href="/?date={{ date_str }}&sport={{ s.slug }}{{ extra_filters }}">{{ s.name }} ({{ s.count }})</a>
     {% endfor %}
     <span class="chip-divider" aria-hidden="true"></span>
-    {# 🐋 Whale toggle: Signal >= 4 AND EV >= 5%. Replaces the old
-       'Signal >= 3' chip — a strictly higher bar meant to surface the
-       picks a sharp big-money bettor would take. #}
-    {% if whale_only %}
-      <a class="chip strong-chip active" href="/?date={{ date_str }}{{ sport_suffix }}{{ linemove_suffix }}"
-         title="Showing only Whale picks: Signal ≥ 4/5 AND EV ≥ +5%. Click to clear.">&#x1F40B; Whale ({{ whale_count }})</a>
+    {# ★ Signal >= 3 toggle: picks worth placing (TODAY's 'star picks' set) #}
+    {% if strong_only %}
+      <a class="chip strong-chip active" href="/?date={{ date_str }}{{ sport_suffix }}{{ whale_suffix }}{{ linemove_suffix }}"
+         title="Showing only Signal ≥ 3/5 picks. Click to clear.">&#9733; Signal &ge; 3 ({{ strong_count }})</a>
     {% else %}
-      <a class="chip strong-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ linemove_suffix }}&whale=1"
-         title="Show only Whale picks: Signal ≥ 4/5 AND EV ≥ +5%. The picks a sharp big-money bettor would take — both the signal composite and the EV cushion must clear.">&#x1F40B; Whale</a>
+      <a class="chip strong-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ whale_suffix }}{{ linemove_suffix }}&strong=1"
+         title="Show only Signal ≥ 3/5 picks — EV cushion + favorable line move + prob floor + (soon) cross-book agreement. These are the picks worth placing today.">&#9733; Signal &ge; 3</a>
+    {% endif %}
+    {# 🐋 Whale toggle: heavy-favorite banker picks. Shorter decimal
+       odds + high model probability. Lower per-pick return but high
+       hit-rate; whales ladder these at larger stakes. #}
+    {% if whale_only %}
+      <a class="chip whale-chip active" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ linemove_suffix }}"
+         title="Showing only Whale picks: fair prob ≥ 65% AND decimal ≤ 1.60. Click to clear.">&#x1F40B; Whale ({{ whale_count }})</a>
+    {% else %}
+      <a class="chip whale-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ linemove_suffix }}&whale=1"
+         title="Show only Whale picks: heavy-favorite banker calls (fair prob ≥ 65% AND decimal ≤ 1.60 AND non-negative EV). Shorter returns per pick, high enough probability that whales ladder them at larger stakes.">&#x1F40B; Whale</a>
     {% endif %}
     {# Line-move toggle: show only picks where Pinnacle's devigged prob
        moved toward our side by ≥ 1pp over the last ≤3 days. Sharp money
@@ -4288,7 +4306,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
           <td class="col-picks">
             {% if row.picks %}
               {% for p in row.picks %}
-                <div class="pick-badge-row {{ 'strong' if p.whale else ('strong-light' if p.strong else '') }} {{ 'model-only' if p.model_only else '' }}" title="{{ 'Model-only preference (no EV filter)' if p.model_only else ('🐋 Whale pick: Signal ≥ 4/5 AND EV ≥ +5%' if p.whale else ('High-signal pick (Signal ≥ 3/5): EV cushion + favorable line move + prob floor' if p.strong else 'EV-verified pick')) }}">
+                <div class="pick-badge-row {{ 'strong' if p.strong else '' }} {{ 'whale-pick' if p.whale else '' }} {{ 'model-only' if p.model_only else '' }}" title="{{ 'Model-only preference (no EV filter)' if p.model_only else ('🐋 Whale banker: fair prob ≥ 65% AND decimal ≤ 1.60' if p.whale else ('High-signal pick (Signal ≥ 3/5): EV cushion + favorable line move + prob floor' if p.strong else 'EV-verified pick')) }}">
                   <span class="pick-ico {{ p.icon_cls }}">{{ p.icon }}</span>
                   <span class="pick-lbl">{{ p.pick_short }}</span>
                   <span class="pick-conf c{{ p.conf }}">{{ p.conf }}/5</span>
@@ -4305,7 +4323,8 @@ PICKS_TEMPLATE = r"""<!doctype html>
                   {% else %}
                     <span class="src-tag ev" title="EV-verified: cleared the +2% expected-value bar after model + Pinnacle devig consensus">EV{% if p.ev_pct and p.ev_pct > 0 %} +{{ '%.0f'|format(p.ev_pct) }}%{% endif %}</span>
                   {% endif %}
-                  {% if p.whale %}<span class="strong-star" title="&#x1F40B; Whale pick: Signal &ge; 4/5 AND EV &ge; +5%" style="color:#38bdf8;text-shadow:0 0 10px rgba(56,189,248,0.6)">&#x1F40B;</span>{% elif p.strong %}<span class="strong-star" title="Signal &ge; 3/5 pick">&#9733;</span>{% endif %}
+                  {% if p.strong %}<span class="strong-star" title="Signal &ge; 3/5 pick worth placing">&#9733;</span>{% endif %}
+                  {% if p.whale %}<span class="strong-star" title="&#x1F40B; Whale pick: heavy favorite (fair prob &ge; 65%, decimal &le; 1.60)" style="color:#38bdf8;text-shadow:0 0 10px rgba(56,189,248,0.6);margin-left:4px">&#x1F40B;</span>{% endif %}
                   {% if p.line_move_pp is not none and (p.line_move_pp|abs) >= 0.001 %}
                     {% set move_sign = 'favorable' if p.line_move_pp > 0 else 'adverse' %}
                     <span class="pick-move-chip {{ move_sign }}"
@@ -6553,16 +6572,29 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                 p["whale"]  = False
             else:
                 p["strong"] = (p["signal_score"] >= 3)
-                # Whale tier: Signal >= 4 AND >= 5% EV cushion. These
-                # are the picks sharp big-money bettors would take —
-                # strongest-of-the-strong, well above the 3% research
-                # floor. Replaces the old prob+EV binary 'Strong' bar
-                # that gated the filter chip.
+                # Whale tier: heavy-favorite "banker" picks. Short
+                # decimal odds (<= 1.60, i.e. -167 American or shorter),
+                # high model probability (>= 65%), and still-positive
+                # EV. Whales (large-bankroll bettors) ladder these at
+                # higher stakes because the probability is so high the
+                # variance is manageable even at thin returns.
+                try:
+                    _fp  = float(p.get("fair_prob") or 0.0)
+                except (TypeError, ValueError):
+                    _fp = 0.0
+                try:
+                    _dec = float(p.get("decimal") or 0.0)
+                except (TypeError, ValueError):
+                    _dec = 0.0
                 try:
                     _ev = float(p.get("ev_pct") or 0.0)
                 except (TypeError, ValueError):
                     _ev = 0.0
-                p["whale"] = (p["signal_score"] >= 4 and _ev >= 5.0)
+                p["whale"] = (
+                    _fp >= 0.65
+                    and 1.01 < _dec <= 1.60
+                    and _ev >= 0.0
+                )
 
         # Order picks within a game by signal_score desc (strongest first),
         # then market category to keep the ML/Spread/Total/… triplet shape,
@@ -6608,15 +6640,15 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                 ))
 
     # 6) Finalize each row — status, countdown, line/close text, sort key.
-    # Whale filter: Signal >= 4 AND EV >= 5%. These are the picks sharp
-    # big-money bettors would take — strongest-of-the-strong, both bars
-    # cleared. Replaces the old 'Signal >= 3' chip which was too permissive.
-    if whale_only:
+    # Signal >= 3 filter: picks worth placing (what the TODAY tab shows
+    # under its 'picks worth placing today' headline).
+    if strong_only:
         for row in rows_by_key.values():
-            row["picks"] = [p for p in row["picks"] if p.get("whale")]
-    # Backwards-compat: ?strong=1 still filters, now using the stricter
-    # whale bar so old bookmarks don't quietly produce a different pool.
-    elif strong_only:
+            row["picks"] = [p for p in row["picks"] if p.get("strong")]
+    # Whale filter: heavy-favorite "banker" picks (fair_prob >= 65%,
+    # decimal <= 1.60, non-negative EV). Lower returns per pick but
+    # high enough probability that whales ladder them at larger stakes.
+    if whale_only:
         for row in rows_by_key.values():
             row["picks"] = [p for p in row["picks"] if p.get("whale")]
     # Favorable-move filter: keep only picks whose Pinnacle devig moved
@@ -7501,10 +7533,14 @@ def pick_deep_dive():
 def picks_landing():
     date_str = request.args.get("date") or datetime.now(CENTRAL).date().isoformat()
     sport_filter = (request.args.get("sport") or "all").lower()
-    # ?whale=1 trims to Whale picks (Signal >= 4 AND EV >= 5%).
-    # ?strong=1 is kept as a legacy alias that applies the same whale filter.
+    # Two independent filters:
+    #   ?strong=1 — picks worth placing today (Signal >= 3 AND bet-able)
+    #   ?whale=1  — heavy-favorite "banker" picks (fair_prob >= 65%,
+    #              decimal <= 1.60, non-negative EV). Lower returns per
+    #              pick but high probability — whales ladder these at
+    #              larger stakes.
+    strong_only = request.args.get("strong") in ("1", "true", "on", "yes")
     whale_only = request.args.get("whale") in ("1", "true", "on", "yes")
-    strong_only = request.args.get("strong") in ("1", "true", "on", "yes") or whale_only
     # ?linemove=1 filters the board to picks where Pinnacle devig moved
     # toward our side by >= 1pp over the past <= 3 days (sharp agreement).
     favorable_move_only = request.args.get("linemove") in ("1", "true", "on", "yes")
@@ -13658,46 +13694,50 @@ main.logged-page { max-width: 1040px; }
   </div>
   {% endif %}
 
-  {% for ds in dates %}
-  {% set picks = graded_by_date[ds] %}
-  {% set strongs = picks | selectattr('strong') | list %}
-  {% set others  = picks | rejectattr('strong')  | list %}
-  <div class="date-group">
-    <h3>{{ ds }}</h3>
-    {% if strongs %}
-    <div class="section-label">Strong picks <span class="count">({{ strongs|length }})</span></div>
-    <div class="strong-section">
-      {% for p in strongs %}
-      <div class="pick-row">
-        <span class="tag">{{ p.sport }}</span>
-        <div class="pick-cell">
-          <span class="strong-badge">STRONG</span><strong>{{ p.pick }}</strong>
-          <div class="matchup">{{ p.away_team }} at {{ p.home_team }} &middot; {{ p.market }}
-            {% if p.home_score is not none and p.away_score is not none %}
-              &middot; {{ p.away_score|int }}-{{ p.home_score|int }}
-            {% endif %}
-          </div>
-        </div>
-        <span class="odd">{{ p.american }}</span>
-        {% set clv = p.get('clv_pp') %}
-        {% if clv is not none %}
-          <span class="clv {{ 'pos' if clv > 0 else ('neg' if clv < 0 else '') }}" title="Line movement from first-save to close (pp of Pinnacle devig). Positive = sharp signal.">
-            <span class="clv-lbl">CLV</span>{{ '%+.1f' % clv }}
+  {# Filter dropdown — picks just that view's results. Replaces the
+     old 'all picks grouped by date' long list. #}
+  <section class="records-section">
+    <h2>Picks explorer <span style="color:var(--muted);font-size:13px">filter by record type</span></h2>
+    <form method="get" action="/logged" class="filter-form"
+          style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
+      <label for="filter" style="font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--muted-2);letter-spacing:0.14em;text-transform:uppercase">Show</label>
+      <select name="filter" id="filter" onchange="this.form.submit()"
+              style="background:var(--card);border:1px solid var(--rule-strong);color:var(--ink);padding:8px 12px;border-radius:8px;font-size:13.5px;min-width:200px">
+        {% for opt in filter_options %}
+          <option value="{{ opt.key }}" {% if opt.key == active_filter %}selected{% endif %}>{{ opt.label }}</option>
+        {% endfor %}
+      </select>
+      <noscript><button type="submit" class="btn-ai" style="margin:0">Apply</button></noscript>
+      {# Record summary for the active filter. #}
+      <div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--muted);margin-left:auto">
+        {% if filtered_record.settled or filtered_record.pending %}
+          <b style="color:var(--ink)">{{ filtered_record.wins }}&ndash;{{ filtered_record.losses }}{% if filtered_record.pushes %}&ndash;{{ filtered_record.pushes }}{% endif %}</b>
+          <span class="{{ 'good' if filtered_record.units > 0 else ('bad' if filtered_record.units < 0 else '') }}">
+            {{ '%+.2f'|format(filtered_record.units) }}u &middot;
+            {{ '%+.1f'|format(filtered_record.roi_pct) }}% ROI
           </span>
+          <span style="color:var(--muted-2)">&middot; {{ filtered_record.settled }} settled{% if filtered_record.pending %} &middot; {{ filtered_record.pending }} pending{% endif %}</span>
         {% else %}
-          <span class="clv">&mdash;</span>
+          <span style="color:var(--muted-2)">no picks match</span>
         {% endif %}
-        <span class="res {{ p.result }}">{{ p.result or 'pending' }}</span>
       </div>
-      {% endfor %}
-    </div>
+    </form>
+
+    {% if not filtered_dates %}
+      <div style="color:var(--muted);font-size:13px;padding:16px;background:var(--card);border:1px solid var(--rule);border-radius:10px">
+        No picks match <b>{{ active_filter_label }}</b>. Try a different filter.
+      </div>
     {% endif %}
-    {% if others %}
-    <div class="section-label">Other picks <span class="count">({{ others|length }})</span></div>
-    {% for p in others %}
+
+    {% for ds in filtered_dates %}
+    {% set picks = filtered_by_date[ds] %}
+    <div class="date-group">
+      <h3>{{ ds }} <span style="color:var(--muted);font-weight:normal;font-size:13px">&middot; {{ picks|length }} pick{{ 's' if picks|length != 1 else '' }}</span></h3>
+      {% for p in picks %}
       <div class="pick-row">
         <span class="tag">{{ p.sport }}</span>
         <div class="pick-cell">
+          {% if p.strong %}<span class="strong-badge">&#9733;</span>{% endif %}
           <strong>{{ p.pick }}</strong>
           <div class="matchup">{{ p.away_team }} at {{ p.home_team }} &middot; {{ p.market }}
             {% if p.home_score is not none and p.away_score is not none %}
@@ -13709,17 +13749,17 @@ main.logged-page { max-width: 1040px; }
         {% set clv = p.get('clv_pp') %}
         {% if clv is not none %}
           <span class="clv {{ 'pos' if clv > 0 else ('neg' if clv < 0 else '') }}" title="Line movement from first-save to close (pp of Pinnacle devig). Positive = sharp signal.">
-            <span class="clv-lbl">CLV</span>{{ '%+.1f' % clv }}
+            <span class="clv-lbl">CLV</span>{{ '%+.1f'|format(clv) }}
           </span>
         {% else %}
           <span class="clv">&mdash;</span>
         {% endif %}
         <span class="res {{ p.result }}">{{ p.result or 'pending' }}</span>
       </div>
+      {% endfor %}
+    </div>
     {% endfor %}
-    {% endif %}
-  </div>
-  {% endfor %}
+  </section>
 </main>
 {{ theme_script|safe }}
 </body>
@@ -13978,6 +14018,61 @@ def logged_plays():
     by_sport_curfilter = plays_log.breakdown_by_key_current_filter(
         graded_by_date, lambda p: p.get("sport"))
     dates = sorted(graded_by_date.keys(), reverse=True)
+
+    # Filter dropdown: user picks a filter and we show just those picks
+    # grouped by date, instead of the big one-list-of-everything.
+    # Filter key -> (label, predicate(pick) -> bool).
+    def _is_whale(pk):
+        try:
+            fp  = float(pk.get("fair_prob") or 0)
+            dec = float(pk.get("decimal") or 0)
+            ev  = float(pk.get("ev_pct") or 0)
+        except (TypeError, ValueError):
+            return False
+        return fp >= 0.65 and 1.01 < dec <= 1.60 and ev >= 0.0
+    _FILTER_PREDICATES = {
+        "all":        ("All picks",         lambda p: True),
+        "signal":     ("★ Signal ≥ 3",      lambda p: bool(p.get("strong"))),
+        "whale":      ("🐋 Whale",          _is_whale),
+        "curfilter":  ("Current filter",    plays_log._passes_current_filter),
+        "ev9":        ("+EV ≥ 9%",          lambda p: (p.get("ev_pct") is not None
+                                                      and (p.get("ev_pct") or 0) >= 9)),
+        "1h_goals":   ("1H Goals",          lambda p: p.get("source") == "1h_goals"),
+        "ai":         ("AI Analysis",       lambda p: p.get("source") == "ai_analysis"),
+        "dk":         ("DK history",        lambda p: p.get("source") == "book_dk"),
+    }
+    filter_key = (request.args.get("filter") or "signal").lower()
+    if filter_key not in _FILTER_PREDICATES:
+        filter_key = "signal"
+    _label, _pred = _FILTER_PREDICATES[filter_key]
+    # Build a filtered date->picks map (dates with 0 matching picks drop out).
+    filtered_by_date = {}
+    for ds, pks in graded_by_date.items():
+        matching = [p for p in pks if _pred(p)]
+        if matching:
+            filtered_by_date[ds] = matching
+    filtered_dates = sorted(filtered_by_date.keys(), reverse=True)
+    # Aggregate record for the filtered view.
+    f_w = f_l = f_p = f_pending = 0
+    f_units = 0.0
+    for pks in filtered_by_date.values():
+        for p in pks:
+            r = p.get("result")
+            if r == "W":   f_w += 1
+            elif r == "L": f_l += 1
+            elif r == "P": f_p += 1
+            else:          f_pending += 1
+            f_units += p.get("profit_u", 0) or 0
+    f_settled = f_w + f_l
+    filtered_record = {
+        "wins": f_w, "losses": f_l, "pushes": f_p, "pending": f_pending,
+        "settled": f_settled,
+        "win_pct": (f_w / f_settled * 100) if f_settled else 0.0,
+        "roi_pct": (f_units / f_settled * 100) if f_settled else 0.0,
+        "units":   f_units,
+        "label":   _label,
+    }
+    filter_options = [{"key": k, "label": v[0]} for k, v in _FILTER_PREDICATES.items()]
     try:
         persist_status = log_persist.status_summary()
     except Exception as e:
@@ -14022,6 +14117,12 @@ def logged_plays():
         by_sport=by_sport,
         by_market=by_market,
         by_sport_curfilter=by_sport_curfilter,
+        filter_options=filter_options,
+        active_filter=filter_key,
+        active_filter_label=_label,
+        filtered_record=filtered_record,
+        filtered_dates=filtered_dates,
+        filtered_by_date=filtered_by_date,
         dates=dates,
         graded_by_date=graded_by_date,
         persist_status=persist_status,
