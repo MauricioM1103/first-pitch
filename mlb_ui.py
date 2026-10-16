@@ -6256,6 +6256,15 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                 continue
             sp = dict(sp)
             sp["_from_saved"] = True
+            # Compute signal_score from saved fields so TODAY's
+            # signal_score >= 3 filter keeps the pick visible after
+            # Pinnacle has dropped the live market. The save-slim dict
+            # doesn't carry a signal_score column, but all its inputs
+            # (ev_pct, line_move_pp, fair_prob, source) are stored.
+            try:
+                sp["signal_score"] = plays_log._backtest_signal_score(sp)
+            except Exception:
+                sp["signal_score"] = 3 if sp.get("strong") else 0
             saved_only_picks.append(sp)
     except Exception:
         saved_only_picks = []
