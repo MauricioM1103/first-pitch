@@ -154,6 +154,36 @@ def save_daily_picks(date_str, picks, overwrite_today=True):
                                      else p.get("fair_prob"),
         }
     slim = list(merged_by_id.values())
+    # Dedup by (sport_slug, home, away, market, pick) tuple. Different
+    # emission paths (EV path vs model-fill vs AI vs 1H Goals) sometimes
+    # produce the SAME effective pick with DIFFERENT ids — e.g.,
+    # EV path saves 'Arsenal ML' via collect_picks, and the AI analysis
+    # route saves the same 'Arsenal ML' via /ai-analysis — different
+    # ids, same bet. The record counted them twice. Keep the entry
+    # with the OLDEST first_snapshot_at (preserves CLV baseline), prefer
+    # entries with a book price (decimal/american) over those without.
+    def _match_key(pk):
+        def _n(x): return (x or "").strip().lower()
+        return (_n(pk.get("sport_slug")), _n(pk.get("home_team")),
+                _n(pk.get("away_team")), _n(pk.get("market")),
+                _n(pk.get("pick")))
+    def _entry_rank(pk):
+        """Smaller is better. Prefer: has graded result > has book price
+        > oldest first_snapshot_at. Picks we already know the outcome of
+        beat duplicates that are still 'pending'."""
+        has_result = pk.get("result") in ("W", "L", "P")
+        has_price  = pk.get("decimal") is not None or pk.get("american") is not None
+        snapshot   = pk.get("first_snapshot_at") or pk.get("snapshotted_at") or "9999"
+        return (0 if has_result else 1,
+                0 if has_price else 1,
+                snapshot)
+    deduped = {}
+    for pk in slim:
+        k = _match_key(pk)
+        prev = deduped.get(k)
+        if prev is None or _entry_rank(pk) < _entry_rank(prev):
+            deduped[k] = pk
+    slim = list(deduped.values())
     payload = {"date": date_str, "picks": slim}
     text = json.dumps(payload)
     try:
@@ -334,9 +364,34 @@ def read_graded(date_str):
     if not text:
         return None
     try:
-        return json.loads(text)
+        data = json.loads(text)
     except json.JSONDecodeError:
         return None
+    # Dedup on read — historical graded files may carry doubles from
+    # before the save-path dedup landed. Keep best-ranked entry per
+    # (sport, home, away, market, pick) tuple so record math is honest.
+    picks = data.get("picks") or []
+    if picks:
+        def _n(x): return (x or "").strip().lower()
+        def _key(pk):
+            return (_n(pk.get("sport_slug")), _n(pk.get("home_team")),
+                    _n(pk.get("away_team")), _n(pk.get("market")),
+                    _n(pk.get("pick")))
+        def _rank(pk):
+            has_result = pk.get("result") in ("W", "L", "P")
+            has_price  = pk.get("decimal") is not None or pk.get("american") is not None
+            snapshot   = pk.get("first_snapshot_at") or pk.get("snapshotted_at") or "9999"
+            return (0 if has_result else 1,
+                    0 if has_price else 1,
+                    snapshot)
+        best = {}
+        for pk in picks:
+            k = _key(pk)
+            prev = best.get(k)
+            if prev is None or _rank(pk) < _rank(prev):
+                best[k] = pk
+        data["picks"] = list(best.values())
+    return data
 
 
 def write_graded(date_str, graded):
@@ -1451,9 +1506,39 @@ def _passes_current_filter(pk):
     return True
 
 
+def _is_whale_pick(pk):
+    """Whale (Strong-Picks-Only) criteria: heavy-favorite banker calls —
+    fair_prob >= 65% AND decimal <= 1.60 AND non-negative EV. Shorter
+    returns per pick but high enough probability that large bankrolls
+    ladder them at larger stakes. Mirrors the UI chip definition."""
+    try:
+        fp = float(pk.get("fair_prob") or 0.0)
+    except (TypeError, ValueError):
+        fp = 0.0
+    try:
+        ev = float(pk.get("ev_pct") or 0.0)
+    except (TypeError, ValueError):
+        ev = 0.0
+    dec = pk.get("decimal")
+    if dec is None:
+        am = pk.get("american")
+        if am is None:
+            return False
+        try:
+            am_f = float(am)
+            dec = (am_f / 100.0 + 1.0) if am_f > 0 else (100.0 / abs(am_f) + 1.0)
+        except (TypeError, ValueError):
+            return False
+    try:
+        dec = float(dec)
+    except (TypeError, ValueError):
+        return False
+    return (fp >= 0.65) and (1.01 < dec <= 1.60) and (ev >= 0.0)
+
+
 def record_in_window(graded_by_date, days_back, strong_only=False, today=None,
                      source=None, conf_tier=None, plus_ev_only=False,
-                     min_ev=None, current_filter=False):
+                     min_ev=None, current_filter=False, whale_only=False):
     """Aggregate W/L/P/pending + units + ROI for picks that match the filters.
       source="ev"       → only EV-verified consensus picks.
       source="model"    → only model-only picks that scored 4/5 or 5/5.
@@ -1468,6 +1553,10 @@ def record_in_window(graded_by_date, days_back, strong_only=False, today=None,
                           filter: not model-only, EV >= 3% (5% for alts),
                           signal composite >= 3. Shows 'if we had used
                           today's filter all along' retroactively.
+      strong_only=True  → Signal composite >= 3 (same math as live). The
+                          "picks worth placing today" tracker.
+      whale_only=True   → fair_prob >= 65% AND decimal <= 1.60 AND ev >= 0.
+                          Heavy-favorite banker picks (UI chip criterion).
     """
     today = today or date.today()
     cutoff = today - timedelta(days=days_back - 1)
@@ -1488,17 +1577,14 @@ def record_in_window(graded_by_date, days_back, strong_only=False, today=None,
                 if not _passes_current_filter(pk):
                     continue
             elif strong_only:
-                # Recompute "strong" at read time instead of trusting the
-                # saved pk["strong"] flag. Historical picks were tagged
-                # under the old 60% threshold; the new definition is 68%
-                # (5/5 tier) AND +4% EV. This retro-applies the stricter
-                # filter to the entire 90-day log without touching the
-                # stored files.
-                base_prob = pk.get("consensus_prob") or pk.get("fair_prob") or 0
-                ev_v = pk.get("ev_pct")
-                try: ev_v = float(ev_v) if ev_v is not None else 0.0
-                except (TypeError, ValueError): ev_v = 0.0
-                if not (base_prob >= 0.68 and ev_v >= 4.0):
+                # Signal composite >= 3 (same math as live, less book-
+                # agreement which isn't logged pre-Phase 3). This is the
+                # tracker for "picks worth placing today" — the Signal >= 3
+                # chip on the main board.
+                if _backtest_signal_score(pk) < 3:
+                    continue
+            elif whale_only:
+                if not _is_whale_pick(pk):
                     continue
             if source is not None:
                 pk_source = pk.get("source") or ("model" if pk.get("model_only") else "ev")
@@ -1561,7 +1647,8 @@ def summary(graded_by_date, today=None):
     """Return dict of 7D / 30D / 90D records sliced by the user-chosen
     tracker set:
       all_*       → every settled pick (overall record)
-      strong_*    → ★ Strong = fair_prob ≥ 68% AND EV ≥ +4% (5/5 only)
+      strong_*    → Signal composite ≥ 3 (picks worth placing today)
+      whale_*     → fair_prob ≥ 65% AND decimal ≤ 1.60 AND ev ≥ 0 (banker picks)
       plusev9_*   → only picks with ev_pct ≥ 9% (big-edge tracker)
       dk_*        → only picks imported from the user's DraftKings history
       model_* / ev_* kept for back-compat with embedded dashboards; not
@@ -1571,6 +1658,7 @@ def summary(graded_by_date, today=None):
     for label, days in (("7d", 7), ("30d", 30), ("90d", 90)):
         out[f"all_{label}"]      = record_in_window(graded_by_date, days, False, today)
         out[f"strong_{label}"]   = record_in_window(graded_by_date, days, True,  today)
+        out[f"whale_{label}"]    = record_in_window(graded_by_date, days, False, today, whale_only=True)
         out[f"plusev9_{label}"]  = record_in_window(graded_by_date, days, False, today, min_ev=9.0)
         out[f"dk_{label}"]       = record_in_window(graded_by_date, days, False, today, source="book_dk")
         # Phase 11b: 1H Goals picks (saved from /first-half, source "1h_goals").
