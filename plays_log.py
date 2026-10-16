@@ -1470,9 +1470,17 @@ def profit_at_1u(result, decimal, fair_prob=None):
 # Grading pipeline
 # ---------------------------------------------------------------------------
 
-def grade_date(date_str, sport_key_by_slug, force=False):
-    """Grade one date — write graded_{date}.json. Skip if already written
-    AND all picks are settled (unless force=True)."""
+def grade_date(date_str, sport_key_by_slug, force=False, rescore=False):
+    """Grade one date — write graded_{date}.json.
+
+    `force=True`  bypasses the "all settled → skip" early-exit so the
+                  grader runs again.
+    `rescore=True` ALSO ignores prior per-pick results so each pick is
+                  re-evaluated against the current grader (e.g. after
+                  a rule change). Implies force.
+    """
+    if rescore:
+        force = True
     existing = read_graded(date_str)
     if existing and not force:
         all_settled = all(p.get("result") in ("W", "L", "P") for p in existing.get("picks", []))
@@ -1532,7 +1540,7 @@ def grade_date(date_str, sport_key_by_slug, force=False):
         prior = None
         if existing:
             prior = next((g for g in existing.get("picks", []) if g.get("id") == p.get("id")), None)
-        if prior and prior.get("result") in ("W", "L", "P"):
+        if prior and prior.get("result") in ("W", "L", "P") and not rescore:
             # Keep prior settled result (Odds API window drops after 3 days)
             graded_picks.append(prior)
             continue

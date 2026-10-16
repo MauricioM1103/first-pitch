@@ -6312,7 +6312,14 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
         import sports as _sports_mod
         sport_key_by_slug = {s["slug"]: s.get("odds_api_key") for s in _sports_mod.SPORTS}
         try:
-            plays_log.grade_date(date_str, sport_key_by_slug, force=True)
+            # rescore=True so a grader rule change (e.g. DNB draws
+            # flipping from Push to Win) re-evaluates every pick for
+            # today, not just the ones still pending. Only applied to
+            # today's date — historical rescore runs via /logged/regrade.
+            today_iso = datetime.now(CENTRAL).date().isoformat()
+            plays_log.grade_date(date_str, sport_key_by_slug,
+                                  rescore=(date_str == today_iso),
+                                  force=True)
         except Exception:
             pass
         graded = plays_log.read_graded(date_str) or {}
