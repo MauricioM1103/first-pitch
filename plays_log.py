@@ -249,6 +249,12 @@ def save_daily_picks(date_str, picks, overwrite_today=True):
             "consensus_prob": p.get("consensus_prob"),
             "pinnacle_prob": p.get("pinnacle_prob"),
             "ev_pct":        p.get("ev_pct"),
+            # line_move_pp is a Signal composite component (+1 if > 0).
+            # Persisting it so the backtest signal score + current-filter
+            # judgment on read-back matches what the live board computed
+            # at save time. Prior to this, read-back picks always lost
+            # the line-move bonus and the curfilter record shrank.
+            "line_move_pp":  p.get("line_move_pp"),
             "strong":        bool(p.get("strong")),
             "model_only":    bool(p.get("model_only")),
             "source":        p.get("source") or ("book_dk" if p.get("book") == "draftkings"

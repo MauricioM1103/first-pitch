@@ -13226,8 +13226,8 @@ main.logged-page { max-width: 1040px; }
                   {% endif %}
                 </div>
               </div>
-              <span class="odd" style="font-size:11px">{{ p.american }}</span>
-              <span class="res {{ p.result }}" style="font-size:11px">{{ p.result or 'pending' }}</span>
+              <span class="odd" style="font-size:11px">{{ p.american if p.american is not none else '—' }}</span>
+              <span class="res {{ p.result or 'pending' }}" style="font-size:11px">{{ p.result or 'pending' }}</span>
             </div>
             {% endfor %}
           </div>
@@ -13432,7 +13432,11 @@ main.logged-page { max-width: 1040px; }
       <span style="color:var(--muted);margin-left:4px">
         &middot; next anchor at <b style="color:var(--ink)">{{ anchor_status.next_bucket }} CT</b>
         {% if anchor_status.next_in_min is not none %}({{ anchor_status.next_in_min }} min){% endif %}
-        &middot; <b style="color:var(--ink)">{{ anchor_status.anchored_passed }}</b> / {{ anchor_status.anchored_total }} today's picks locked as current-filter at their first-fired anchor.
+        {% if anchor_status.anchored_total %}
+          &middot; <b style="color:var(--ink)">{{ anchor_status.anchored_passed }}</b> / {{ anchor_status.anchored_total }} today's picks locked as current-filter at their first-fired anchor.
+        {% else %}
+          &middot; no picks saved yet today &mdash; the next main-board visit after the first anchor stamps the day's picks.
+        {% endif %}
       </span>
       <div style="margin-top:4px;color:var(--muted);font-size:11.5px">
         Each pick's filter judgment freezes at the earliest of these clock times the save path sees after it. Keeps the record stable even when the market bets the EV out before kickoff.
