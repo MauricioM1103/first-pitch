@@ -2109,6 +2109,36 @@ TODAY_TEMPLATE = r"""<!doctype html>
 .chip-legend .ex-result { color: var(--good); background: color-mix(in oklab, var(--good) 10%, transparent); }
 .chip-legend .ex-whale  { color: #38bdf8; background: color-mix(in oklab, #38bdf8 10%, transparent); font-size: 14px; }
 .today-list { display: flex; flex-direction: column; gap: 10px; }
+.status-divider {
+  display: flex; align-items: center; gap: 10px;
+  margin: 18px 0 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase;
+}
+.status-divider .divider-label { color: var(--muted-2); font-weight: 700; }
+.status-divider .divider-count {
+  background: var(--card); border: 1px solid var(--rule);
+  padding: 1px 7px; border-radius: 999px;
+  color: var(--muted); font-size: 10px;
+}
+.status-divider .divider-line {
+  flex: 1; height: 1px; background: var(--rule);
+}
+.status-divider.status-live .divider-label { color: #fb923c; }
+.status-divider.status-live .divider-line  { background: color-mix(in oklab, #fb923c 30%, var(--rule)); }
+.status-divider.status-final .divider-label { color: var(--muted); }
+.today-card .pick-game .live-score {
+  margin-left: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px; font-weight: 700;
+  padding: 1px 8px; border-radius: 999px;
+  background: color-mix(in oklab, var(--ink) 10%, transparent);
+  color: var(--ink);
+}
+.today-card.status-live .pick-game .live-score {
+  background: color-mix(in oklab, #fb923c 15%, transparent);
+  color: #fb923c;
+}
 .today-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -2418,10 +2448,27 @@ details.also-wrap .today-card { opacity: 0.88; }
   {% if star_picks %}
   <div class="today-section">
     <h2>&#9733; Signal picks</h2>
-    <span class="count">{{ star_picks|length }} shown &middot; sorted by signal desc, then EV</span>
+    <span class="count">{{ star_picks|length }} shown &middot; grouped by status, strongest first within each</span>
   </div>
-  <div class="today-list">
-    {% for p in star_picks %}
+  {# Phase 26: group picks by status for better flow — upcoming first
+     (what you can still bet), then live, then completed. Each group has
+     a subtle minimal subheader. #}
+  {% set _upcoming = star_picks|selectattr('status','equalto','upcoming')|list %}
+  {% set _live     = star_picks|selectattr('status','equalto','live')|list %}
+  {% set _final    = star_picks|selectattr('status','equalto','final')|list %}
+  {% for _group_label, _group_picks, _group_cls in [
+       ('UPCOMING', _upcoming, 'upcoming'),
+       ('LIVE NOW', _live,     'live'),
+       ('COMPLETED', _final,    'final'),
+     ] %}
+    {% if _group_picks %}
+    <div class="status-divider status-{{ _group_cls }}">
+      <span class="divider-label">{{ _group_label }}</span>
+      <span class="divider-count">{{ _group_picks|length }}</span>
+      <span class="divider-line"></span>
+    </div>
+    <div class="today-list">
+    {% for p in _group_picks %}
     <a class="today-card star {{ 'status-' ~ (p.status or 'upcoming') }}" href="/pick?date={{ date_str }}&sport={{ p.sport_slug }}&home={{ p.game_home|urlencode }}&away={{ p.game_away|urlencode }}&market={{ p.market|urlencode }}&pick={{ p.pick|urlencode }}" style="text-decoration:none; color:inherit">
       <div class="pick-head">
         <span class="star">&#9733;</span>
@@ -2460,6 +2507,11 @@ details.also-wrap .today-card { opacity: 0.88; }
         <span class="sport-tag">{{ p.sport_name }}</span>
         <span>{{ p.game_away }} @ {{ p.game_home }}</span>
         <span>&middot; {{ p.market }}</span>
+        {% if p.row_score_home is not none and p.row_score_away is not none %}
+          <span class="live-score" title="Current score as of last grader refresh">
+            {{ p.row_score_away|int }}&ndash;{{ p.row_score_home|int }}
+          </span>
+        {% endif %}
       </div>
       <div class="pick-why">
         {% if p.fair_prob is not none and p.pinnacle_prob is not none %}
@@ -2476,7 +2528,9 @@ details.also-wrap .today-card { opacity: 0.88; }
       </div>
     </a>
     {% endfor %}
-  </div>
+    </div>
+    {% endif %}
+  {% endfor %}
   {% else %}
   <div class="today-empty">
     <h3>This is expected on most days.</h3>
@@ -6864,6 +6918,11 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                                     row["score_home"] is not None)
         for p in row["picks"]:
             p["_row_status"] = status_now  # 'upcoming' / 'live' / 'final'
+            # Phase 26: expose row-level scores on every pick so the
+            # TODAY card can render "DEP 2–1 LEV" inline on live/final
+            # games without having to re-fetch per card.
+            p["row_score_home"] = row.get("score_home")
+            p["row_score_away"] = row.get("score_away")
             p["kalshi_live_prob"] = None
             if (status_now == "live"
                 and _market_category(p.get("market")) == "ML"
