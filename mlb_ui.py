@@ -14006,6 +14006,24 @@ main.logged-page { max-width: 1040px; }
 .pnl-sparkline svg { display: block; width: 100%; height: auto; }
 .calib-chart { padding: 8px 0; max-width: 520px; }
 .calib-chart svg { display: block; }
+.calib-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  margin-top: 12px;
+}
+.calib-grid .calib-side { max-width: 100%; }
+.calib-head {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink);
+  margin-bottom: 4px;
+}
+.calib-head .calib-sub {
+  color: var(--muted-2); font-weight: 400; letter-spacing: 0; text-transform: none;
+}
+@media (max-width: 820px) { .calib-grid { grid-template-columns: 1fr; } }
 .records-section h2 {
   font-family: "Fraunces", Georgia, serif; font-style: italic; font-weight: 500;
   font-size: 22px; margin: 0 0 10px;
@@ -14267,37 +14285,53 @@ main.logged-page { max-width: 1040px; }
     </section>
   {% endif %}
 
-  {# Phase 29 (8): calibration chart — predicted vs actual hit rate
-     per fair_prob bucket. Dots above the 45-degree reference line =
-     model is sandbagging (good). Dots below = overconfident. #}
-  {% if calib_bins %}
+  {# Phase 29 (8) / 29c: calibration charts — model and current-filter
+     side by side. The curfilter chart shows how well the Signal >= 3
+     + EV + stayed-till-game-start subset calibrates. Dots above the
+     45° line = picks in that band win more often than predicted. #}
+  {% macro calib_svg(bins) %}
+    <svg viewBox="0 0 420 320" width="100%" height="320" xmlns="http://www.w3.org/2000/svg">
+      <line x1="40" y1="20" x2="40" y2="280" stroke="var(--rule)" stroke-width="1" />
+      <line x1="40" y1="280" x2="400" y2="280" stroke="var(--rule)" stroke-width="1" />
+      <line x1="40" y1="280" x2="400" y2="20" stroke="var(--muted-2)" stroke-width="1" stroke-dasharray="4,4" />
+      {% for ax in [50, 60, 70, 80, 90] %}
+        {% set x = 40 + ((ax - 45) / 45) * 360 %}
+        <text x="{{ x }}" y="300" font-family="JetBrains Mono" font-size="10" fill="var(--muted-2)" text-anchor="middle">{{ ax }}%</text>
+        <text x="30" y="{{ 280 - ((ax - 45) / 45) * 260 + 3 }}" font-family="JetBrains Mono" font-size="10" fill="var(--muted-2)" text-anchor="end">{{ ax }}%</text>
+      {% endfor %}
+      <text x="220" y="315" font-size="11" fill="var(--muted)" text-anchor="middle" font-family="JetBrains Mono">Predicted</text>
+      <text x="15" y="150" font-size="11" fill="var(--muted)" text-anchor="middle" font-family="JetBrains Mono" transform="rotate(-90 15 150)">Actual</text>
+      {% for c in bins %}
+        {% set cx = 40 + ((c.expected * 100 - 45) / 45) * 360 %}
+        {% set cy = 280 - ((c.actual * 100 - 45) / 45) * 260 %}
+        {% set r = (3 + (c.n ** 0.5))|round(1) %}
+        {% if r > 14 %}{% set r = 14 %}{% endif %}
+        <circle cx="{{ cx }}" cy="{{ cy }}" r="{{ r }}"
+                fill="{{ '#22c55e' if c.actual >= c.expected else '#ef4444' }}" fill-opacity="0.75"
+                stroke="var(--ink)" stroke-width="0.5">
+          <title>Bucket {{ (c.bucket_lo * 100)|round|int }}-{{ (c.bucket_hi * 100)|round|int }}%  &middot;  predicted {{ (c.expected * 100)|round(1) }}% &middot; actual {{ (c.actual * 100)|round(1) }}% &middot; n={{ c.n }}</title>
+        </circle>
+      {% endfor %}
+    </svg>
+  {% endmacro %}
+
+  {% if calib_bins or calib_bins_curfilter %}
     <section class="records-section">
-      <h2>Model calibration <span style="color:var(--muted);font-size:13px">predicted vs actual hit rate</span></h2>
-      <div class="sub">Each dot is a 5pp probability bucket. Position above the 45&deg; line means picks in that band win more than the model predicted (sandbagging). Below means overconfident. Dot size reflects sample count.</div>
-      <div class="calib-chart">
-        <svg viewBox="0 0 420 320" width="100%" height="320" xmlns="http://www.w3.org/2000/svg">
-          <line x1="40" y1="20" x2="40" y2="280" stroke="var(--rule)" stroke-width="1" />
-          <line x1="40" y1="280" x2="400" y2="280" stroke="var(--rule)" stroke-width="1" />
-          <line x1="40" y1="280" x2="400" y2="20" stroke="var(--muted-2)" stroke-width="1" stroke-dasharray="4,4" />
-          {% for ax in [50, 60, 70, 80, 90] %}
-            {% set x = 40 + ((ax - 45) / 45) * 360 %}
-            <text x="{{ x }}" y="300" font-family="JetBrains Mono" font-size="10" fill="var(--muted-2)" text-anchor="middle">{{ ax }}%</text>
-            <text x="30" y="{{ 280 - ((ax - 45) / 45) * 260 + 3 }}" font-family="JetBrains Mono" font-size="10" fill="var(--muted-2)" text-anchor="end">{{ ax }}%</text>
-          {% endfor %}
-          <text x="220" y="315" font-size="11" fill="var(--muted)" text-anchor="middle" font-family="JetBrains Mono">Predicted</text>
-          <text x="15" y="150" font-size="11" fill="var(--muted)" text-anchor="middle" font-family="JetBrains Mono" transform="rotate(-90 15 150)">Actual</text>
-          {% for c in calib_bins %}
-            {% set cx = 40 + ((c.expected * 100 - 45) / 45) * 360 %}
-            {% set cy = 280 - ((c.actual * 100 - 45) / 45) * 260 %}
-            {% set r = (3 + (c.n ** 0.5))|round(1) %}
-            {% if r > 14 %}{% set r = 14 %}{% endif %}
-            <circle cx="{{ cx }}" cy="{{ cy }}" r="{{ r }}"
-                    fill="{{ '#22c55e' if c.actual >= c.expected else '#ef4444' }}" fill-opacity="0.75"
-                    stroke="var(--ink)" stroke-width="0.5">
-              <title>Bucket {{ (c.bucket_lo * 100)|round|int }}-{{ (c.bucket_hi * 100)|round|int }}%  &middot;  predicted {{ (c.expected * 100)|round(1) }}% &middot; actual {{ (c.actual * 100)|round(1) }}% &middot; n={{ c.n }}</title>
-            </circle>
-          {% endfor %}
-        </svg>
+      <h2>Calibration <span style="color:var(--muted);font-size:13px">predicted vs actual hit rate</span></h2>
+      <div class="sub">Each dot is a 5pp probability bucket. Above the 45&deg; line = picks in that band win more than predicted (sandbagging — good). Below = overconfident. Dot size reflects sample count. Side-by-side shows whether the Signal filter is making calibration better than the raw model.</div>
+      <div class="calib-grid">
+        {% if calib_bins %}
+        <div class="calib-chart calib-side">
+          <div class="calib-head">All picks <span class="calib-sub">({{ calib_bins|map(attribute='n')|sum }} graded)</span></div>
+          {{ calib_svg(calib_bins) }}
+        </div>
+        {% endif %}
+        {% if calib_bins_curfilter %}
+        <div class="calib-chart calib-side">
+          <div class="calib-head">Current-filter picks <span class="calib-sub">({{ calib_bins_curfilter|map(attribute='n')|sum }} graded)</span></div>
+          {{ calib_svg(calib_bins_curfilter) }}
+        </div>
+        {% endif %}
       </div>
     </section>
   {% endif %}
@@ -15369,42 +15403,54 @@ def logged_plays():
         except Exception:
             pnl_bars = []
 
-    # Phase 29 (8): calibration chart. Bucket picks by predicted
-    # fair_prob (5% bins from 45% to 90%), compare expected vs actual
-    # hit rate. Positive gap (actual > expected) = model is sandbagging;
-    # negative = overconfident. Points above the 45° line are good.
-    calib_bins = []
-    try:
+    # Phase 29 (8): calibration chart — all picks and current-filter
+    # picks side by side. Bucket by predicted fair_prob (5% bins from
+    # 45% to 90%), compare expected vs actual hit rate. Positive gap
+    # (actual > expected) = model is sandbagging; negative = overconfident.
+    # Points above the 45° line are good.
+    def _calibration_bins(picks_iter):
         bins = {}
-        for ds, picks in graded_by_date.items():
-            for pk in picks:
-                if pk.get("result") not in ("W", "L"):
-                    continue
-                fp = pk.get("fair_prob")
-                if fp is None:
-                    continue
-                try: fp = float(fp)
-                except (TypeError, ValueError): continue
-                if not (0.45 <= fp <= 0.90):
-                    continue
-                bucket = int((fp - 0.45) / 0.05)   # 0..8 -> 45-50, 50-55, ..., 85-90
-                b = bins.setdefault(bucket, {"n": 0, "w": 0, "sum_fp": 0.0})
-                b["n"] += 1
-                if pk.get("result") == "W":
-                    b["w"] += 1
-                b["sum_fp"] += fp
+        for pk in picks_iter:
+            if pk.get("result") not in ("W", "L"):
+                continue
+            fp = pk.get("fair_prob")
+            if fp is None:
+                continue
+            try: fp = float(fp)
+            except (TypeError, ValueError): continue
+            if not (0.45 <= fp <= 0.90):
+                continue
+            bucket = int((fp - 0.45) / 0.05)
+            b = bins.setdefault(bucket, {"n": 0, "w": 0, "sum_fp": 0.0})
+            b["n"] += 1
+            if pk.get("result") == "W":
+                b["w"] += 1
+            b["sum_fp"] += fp
+        out = []
         for bucket, b in sorted(bins.items()):
             if b["n"] < 5:
                 continue
-            calib_bins.append({
+            out.append({
                 "bucket_lo": 0.45 + bucket * 0.05,
                 "bucket_hi": 0.45 + (bucket + 1) * 0.05,
                 "n":         b["n"],
                 "expected":  b["sum_fp"] / b["n"],
                 "actual":    b["w"] / b["n"],
             })
+        return out
+
+    calib_bins = []
+    calib_bins_curfilter = []
+    try:
+        _all = [p for picks in graded_by_date.values() for p in picks]
+        calib_bins = _calibration_bins(_all)
+        # Current-filter version: only picks that passed Signal >= 3 +
+        # EV cushion + not model-only + stayed on until game start.
+        _curf = [p for p in _all if plays_log._passes_current_filter(p)]
+        calib_bins_curfilter = _calibration_bins(_curf)
     except Exception:
         calib_bins = []
+        calib_bins_curfilter = []
     # Trigger the daily analysis in a background thread (fire-and-forget) so
     # /logged never blocks on it. We still read the LATEST available analysis
     # synchronously — on first-ever visit this is None and the UI shows the
@@ -15445,6 +15491,7 @@ def logged_plays():
         anchor_status=anchor_status,
         pnl_bars=pnl_bars,
         calib_bins=calib_bins,
+        calib_bins_curfilter=calib_bins_curfilter,
         analysis=analysis,
         active_adj=active_adj,
         grader_status=grader_status,
