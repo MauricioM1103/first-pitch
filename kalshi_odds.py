@@ -145,6 +145,214 @@ def moneyline_fair_probs(sport_slug, games):
     return out
 
 
+# ---------------------------------------------------------------------------
+# Signal-upgrade helpers (Phase 21): orderbook depth + trade freshness +
+# exchange status, so the Kalshi quote only influences Signal when the
+# market is thick, fresh, and the exchange is actually open.
+# ---------------------------------------------------------------------------
+
+_STATUS_CACHE = (0.0, None)       # (ts, status dict or None)
+_STATUS_TTL_S = 10 * 60
+_ORDERBOOK_CACHE = {}             # ticker -> (ts, orderbook dict)
+_ORDERBOOK_TTL_S = 60
+_TRADES_CACHE = {}                # ticker -> (ts, [trade dicts])
+_TRADES_TTL_S = 60
+
+
+def exchange_status():
+    """Return Kalshi exchange status dict (exchange_active, trading_active,
+    intra_exchange_transfers_active) or None on failure. Cached 10 min."""
+    global _STATUS_CACHE
+    ts, cached = _STATUS_CACHE
+    now = time.time()
+    if cached is not None and (now - ts) < _STATUS_TTL_S:
+        return cached
+    try:
+        d = _fetch_json(f"{_BASE}/exchange/status", timeout=10)
+    except (URLError, ValueError, OSError, TimeoutError, ConnectionError):
+        d = None
+    _STATUS_CACHE = (now, d)
+    return d
+
+
+def exchange_is_trading():
+    """True iff Kalshi exchange is up AND accepting trades right now.
+    Falls back to True on fetch failure — don't disable Kalshi signal
+    confirmation just because the status probe timed out."""
+    s = exchange_status()
+    if s is None:
+        return True
+    return bool(s.get("exchange_active")) and bool(s.get("trading_active"))
+
+
+def market_orderbook(ticker):
+    """Return the top-of-book snapshot for a Kalshi market ticker, or None.
+    Shape: {'yes': [[price_cents, size], ...], 'no': [[price_cents, size], ...]}.
+    Cached 60s per ticker — orderbook changes faster than series listings
+    but we don't need second-by-second refresh for a signal confirmation."""
+    if not ticker:
+        return None
+    hit = _ORDERBOOK_CACHE.get(ticker)
+    now = time.time()
+    if hit and (now - hit[0]) < _ORDERBOOK_TTL_S:
+        return hit[1]
+    try:
+        d = _fetch_json(
+            f"{_BASE}/markets/{ticker}/orderbook?depth=5",
+            timeout=10,
+        )
+        ob = (d or {}).get("orderbook") or None
+    except (URLError, ValueError, OSError, TimeoutError, ConnectionError):
+        ob = None
+    _ORDERBOOK_CACHE[ticker] = (now, ob)
+    if len(_ORDERBOOK_CACHE) > 128:
+        for k in sorted(_ORDERBOOK_CACHE.items(), key=lambda kv: kv[1][0])[:64]:
+            _ORDERBOOK_CACHE.pop(k[0], None)
+    return ob
+
+
+def market_last_trade_ts(ticker):
+    """Return the UNIX timestamp of the most-recent trade on this market,
+    or None. Trades endpoint returns newest-first; we only need the first.
+    Cached 60s."""
+    if not ticker:
+        return None
+    hit = _TRADES_CACHE.get(ticker)
+    now = time.time()
+    if hit and (now - hit[0]) < _TRADES_TTL_S:
+        return hit[1]
+    last_ts = None
+    try:
+        d = _fetch_json(
+            f"{_BASE}/markets/trades?ticker={ticker}&limit=1",
+            timeout=10,
+        )
+        trades = (d or {}).get("trades") or []
+        if trades:
+            created = trades[0].get("created_time")
+            if isinstance(created, str):
+                # ISO 8601 -> unix ts
+                from datetime import datetime as _dt
+                try:
+                    last_ts = _dt.fromisoformat(created.replace("Z", "+00:00")).timestamp()
+                except (TypeError, ValueError):
+                    last_ts = None
+            elif isinstance(created, (int, float)):
+                last_ts = float(created)
+    except (URLError, ValueError, OSError, TimeoutError, ConnectionError):
+        last_ts = None
+    _TRADES_CACHE[ticker] = (now, last_ts)
+    if len(_TRADES_CACHE) > 128:
+        for k in sorted(_TRADES_CACHE.items(), key=lambda kv: kv[1][0])[:64]:
+            _TRADES_CACHE.pop(k[0], None)
+    return last_ts
+
+
+# Thresholds for "trustworthy Kalshi quote". All three must pass for a
+# Kalshi price to influence the Signal composite — a quote on an empty
+# book or a market that hasn't traded in days is noise, not signal.
+KALSHI_MIN_BOOK_DEPTH_USD = 500.0   # top-5 cumulative size × price in dollars
+KALSHI_MAX_TRADE_AGE_S    = 6 * 3600   # 6 hours
+KALSHI_MAX_PROB_GAP       = 0.05       # within 5pp of our fair_prob
+
+
+def _market_for_matchup(sport_slug, home_team):
+    """Return the Kalshi market dict matching this matchup, or None.
+    Shared helper for moneyline_yes_prob + kalshi_confirms_pick so both
+    traverse the same series listing exactly once."""
+    markets = _series_markets(sport_slug)
+    if not markets:
+        return None
+    home_norm = _norm_team(home_team)
+    for m in markets:
+        yes_team = _norm_team(m.get("yes_sub_title"))
+        if not yes_team:
+            continue
+        if (yes_team == home_norm
+                or yes_team in home_norm
+                or home_norm in yes_team):
+            return m
+    return None
+
+
+def _orderbook_depth_usd(orderbook, side):
+    """Sum top-of-book size × price for one side of the book, in dollars.
+    Each Kalshi contract settles at $1.00 so size × (price/100) = dollars
+    locked up on that side."""
+    if not orderbook:
+        return 0.0
+    levels = orderbook.get(side) or []
+    total = 0.0
+    for lvl in levels[:5]:
+        try:
+            price, size = float(lvl[0]), float(lvl[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        total += size * (price / 100.0)
+    return total
+
+
+def kalshi_confirms_pick(sport_slug, home_team, is_home_pick, our_fair_prob):
+    """True iff Kalshi independently confirms our pick with a trustworthy
+    quote. Confirmation requires ALL of:
+      * exchange is trading
+      * a Kalshi market exists for this matchup
+      * live quote (yes_ask / yes_bid / last_price) exists
+      * Kalshi implied prob is within 5pp of our fair_prob (same direction)
+      * orderbook depth >= $500 on OUR side (meaningful quote)
+      * last trade within 6h (fresh quote, not stale)
+
+    Routed to the +1 "cross-book agreement" slot in the Signal composite.
+    Returns False (not None) when confirmation fails so the Signal math
+    stays simple — the chip in the UI still shows the raw divergence.
+    """
+    try:
+        if not exchange_is_trading():
+            return False
+        if our_fair_prob is None or sport_slug not in _SERIES_PREFIX:
+            return False
+        m = _market_for_matchup(sport_slug, home_team)
+        if not m:
+            return False
+        ticker = m.get("ticker")
+        if not ticker:
+            return False
+        # Kalshi encodes "home wins" as the YES side. If our pick is HOME,
+        # Kalshi YES must agree. If our pick is AWAY, Kalshi NO must agree.
+        yes_cents = None
+        for key in ("yes_ask", "yes_bid", "last_price"):
+            v = m.get(key)
+            if v is None:
+                continue
+            try:
+                c = float(v)
+            except (TypeError, ValueError):
+                continue
+            if 0 < c < 100:
+                yes_cents = c
+                break
+        if yes_cents is None:
+            return False
+        kalshi_home_prob = yes_cents / 100.0
+        kalshi_our_prob = kalshi_home_prob if is_home_pick else (1.0 - kalshi_home_prob)
+        if abs(kalshi_our_prob - our_fair_prob) > KALSHI_MAX_PROB_GAP:
+            return False
+        # Depth gate — our side of the book
+        ob = market_orderbook(ticker)
+        depth = _orderbook_depth_usd(ob, "yes" if is_home_pick else "no")
+        if depth < KALSHI_MIN_BOOK_DEPTH_USD:
+            return False
+        # Liveness gate
+        last_ts = market_last_trade_ts(ticker)
+        if last_ts is None:
+            return False
+        if (time.time() - last_ts) > KALSHI_MAX_TRADE_AGE_S:
+            return False
+        return True
+    except Exception:
+        return False
+
+
 if __name__ == "__main__":
     # CLI smoke
     for sport in ("nfl", "mlb", "nhl", "nba"):

@@ -2352,7 +2352,7 @@ details.also-wrap .today-card { opacity: 0.88; }
         </li>
         <li>
           <span class="rule-pts">+1</span>
-          <span class="rule-txt"><b>Cross-book:</b> DraftKings / Kalshi price confirms Pinnacle <span style="color:var(--muted-2)">(currently dark &mdash; feed partial)</span></span>
+          <span class="rule-txt"><b>Cross-book:</b> Kalshi (NFL / CFB / NHL / MLB moneylines) agrees within 5pp of our fair prob, has orderbook depth &ge; $500 on our side, and has traded within the last 6 hours. Loose DK/Kalshi divergence still counts for sports Kalshi doesn't cover (soccer, UFC, Liga MX, …).</span>
         </li>
       </ul>
       <div class="signal-tiers">
@@ -4767,14 +4767,21 @@ def _signal_score(pick):
         move = 0.0
     if move > 0.0:
         score += 1
-    # Book agreement (DK or Kalshi, in pp space)
-    dk = pick.get("dk_divergence_pp")
-    k  = pick.get("kalshi_divergence_pp")
-    try:
-        if (dk is not None and float(dk) > 0.0) or (k is not None and float(k) > 0.0):
-            score += 1
-    except (TypeError, ValueError):
-        pass
+    # Book agreement: a gated Kalshi confirmation beats raw divergence.
+    # kalshi_confirmed=True means ALL of (exchange trading, orderbook
+    # depth >= $500, last trade <6h, within 5pp of our fair prob). When
+    # that's set we trust it. Otherwise fall back to the loose DK/Kalshi
+    # divergence check for sports Kalshi doesn't cover (soccer, UFC).
+    if pick.get("kalshi_confirmed"):
+        score += 1
+    else:
+        dk = pick.get("dk_divergence_pp")
+        k  = pick.get("kalshi_divergence_pp")
+        try:
+            if (dk is not None and float(dk) > 0.0) or (k is not None and float(k) > 0.0):
+                score += 1
+        except (TypeError, ValueError):
+            pass
     # Prob floor
     try:
         fp = float(pick.get("fair_prob") or 0.0)
@@ -6651,6 +6658,25 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                     kalshi_divergence_pp = (kalshi_fair - float(p.get("fair_prob"))) * 100.0
                 except (TypeError, ValueError):
                     kalshi_divergence_pp = None
+        # Phase 21: full Kalshi confirmation (orderbook depth + trade
+        # freshness + exchange status + prob agreement). Only true when
+        # Kalshi is a genuinely trustworthy second opinion for THIS pick.
+        # Routed to the +1 cross-book slot in _signal_score below so the
+        # Signal composite finally has a real path to 5/5 for US-sport
+        # ML picks. Keeps the raw divergence chip above for display.
+        kalshi_confirmed = False
+        try:
+            if p.get("sport_slug") in ("nfl", "ncaaf", "nhl", "mlb") \
+               and _market_category(p.get("market")) == "ML" \
+               and p.get("fair_prob") is not None:
+                import kalshi_odds as _ko
+                kalshi_confirmed = _ko.kalshi_confirms_pick(
+                    p.get("sport_slug"), p.get("home_team"),
+                    is_home_pick=is_home,
+                    our_fair_prob=float(p.get("fair_prob")),
+                )
+        except Exception:
+            kalshi_confirmed = False
         row["picks"].append({
             **p,
             "icon":          icon,
@@ -6665,6 +6691,7 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
             "dk_divergence_pp":   dk_divergence_pp,
             "kalshi_fair_prob":   kalshi_fair,
             "kalshi_divergence_pp": kalshi_divergence_pp,
+            "kalshi_confirmed":   kalshi_confirmed,
         })
         # Overlay score if this pick graded with a final score
         gp = graded_by_id.get(p.get("id"))
