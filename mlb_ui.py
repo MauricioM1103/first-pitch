@@ -15384,9 +15384,10 @@ _CHANGE_WEBHOOK_LOCK = _threading.Lock()
 
 def _maybe_notify_changes(star_picks):
     """Fire-and-forget change-detection for the daily-picks Discord
-    channel. Compares the current star_picks against the last snapshot;
-    if any new signal>=3 picks appeared or any pick flipped to DO NOT
-    BET, posts the diff as a PNG card. Dedupes via snapshot file."""
+    channel. Only alerts when a NEW pick enters the top-N (default 15)
+    and the entrant's game hasn't started yet. All entrants in one
+    cycle are rolled into a single PNG, so most refreshes send zero
+    messages and at most one per detection cycle."""
     try:
         settings = _load_settings()
         webhook = (settings.get("daily_picks_webhook_url") or "").strip()
@@ -15397,9 +15398,9 @@ def _maybe_notify_changes(star_picks):
         except Exception:
             return
         with _CHANGE_WEBHOOK_LOCK:
-            added, dropped = _db.diff_picks(star_picks)
-            if added or dropped:
-                _db.send_change_alert(webhook, added=added, dropped=dropped)
+            entrants = _db.diff_top_n(star_picks)
+            if entrants:
+                _db.send_change_alert(webhook, entrants)
     except Exception:
         pass
 

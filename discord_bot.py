@@ -27,11 +27,16 @@ except Exception:
 
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-_SNAPSHOT_PATH = os.path.join(_BASE_DIR, "logs", "discord_last_snapshot.json")
+_SNAPSHOT_PATH   = os.path.join(_BASE_DIR, "logs", "discord_last_snapshot.json")
+_TOP_SNAP_PATH   = os.path.join(_BASE_DIR, "logs", "discord_top_n.json")
 
 # Visual constants — matches the social-slides template.
 _W, _H = 1080, 1920
 _PICKS_PER_PNG = 9
+# Daily cap + live-update ranking window. Picks beyond this don't go to
+# Discord — keeps the channel from being flooded. Rank = Signal desc,
+# then EV desc.
+_TOP_N = 15
 
 # Colors (match the dark theme on the live site).
 _BG         = (14, 18, 24)
@@ -355,117 +360,168 @@ def send_intro(webhook_url):
     return post_text(webhook_url, _INTRO_MESSAGE)
 
 
+def render_picks_png_tall(picks, title, subtitle=""):
+    """Variable-height PNG — one card per pick, no clipping. Used for
+    the daily top-N send and the live-update entrants PNG so the whole
+    list fits in a single image rather than being split."""
+    if not _PIL_OK:
+        return None
+    n = max(1, min(len(picks), _TOP_N))
+    card_h = 170
+    gap = 10
+    header_h = 160
+    footer_h = 70
+    h = header_h + (n * card_h) + ((n - 1) * gap) + footer_h
+    canvas = Image.new("RGB", (_W, h), _BG)
+    draw = ImageDraw.Draw(canvas)
+
+    f_title = _font(56, bold=True)
+    f_sub   = _font(24)
+    draw.text((40, 32), title, font=f_title, fill=_INK)
+    if subtitle:
+        draw.text((40, 100), subtitle, font=f_sub, fill=_MUTED)
+    draw.line([40, 148, _W - 40, 148], fill=_RULE, width=2)
+
+    y = 168
+    for p in picks[:n]:
+        y = _render_pick_card(canvas, draw, p, y)
+
+    footer_y = h - 50
+    f_small = _font(18)
+    draw.line([40, footer_y - 8, _W - 40, footer_y - 8],
+              fill=_RULE, width=1)
+    draw.text((40, footer_y), "cheeks-model.onrender.com",
+              font=f_small, fill=_MUTED_2)
+    stamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    try:
+        draw.text((_W - 40, footer_y), stamp, font=f_small,
+                  fill=_MUTED_2, anchor="rt")
+    except Exception:
+        draw.text((_W - 300, footer_y), stamp, font=f_small, fill=_MUTED_2)
+
+    buf = io.BytesIO()
+    canvas.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+def _rank_picks(picks):
+    """Sort live (not do_not_bet) picks strongest-first for top-N."""
+    live = [p for p in picks if not p.get("do_not_bet")]
+    live.sort(key=lambda p: (
+        -(int(p.get("signal_score") or 0)),
+        -(float(p.get("ev_pct") or 0.0)),
+        p.get("start_time") or "",
+    ))
+    return live
+
+
 def send_daily_picks(webhook_url, picks, date_label=""):
-    """Post the daily preamble, then chunk picks into _PICKS_PER_PNG
-    groups and send each as a PNG. Returns count of PNGs sent."""
+    """Post the daily preamble, then one tall PNG with the top-N picks.
+    Also seeds the top-N snapshot so the first live-update diff is
+    computed against today's starting baseline. Returns 1 if PNG was
+    sent, 0 if not."""
     if not webhook_url or not picks:
         return 0
     label = date_label or datetime.utcnow().strftime("%A, %B %d")
+    ranked = _rank_picks(picks)
+    top = ranked[:_TOP_N]
     preamble = (
         f":alarm_clock: **12 AM CT picks — {label}**\n\n"
-        f"Full Signal 3+ slate for today ({len(picks)} picks). "
-        "Picks can change during the day — new ones that qualify will post "
-        "as live **+ New Pick** single-slides, and existing ones that fall "
-        "off get flagged **X DO NOT BET**. Changes are detected automatically "
-        "whenever the dashboard refreshes."
+        f"Top {len(top)} picks for today (of {len(ranked)} Signal 3+ in total). "
+        "If one of these flips to DO NOT BET and a new pick qualifies to "
+        "take its place in time before kickoff, you'll get a live single "
+        "update showing only the new entrants. No other noise."
     )
     post_text(webhook_url, preamble)
-    chunks = [picks[i:i + _PICKS_PER_PNG]
-              for i in range(0, len(picks), _PICKS_PER_PNG)]
-    total = len(chunks)
-    sent = 0
-    for i, chunk in enumerate(chunks, 1):
-        png = render_picks_png(
-            chunk,
-            title=f"Today's Picks ({i}/{total})",
-            subtitle=label,
-        )
-        if not png:
-            continue
-        if send_discord_image(webhook_url, png,
-                              f"picks_{i}_of_{total}.png"):
-            sent += 1
-    return sent
-
-
-def send_change_alert(webhook_url, added=None, dropped=None):
-    """Send a change-notification PNG for every added or newly-dropped
-    pick. One slide per pick so each change reads as its own live
-    update instead of being batched into a single card."""
-    if not webhook_url:
+    png = render_picks_png_tall(
+        top,
+        title=f"Top {len(top)} Picks",
+        subtitle=label,
+    )
+    if not png:
         return 0
-    sent = 0
-    added = added or []
-    dropped = dropped or []
+    ok = send_discord_image(webhook_url, png, "daily_top.png")
+    # Seed the top-N snapshot so the change detector has a baseline.
+    _write_top_snapshot([p.get("id") for p in top if p.get("id")])
+    return 1 if ok else 0
+
+
+def diff_top_n(star_picks):
+    """Return picks that just ENTERED the top-N since the last snapshot.
+    Entrants whose game has already started are dropped (can't act on
+    them). Writes the fresh snapshot before returning so repeated calls
+    don't re-alert on the same entrant."""
+    prev = _load_top_snapshot()
+    prev_set = set(prev or [])
+    ranked = _rank_picks(star_picks)
+    current_top = ranked[:_TOP_N]
+    current_ids = [p.get("id") for p in current_top if p.get("id")]
+    current_set = set(current_ids)
+    entrant_ids = current_set - prev_set
+    pick_by_id = {p.get("id"): p for p in star_picks}
+    entrants = []
+    for pid in entrant_ids:
+        p = pick_by_id.get(pid)
+        if not p:
+            continue
+        # Only pre-game picks — once the game starts, posting an alert
+        # is useless since the user can't realistically act on it.
+        if p.get("_row_status") and p.get("_row_status") != "upcoming":
+            continue
+        entrants.append(p)
+    _write_top_snapshot(current_ids)
+    # Preserve ranking order for the output PNG
+    entrants.sort(key=lambda p: (
+        -(int(p.get("signal_score") or 0)),
+        -(float(p.get("ev_pct") or 0.0)),
+    ))
+    return entrants
+
+
+def send_change_alert(webhook_url, entrants):
+    """ONE PNG with all newly-qualified top-N entrants. Caption notes
+    how many new picks joined the list. If no entrants, no message."""
+    if not webhook_url or not entrants:
+        return 0
     stamp = datetime.utcnow().strftime("%H:%M UTC")
-    for p in added[:_PICKS_PER_PNG]:
-        png = render_picks_png(
-            [p],
-            title="+ New Pick",
-            subtitle=f"Just added to the board — {stamp}",
-        )
-        if png and send_discord_image(webhook_url, png, "added.png",
-                                       ":warning: **Live update** — new pick qualified"):
-            sent += 1
-    for p in dropped[:_PICKS_PER_PNG]:
-        png = render_picks_png(
-            [p],
-            title="X DO NOT BET",
-            subtitle=f"Fell off the filter — {stamp}",
-        )
-        if png and send_discord_image(webhook_url, png, "dropped.png",
-                                       ":no_entry: **Live update** — pick flipped to DO NOT BET"):
-            sent += 1
-    return sent
+    n = len(entrants)
+    png = render_picks_png_tall(
+        entrants,
+        title=f"+ Top {_TOP_N} update",
+        subtitle=f"{n} new pick{'s' if n > 1 else ''} just qualified — {stamp}",
+    )
+    if not png:
+        return 0
+    msg = (
+        f":star: **Live update** — {n} new pick{'s' if n > 1 else ''} "
+        f"entered the top {_TOP_N}"
+    )
+    return 1 if send_discord_image(webhook_url, png, "entrants.png", msg) else 0
 
 
 # -------------- Change detection snapshot --------------
+#
+# Previously this held a {id: {signal_score, do_not_bet}} map for the
+# whole slate and alerted on any addition or DO NOT BET flip — noisy
+# because the Signal 3 bar is low enough that lots of picks pop in and
+# out as prices move. The current flow uses only `_load_top_snapshot`
+# + `_write_top_snapshot` (a plain list of the current top-N ids) and
+# alerts only when a NEW id enters the top-N. The old per-pick file is
+# kept read/writable for backward compat (nothing writes to it now).
 
-def _load_snapshot():
-    """Return the previous picks snapshot {id: {signal_score, do_not_bet}}
-    or {} if none."""
+def _load_top_snapshot():
+    """Return the prior top-N pick id list, or [] if none."""
     try:
-        with open(_SNAPSHOT_PATH) as f:
-            return json.load(f) or {}
+        with open(_TOP_SNAP_PATH) as f:
+            return json.load(f) or []
     except Exception:
-        return {}
+        return []
 
 
-def _write_snapshot(snap):
+def _write_top_snapshot(ids):
     try:
-        os.makedirs(os.path.dirname(_SNAPSHOT_PATH), exist_ok=True)
-        with open(_SNAPSHOT_PATH, "w") as f:
-            json.dump(snap, f)
+        os.makedirs(os.path.dirname(_TOP_SNAP_PATH), exist_ok=True)
+        with open(_TOP_SNAP_PATH, "w") as f:
+            json.dump(list(ids or []), f)
     except Exception:
         pass
-
-
-def diff_picks(star_picks):
-    """Compare current star_picks against the last snapshot. Returns
-    (added, dropped) where:
-      added   = picks in current that weren't in snapshot
-      dropped = picks that newly flipped to do_not_bet since last snap
-    After returning, writes a fresh snapshot."""
-    prev = _load_snapshot()
-    current = {}
-    added, dropped = [], []
-    for p in star_picks:
-        pid = p.get("id")
-        if not pid:
-            continue
-        is_dnb = bool(p.get("do_not_bet"))
-        current[pid] = {
-            "signal_score": p.get("signal_score"),
-            "do_not_bet":   is_dnb,
-        }
-        prev_entry = prev.get(pid)
-        if prev_entry is None:
-            # New pick we've never seen; skip from "added" if it's
-            # a saved pick already — only alert on genuinely new ones
-            # that just qualified for Signal >= 3.
-            if not p.get("_from_saved"):
-                added.append(p)
-        elif is_dnb and not prev_entry.get("do_not_bet"):
-            dropped.append(p)
-    _write_snapshot(current)
-    return added, dropped
