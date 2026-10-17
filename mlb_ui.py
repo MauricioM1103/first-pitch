@@ -7637,6 +7637,14 @@ def today_landing():
         _th.Thread(target=_maybe_notify_locks, args=(star_picks,), daemon=True).start()
     except Exception:
         pass
+    # Phase 31: live change-alerts to the daily-picks Discord channel.
+    # Compares against logs/discord_last_snapshot.json; posts PNG cards
+    # for newly-added picks and newly-flagged DO NOT BETs.
+    try:
+        import threading as _th
+        _th.Thread(target=_maybe_notify_changes, args=(star_picks,), daemon=True).start()
+    except Exception:
+        pass
     also_likes  = [p for p in flat
                    if (p.get("signal_score") or 0) == 2
                    and not p.get("do_not_bet")]
@@ -15183,6 +15191,8 @@ def _load_settings():
             "discord_webhook_url": "",
             "pushover_user_key":   "",
             "pushover_api_token":  "",
+            "daily_picks_webhook_url": "",
+            "cron_secret": "",
         }
 
 
@@ -15311,6 +15321,99 @@ def _maybe_notify_locks(star_picks):
         pass
 
 
+# Phase 31: Daily picks PNG + live change-alerts to Discord.
+_CHANGE_WEBHOOK_LOCK = _threading.Lock()
+
+
+def _maybe_notify_changes(star_picks):
+    """Fire-and-forget change-detection for the daily-picks Discord
+    channel. Compares the current star_picks against the last snapshot;
+    if any new signal>=3 picks appeared or any pick flipped to DO NOT
+    BET, posts the diff as a PNG card. Dedupes via snapshot file."""
+    try:
+        settings = _load_settings()
+        webhook = (settings.get("daily_picks_webhook_url") or "").strip()
+        if not webhook:
+            return
+        try:
+            import discord_bot as _db
+        except Exception:
+            return
+        with _CHANGE_WEBHOOK_LOCK:
+            added, dropped = _db.diff_picks(star_picks)
+            if added or dropped:
+                _db.send_change_alert(webhook, added=added, dropped=dropped)
+    except Exception:
+        pass
+
+
+def _send_daily_picks_png(force=False):
+    """Render today's star_picks list to 2-3 PNG cards and post to the
+    daily-picks Discord webhook. Called by /cron/daily-picks at 12 AM CT
+    once per day. Returns a dict with sent count + today's pick count
+    for logging."""
+    try:
+        import discord_bot as _db
+    except Exception:
+        return {"sent": 0, "error": "pillow_missing"}
+    settings = _load_settings()
+    webhook = (settings.get("daily_picks_webhook_url") or "").strip()
+    if not webhook:
+        return {"sent": 0, "error": "no_webhook"}
+    # Build the board like the TODAY route does, filtered down to the
+    # current-filter picks (Signal >= 3, not do_not_bet).
+    try:
+        _d = datetime.now(CENTRAL).date()
+        _date_str = _d.isoformat()
+        board_rows, _all_picks = _build_board_rows(_date_str, _d, "all",
+                                                    strong_only=False)
+    except Exception:
+        return {"sent": 0, "error": "board_build_failed"}
+    flat = []
+    for row in board_rows or []:
+        for p in row.get("picks", []):
+            if (p.get("signal_score") or 0) >= 3 and not p.get("do_not_bet"):
+                flat.append(p)
+    if not flat:
+        return {"sent": 0, "picks": 0}
+    try:
+        flat.sort(key=lambda p: (
+            -(int(p.get("signal_score") or 0)),
+            -(float(p.get("ev_pct") or 0.0)),
+            p.get("start_time") or "",
+        ))
+    except Exception:
+        pass
+    date_label = datetime.now(CENTRAL).strftime("%A, %B %d")
+    sent = _db.send_daily_picks(webhook, flat, date_label=date_label)
+    # Reset snapshot so change-detector starts from today's baseline.
+    try:
+        _db._write_snapshot({
+            p.get("id"): {
+                "signal_score": p.get("signal_score"),
+                "do_not_bet":   bool(p.get("do_not_bet")),
+            } for p in flat if p.get("id")
+        })
+    except Exception:
+        pass
+    return {"sent": sent, "picks": len(flat)}
+
+
+@app.route("/cron/daily-picks")
+def cron_daily_picks():
+    """Scheduled endpoint for Render cron. Fires at 12 AM CT.
+    Optionally gated by cron_secret setting — if set, request must
+    include ?key=<secret>. Returns JSON status."""
+    settings = _load_settings()
+    secret = (settings.get("cron_secret") or "").strip()
+    if secret and (request.args.get("key") or "") != secret:
+        return Response(json.dumps({"ok": False, "error": "unauthorized"}),
+                        status=401, mimetype="application/json")
+    result = _send_daily_picks_png(force=True)
+    result["ok"] = bool(result.get("sent"))
+    return Response(json.dumps(result), mimetype="application/json")
+
+
 @app.route("/settings", methods=["GET", "POST"])
 def settings_page():
     """Phase 29 (11): user preferences. Bankroll + Kelly fraction
@@ -15324,6 +15427,8 @@ def settings_page():
             s["discord_webhook_url"] = (request.form.get("discord_webhook_url") or "").strip()
             s["pushover_user_key"]   = (request.form.get("pushover_user_key")   or "").strip()
             s["pushover_api_token"]  = (request.form.get("pushover_api_token")  or "").strip()
+            s["daily_picks_webhook_url"] = (request.form.get("daily_picks_webhook_url") or "").strip()
+            s["cron_secret"]             = (request.form.get("cron_secret")             or "").strip()
             saved = _save_settings(s)
         except Exception:
             saved = False
@@ -15343,6 +15448,11 @@ def settings_page():
         + f'<label style="display:block">Discord webhook URL<br><input type="url" name="discord_webhook_url" value="{s.get("discord_webhook_url", "")}" placeholder="https://discord.com/api/webhooks/..." style="{_input_style};width:100%;margin-top:4px;box-sizing:border-box"></label>'
         + f'<label style="display:block;margin-top:10px">Pushover user key<br><input type="text" name="pushover_user_key" value="{s.get("pushover_user_key", "")}" placeholder="u...30 chars" style="{_input_style};width:260px;margin-top:4px"></label>'
         + f'<label style="display:block;margin-top:10px">Pushover API token<br><input type="text" name="pushover_api_token" value="{s.get("pushover_api_token", "")}" placeholder="a...30 chars" style="{_input_style};width:260px;margin-top:4px"></label>'
+        + '</fieldset>'
+        + '<fieldset style="border:1px solid var(--rule);border-radius:10px;padding:14px"><legend style="padding:0 6px;color:var(--muted);font-size:12px;letter-spacing:0.1em;text-transform:uppercase">Daily picks (Discord PNG)</legend>'
+        + '<p style="margin:0 0 10px;color:var(--muted);font-size:12.5px">A separate Discord channel for the daily picks slate. At 12 AM CT the full day\'s Signal 3+ list goes out as 2-3 PNG cards. When a pick is added mid-day or flipped to DO NOT BET, a live PNG update is posted. Create a channel webhook in Discord: Channel settings → Integrations → Webhooks → New Webhook → Copy Webhook URL. Note: discord.gg invite links will NOT work — this must be a channel webhook URL.</p>'
+        + f'<label style="display:block">Daily picks webhook URL<br><input type="url" name="daily_picks_webhook_url" value="{s.get("daily_picks_webhook_url", "")}" placeholder="https://discord.com/api/webhooks/..." style="{_input_style};width:100%;margin-top:4px;box-sizing:border-box"></label>'
+        + f'<label style="display:block;margin-top:10px">Cron secret (optional)<br><input type="text" name="cron_secret" value="{s.get("cron_secret", "")}" placeholder="random string, e.g. 7fK9...q" style="{_input_style};width:260px;margin-top:4px"><br><span style="color:var(--muted);font-size:12px">If set, /cron/daily-picks requires ?key=&lt;secret&gt;. Leave blank to allow unauthenticated.</span></label>'
         + '</fieldset>'
         + '<button type="submit" style="background:var(--good);color:var(--bg);border:none;padding:10px 24px;border-radius:8px;font-weight:600;cursor:pointer;align-self:flex-start">Save</button>'
         + '</form></main>' + THEME_SCRIPT)
