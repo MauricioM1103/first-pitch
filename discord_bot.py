@@ -27,10 +27,12 @@ except Exception:
 
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-_SNAPSHOT_PATH    = os.path.join(_BASE_DIR, "logs", "discord_last_snapshot.json")
-_TOP_SNAP_PATH    = os.path.join(_BASE_DIR, "logs", "discord_top_n.json")
-_LAST_ALERT_PATH  = os.path.join(_BASE_DIR, "logs", "discord_last_alert.json")
-_DNB_SENT_PATH    = os.path.join(_BASE_DIR, "logs", "discord_dnb_sent.json")
+_SNAPSHOT_PATH         = os.path.join(_BASE_DIR, "logs", "discord_last_snapshot.json")
+_TOP_SNAP_PATH         = os.path.join(_BASE_DIR, "logs", "discord_top_n.json")
+_LAST_ALERT_PATH       = os.path.join(_BASE_DIR, "logs", "discord_last_alert.json")
+_DNB_SENT_PATH         = os.path.join(_BASE_DIR, "logs", "discord_dnb_sent.json")
+_RESULT_SENT_PATH      = os.path.join(_BASE_DIR, "logs", "discord_result_sent.json")
+_CANDIDATES_SENT_PATH  = os.path.join(_BASE_DIR, "logs", "discord_candidates_sent.json")
 
 # Visual constants — matches the social-slides template.
 _W, _H = 1080, 1920
@@ -630,6 +632,82 @@ def _write_dnb_sent(ids):
         pass
 
 
+def _load_result_sent():
+    try:
+        with open(_RESULT_SENT_PATH) as f:
+            data = json.load(f) or {}
+        if data.get("date") != _today_ct_str():
+            return set()
+        return set(data.get("ids") or [])
+    except Exception:
+        return set()
+
+
+def _write_result_sent(ids):
+    try:
+        os.makedirs(os.path.dirname(_RESULT_SENT_PATH), exist_ok=True)
+        with open(_RESULT_SENT_PATH, "w") as f:
+            json.dump({"date": _today_ct_str(), "ids": sorted(ids)}, f)
+    except Exception:
+        pass
+
+
+def diff_newly_graded(picks_source, posted_pairs):
+    """Return [(pick, half_label), ...] for POSTED top-10 picks that
+    just graded W/L/P and haven't been alerted today.
+
+    picks_source: iterable of pick dicts (from the live board or from
+                  plays_log.grade_all for today).
+    posted_pairs: list of (pick_id, half_label) tuples.
+
+    Dedup via logs/discord_result_sent.json so each pick fires exactly
+    one result alert per day."""
+    sent = _load_result_sent()
+    pick_by_id = {p.get("id"): p for p in picks_source if p.get("id")}
+    out = []
+    for pid, half_label in posted_pairs:
+        p = pick_by_id.get(pid)
+        if not p:
+            continue
+        r = p.get("result")
+        if r in ("W", "L", "P") and pid not in sent:
+            out.append((p, half_label))
+            sent.add(pid)
+    if out:
+        _write_result_sent(sent)
+    return out
+
+
+def send_result_alerts(webhook_url, graded_pairs):
+    """One PNG per newly-graded pick with its W/L/P chip and a caption
+    naming the half + units. No rate limit — each pick fires once."""
+    if not webhook_url or not graded_pairs:
+        return 0
+    sent = 0
+    stamp = datetime.utcnow().strftime("%H:%M UTC")
+    for pick, half_label in graded_pairs:
+        r = pick.get("result")
+        emoji = {"W": ":white_check_mark:",
+                 "L": ":x:",
+                 "P": ":white_flag:"}.get(r, "")
+        word = {"W": "WON", "L": "LOST", "P": "PUSH"}.get(r, r or "RESULT")
+        try:
+            units = float(pick.get("profit_u") or 0.0)
+            units_txt = f"  ·  {units:+.2f}u"
+        except (TypeError, ValueError):
+            units_txt = ""
+        png = render_picks_png_tall(
+            [pick],
+            title=f"{word} — {half_label}",
+            subtitle=f"{pick.get('pick') or ''}{units_txt}  ·  {stamp}",
+        )
+        if png:
+            msg = f"{emoji} **{half_label} pick** — **{word}**{units_txt}"
+            if send_discord_image(webhook_url, png, f"result_{r}.png", msg):
+                sent += 1
+    return sent
+
+
 def diff_posted_dnb(star_picks, posted_half1, posted_half2):
     """Return [(pick, half_label), ...] for POSTED top-10 picks that
     just flipped to DO NOT BET and haven't been alerted today. Dedupes
@@ -693,27 +771,43 @@ def send_change_alert(webhook_url, entrants=None, dnb_alerts=None):
             if send_discord_image(webhook_url, png, "dnb.png", msg):
                 sent += 1
 
-    # --- Entrant alerts (rate-limited + capped at 2) ---
+    # --- Entrant alerts (once per day, capped at 2 picks per message)
     entrants = (entrants or [])[:_ENTRANT_MAX_PER_ALERT]
-    if entrants:
-        now = time.time()
-        last = _load_last_alert_ts()
-        if now - last >= _LIVE_ALERT_COOLDOWN_SEC:
-            n = len(entrants)
-            png = render_picks_png_tall(
-                entrants,
-                title=f"+ Top {_TOP_N} candidate{'s' if n > 1 else ''}",
-                subtitle=f"{n} new pick{'s' if n > 1 else ''} could replace "
-                         f"a posted pick before game time — {stamp}",
-            )
-            if png:
-                msg = (f":star: **Candidate{'s' if n > 1 else ''}** — "
-                       f"{n} new pick{'s' if n > 1 else ''} could join the "
-                       f"top {_TOP_N} later today")
-                if send_discord_image(webhook_url, png, "entrants.png", msg):
-                    sent += 1
-                    _write_last_alert_ts(now)
+    if entrants and not _candidates_sent_today():
+        n = len(entrants)
+        png = render_picks_png_tall(
+            entrants,
+            title=f"+ Top {_TOP_N} candidate{'s' if n > 1 else ''}",
+            subtitle=f"{n} new pick{'s' if n > 1 else ''} could replace "
+                     f"a posted pick before game time — {stamp}",
+        )
+        if png:
+            msg = (f":star: **Candidate{'s' if n > 1 else ''}** — "
+                   f"{n} new pick{'s' if n > 1 else ''} could join the "
+                   f"top {_TOP_N} later today")
+            if send_discord_image(webhook_url, png, "entrants.png", msg):
+                sent += 1
+                _mark_candidates_sent()
     return sent
+
+
+def _candidates_sent_today():
+    """Have we posted the once-per-day entrant/candidate alert already?"""
+    try:
+        with open(_CANDIDATES_SENT_PATH) as f:
+            data = json.load(f) or {}
+        return data.get("date") == _today_ct_str()
+    except Exception:
+        return False
+
+
+def _mark_candidates_sent():
+    try:
+        os.makedirs(os.path.dirname(_CANDIDATES_SENT_PATH), exist_ok=True)
+        with open(_CANDIDATES_SENT_PATH, "w") as f:
+            json.dump({"date": _today_ct_str()}, f)
+    except Exception:
+        pass
 
 
 # -------------- Change detection snapshot --------------

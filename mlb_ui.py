@@ -15422,6 +15422,17 @@ def _maybe_notify_changes(star_picks):
                 _db.send_change_alert(webhook,
                                        entrants=entrants,
                                        dnb_alerts=dnb_alerts)
+            # Per-pick result alerts: as soon as a posted top-10 pick
+            # grades W/L/P, send a single PNG. Dedup is per pick id
+            # per day inside diff_newly_graded.
+            posted_pairs = (
+                [(pid, "First Half")  for pid in h1.get("pick_ids", [])] +
+                [(pid, "Second Half") for pid in h2.get("pick_ids", [])]
+            )
+            if posted_pairs:
+                graded = _db.diff_newly_graded(star_picks, posted_pairs)
+                if graded:
+                    _db.send_result_alerts(webhook, graded)
     except Exception:
         pass
 
@@ -15693,6 +15704,30 @@ def cron_dispatch():
             sched["half2"] = h2
             actions.append("half2_results")
             _save_dispatch_schedule(sched)
+
+    # 6. Per-pick result alerts — fire for any posted top-10 pick that
+    # just graded W/L/P and hasn't been alerted today. Uses plays_log
+    # (not a full board rebuild) so this stays fast per 15-min tick.
+    posted_pairs = (
+        [(pid, "First Half")  for pid in h1.get("pick_ids", [])] +
+        [(pid, "Second Half") for pid in h2.get("pick_ids", [])]
+    )
+    if posted_pairs:
+        try:
+            import plays_log as _pl
+            try:
+                _pl.grade_pending_backfill(days_back=1, grace_hours=1)
+            except Exception:
+                pass
+            graded_by_date = _pl.grade_all(limit_dates=2) or {}
+            today_picks = (graded_by_date.get(today) or [])
+            graded = _db.diff_newly_graded(today_picks, posted_pairs)
+            if graded:
+                n = _db.send_result_alerts(webhook, graded)
+                if n:
+                    actions.append(f"results:{n}")
+        except Exception:
+            pass
 
     return Response(json.dumps({
         "ok": True, "now_ct": now_ct.isoformat(),
