@@ -2109,6 +2109,58 @@ TODAY_TEMPLATE = r"""<!doctype html>
 .chip-legend .ex-result { color: var(--good); background: color-mix(in oklab, var(--good) 10%, transparent); }
 .chip-legend .ex-whale  { color: #38bdf8; background: color-mix(in oklab, #38bdf8 10%, transparent); font-size: 14px; }
 .today-list { display: flex; flex-direction: column; gap: 10px; }
+/* Phase 27: 2-column split layout for busy days (>=10 picks). */
+.today-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  margin-top: 4px;
+}
+.today-split .split-col {
+  min-width: 0;   /* allow flex children to shrink properly */
+  display: flex;
+  flex-direction: column;
+}
+.today-split .split-col-header {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 10px 14px;
+  background: color-mix(in oklab, var(--card) 80%, transparent);
+  border: 1px solid var(--rule);
+  border-radius: 10px 10px 0 0;
+  border-bottom: none;
+  margin-bottom: 0;
+}
+.today-split .split-col-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+.today-split .split-col-sub {
+  font-size: 11px; color: var(--muted);
+}
+.today-split .split-col .today-list { padding: 0 2px; }
+@media (max-width: 760px) {
+  .today-split { grid-template-columns: 1fr; gap: 8px; }
+}
+/* DO NOT BET warning card. */
+.today-card.do-not-bet {
+  opacity: 0.72;
+  border: 1px dashed #ef4444;
+  background: color-mix(in oklab, #ef4444 4%, var(--card));
+  position: relative;
+}
+.today-card.do-not-bet .pick-text { text-decoration: line-through; text-decoration-color: color-mix(in oklab, #ef4444 60%, transparent); }
+.today-card .pick-head .result-chip.dnb-warn {
+  background: color-mix(in oklab, #ef4444 15%, transparent);
+  color: #ef4444;
+  border-color: #ef4444;
+  animation: dnb-pulse 2.4s ease-in-out infinite;
+}
+@keyframes dnb-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
 .status-divider {
   display: flex; align-items: center; gap: 10px;
   margin: 18px 0 6px;
@@ -2448,32 +2500,25 @@ details.also-wrap .today-card { opacity: 0.88; }
   {% if star_picks %}
   <div class="today-section">
     <h2>&#9733; Signal picks</h2>
-    <span class="count">{{ star_picks|length }} shown &middot; grouped by status, strongest first within each</span>
+    <span class="count">{{ star_picks|length }} shown &middot;
+      {% if is_split %}
+        split into two columns at <b>{{ split_boundary_label or 'midday' }}</b>
+      {% else %}
+        grouped by status, strongest first within each
+      {% endif %}
+    </span>
   </div>
-  {# Phase 26: group picks by status for better flow — upcoming first
-     (what you can still bet), then live, then completed. Each group has
-     a subtle minimal subheader. #}
-  {% set _upcoming = star_picks|selectattr('status','equalto','upcoming')|list %}
-  {% set _live     = star_picks|selectattr('status','equalto','live')|list %}
-  {% set _final    = star_picks|selectattr('status','equalto','final')|list %}
-  {% for _group_label, _group_picks, _group_cls in [
-       ('UPCOMING', _upcoming, 'upcoming'),
-       ('LIVE NOW', _live,     'live'),
-       ('COMPLETED', _final,    'final'),
-     ] %}
-    {% if _group_picks %}
-    <div class="status-divider status-{{ _group_cls }}">
-      <span class="divider-label">{{ _group_label }}</span>
-      <span class="divider-count">{{ _group_picks|length }}</span>
-      <span class="divider-line"></span>
-    </div>
-    <div class="today-list">
-    {% for p in _group_picks %}
-    <a class="today-card star {{ 'status-' ~ (p.status or 'upcoming') }}" href="/pick?date={{ date_str }}&sport={{ p.sport_slug }}&home={{ p.game_home|urlencode }}&away={{ p.game_away|urlencode }}&market={{ p.market|urlencode }}&pick={{ p.pick|urlencode }}" style="text-decoration:none; color:inherit">
+
+  {# Phase 27: card macro — reused in both single-column (<10 picks)
+     and 2-column (>=10 picks) layouts. #}
+  {% macro render_card(p) %}
+    <a class="today-card star {{ 'status-' ~ (p.status or 'upcoming') }} {{ 'do-not-bet' if p.do_not_bet else '' }}" href="/pick?date={{ date_str }}&sport={{ p.sport_slug }}&home={{ p.game_home|urlencode }}&away={{ p.game_away|urlencode }}&market={{ p.market|urlencode }}&pick={{ p.pick|urlencode }}" style="text-decoration:none; color:inherit">
       <div class="pick-head">
         <span class="star">&#9733;</span>
         <span class="pick-text">{{ p.pick }}</span>
-        {% if p.result == 'W' %}
+        {% if p.do_not_bet %}
+          <span class="result-chip dnb-warn" title="Fell below the Signal >= 3 bar after it was first recommended — market moved against us, EV collapsed, or line move reversed. Shown here so you can see the full day's recommended set, but NOT counted in today's record.">&#9888; DO NOT BET</span>
+        {% elif p.result == 'W' %}
           <span class="result-chip W" title="Won">&#10003; WON</span>
         {% elif p.result == 'L' %}
           <span class="result-chip L" title="Lost">&#10007; LOST</span>
@@ -2527,10 +2572,51 @@ details.also-wrap .today-card { opacity: 0.88; }
         {{ p.time_abs if p.countdown else '' }}
       </div>
     </a>
+  {% endmacro %}
+
+  {# Macro: render a list of picks grouped by status with subheaders. #}
+  {% macro render_grouped_list(picks) %}
+    {% set _upcoming = picks|selectattr('status','equalto','upcoming')|list %}
+    {% set _live     = picks|selectattr('status','equalto','live')|list %}
+    {% set _final    = picks|selectattr('status','equalto','final')|list %}
+    {% for _group_label, _group_picks, _group_cls in [
+         ('UPCOMING', _upcoming, 'upcoming'),
+         ('LIVE NOW', _live,     'live'),
+         ('COMPLETED', _final,    'final'),
+       ] %}
+      {% if _group_picks %}
+      <div class="status-divider status-{{ _group_cls }}">
+        <span class="divider-label">{{ _group_label }}</span>
+        <span class="divider-count">{{ _group_picks|length }}</span>
+        <span class="divider-line"></span>
+      </div>
+      <div class="today-list">
+        {% for p in _group_picks %}{{ render_card(p) }}{% endfor %}
+      </div>
+      {% endif %}
     {% endfor %}
+  {% endmacro %}
+
+  {% if is_split %}
+    <div class="today-split">
+      <div class="split-col">
+        <div class="split-col-header">
+          <span class="split-col-label">EARLIER</span>
+          <span class="split-col-sub">before {{ split_boundary_label or 'midday' }} &middot; {{ picks_early|length }}</span>
+        </div>
+        {{ render_grouped_list(picks_early) }}
+      </div>
+      <div class="split-col">
+        <div class="split-col-header">
+          <span class="split-col-label">LATER</span>
+          <span class="split-col-sub">from {{ split_boundary_label or 'midday' }} &middot; {{ picks_late|length }}</span>
+        </div>
+        {{ render_grouped_list(picks_late) }}
+      </div>
     </div>
-    {% endif %}
-  {% endfor %}
+  {% else %}
+    {{ render_grouped_list(star_picks) }}
+  {% endif %}
   {% else %}
   <div class="today-empty">
     <h3>This is expected on most days.</h3>
@@ -6924,6 +7010,18 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
             p["row_score_home"] = row.get("score_home")
             p["row_score_away"] = row.get("score_away")
             p["kalshi_live_prob"] = None
+            # Phase 27: DO NOT BET flag — a saved pick that WAS at
+            # Signal >= 3 when first recommended but has since fallen
+            # below the bar (market moved against us, EV collapsed,
+            # etc). We keep it visible so the user can see the full
+            # day's recommended set, but tag it so it's clearly off
+            # the table and doesn't contribute to the record tally.
+            p["do_not_bet"] = bool(
+                p.get("_from_saved")
+                and p.get("strong")
+                and (p.get("signal_score") or 0) < 3
+                and status_now == "upcoming"
+            )
             if (status_now == "live"
                 and _market_category(p.get("market")) == "ML"
                 and p.get("sport_slug") in ("nfl", "ncaaf", "nhl", "mlb",
@@ -7379,20 +7477,27 @@ def today_landing():
         p.get("start_time") or "",
     ))
 
-    star_picks  = [p for p in flat if (p.get("signal_score") or 0) >= 3]
-    also_likes  = [p for p in flat if (p.get("signal_score") or 0) == 2]
+    # Phase 27: keep picks that USED to clear Signal >= 3 but have
+    # since fallen off (do_not_bet) visible on TODAY. Mark them so the
+    # template adds a DO NOT BET warning but doesn't let them count
+    # toward the record tally.
+    star_picks  = [p for p in flat
+                   if (p.get("signal_score") or 0) >= 3
+                   or p.get("do_not_bet")]
+    also_likes  = [p for p in flat
+                   if (p.get("signal_score") or 0) == 2
+                   and not p.get("do_not_bet")]
 
     today = datetime.now(CENTRAL).date().isoformat()
 
-    # Phase 23: today's running record pill. Count only picks on the
-    # viewed date that already graded (W/L/P) — gives the user a
-    # live tally of how the day is going without needing to open
-    # /logged. Fed by the same graded_by_date pool _build_board_rows
-    # uses, so it stays in sync with the chip states on the cards.
+    # Phase 23 / 27: today's running record pill. Count only picks on
+    # the viewed date that already graded (W/L/P) AND were not pulled
+    # off the board pre-game. do_not_bet picks are explicitly excluded
+    # since they're "would have lost / won HAD we bet, but we didn't".
     today_tally = {"W": 0, "L": 0, "P": 0, "units": 0.0, "pending": 0}
     for row in board_rows:
         for p in row.get("picks", []):
-            if p.get("model_only"):
+            if p.get("model_only") or p.get("do_not_bet"):
                 continue
             r = p.get("result")
             if r in ("W", "L", "P"):
@@ -7404,6 +7509,30 @@ def today_landing():
             elif p.get("_row_status") in ("live", "final"):
                 today_tally["pending"] += 1
     today_tally["settled"] = today_tally["W"] + today_tally["L"] + today_tally["P"]
+
+    # Phase 27: 2-column split when >= 10 picks. Sort by start_time
+    # ascending and split at the median so each column has roughly
+    # equal count. Compute a human-readable boundary time label from
+    # the first pick in the later half. Below 10 picks the template
+    # just renders one single-column list.
+    split_boundary_label = None
+    picks_early = []
+    picks_late  = []
+    if len(star_picks) >= 10:
+        chrono = sorted(
+            star_picks,
+            key=lambda p: p.get("start_time") or "9999",
+        )
+        mid = len(chrono) // 2
+        picks_early = chrono[:mid]
+        picks_late  = chrono[mid:]
+        try:
+            _b = picks_late[0].get("start_time")
+            if _b:
+                _dt = datetime.fromisoformat(_b.replace("Z", "+00:00")).astimezone(CENTRAL)
+                split_boundary_label = _dt.strftime("%-I:%M %p CT").lstrip("0")
+        except Exception:
+            split_boundary_label = None
 
     return render_template_string(
         TODAY_TEMPLATE,
@@ -7421,6 +7550,10 @@ def today_landing():
         today=today,
         is_today=(date_str == today),
         today_tally=today_tally,
+        picks_early=picks_early,
+        picks_late=picks_late,
+        split_boundary_label=split_boundary_label,
+        is_split=bool(picks_early and picks_late),
     )
 
 
