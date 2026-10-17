@@ -24,13 +24,28 @@ _BASE = "https://api.elections.kalshi.com/trade-api/v2"
 _UA   = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 _TTL_S = 5 * 60   # 5 min cache; sports books don't move faster than that
 
-# Kalshi series ticker prefixes by our sport slug.
+# Kalshi series ticker prefixes by our sport slug. Each sport maps to
+# the base per-game series (ML market). Soccer leagues share the UEFA
+# aggregate series for UCL / Europa / international friendlies.
+#
+# Phase 22b: extended beyond US-sport MLs to cover our top-performing
+# soccer leagues (EPL, LaLiga, Liga MX are each +15-19% ROI on 35+
+# picks in the 90-day log) and UEFA competitions. All use the same
+# yes_sub_title "home team wins" encoding so no per-sport parsing
+# changes are needed.
 _SERIES_PREFIX = {
-    "nfl":   "KXNFLGAME",
-    "mlb":   "KXMLBGAME",
-    "nba":   "KXNBAGAME",
-    "nhl":   "KXNHLGAME",
-    "ncaaf": "KXCFBGAME",
+    "nfl":    "KXNFLGAME",
+    "mlb":    "KXMLBGAME",
+    "nba":    "KXNBAGAME",
+    "nhl":    "KXNHLGAME",
+    "ncaaf":  "KXCFBGAME",
+    # Soccer leagues (Phase 22b)
+    "epl":    "KXEPLGAME",
+    "laliga": "KXLALIGAGAME",
+    "ligamx": "KXLIGAMXGAME",
+    "ucl":    "KXUEFAGAME",          # UEFA covers Champions League matches
+    "europa": "KXUEFAGAME",          # same aggregate
+    "international": "KXUEFANLGAME", # UEFA Nations League approx
 }
 
 _cache = {}  # (sport_slug) -> (ts, [markets])

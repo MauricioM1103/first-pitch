@@ -6677,7 +6677,12 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
         # API volume ~70% vs calling it on every ML pick.
         kalshi_confirmed = False
         try:
-            if (p.get("sport_slug") in ("nfl", "ncaaf", "nhl", "mlb")
+            # Phase 22b: added soccer leagues — EPL, LaLiga, Liga MX,
+            # UCL, Europa, international friendlies. Kalshi lists each
+            # as a KXxxxGAME series with the same yes_sub_title shape.
+            if (p.get("sport_slug") in ("nfl", "ncaaf", "nhl", "mlb",
+                                         "epl", "laliga", "ligamx",
+                                         "ucl", "europa", "international")
                 and _market_category(p.get("market")) == "ML"
                 and p.get("fair_prob") is not None):
                 _pre_score = p.get("signal_score")
@@ -6740,7 +6745,9 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
             p["kalshi_live_prob"] = None
             if (status_now == "live"
                 and _market_category(p.get("market")) == "ML"
-                and p.get("sport_slug") in ("nfl", "ncaaf", "nhl", "mlb")):
+                and p.get("sport_slug") in ("nfl", "ncaaf", "nhl", "mlb",
+                                              "epl", "laliga", "ligamx",
+                                              "ucl", "europa", "international")):
                 try:
                     kh = _ko_live.live_in_play_prob(p.get("sport_slug"),
                                                      p.get("home_team"))
