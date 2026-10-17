@@ -1,0 +1,36 @@
+name: Discord picks dispatch
+
+# Fires /cron/dispatch on the live Render service every 15 minutes.
+# The dispatcher is idempotent + stateful (logs/discord_schedule.json),
+# so firing more often than needed is harmless — each tick just checks
+# what's due and no-ops if nothing is. See mlb_ui.py cron_dispatch for
+# the full event schedule.
+
+on:
+  schedule:
+    # GitHub Actions min interval is 5 min; it also often delays free-
+    # tier runs by several minutes under load. 15 min is plenty for
+    # catching the agenda / half posts / results windows.
+    - cron: "*/15 * * * *"
+  # Manual trigger button from the Actions tab, for one-off testing.
+  workflow_dispatch: {}
+
+concurrency:
+  # If a previous run is still finishing (Render cold start can take
+  # 60s), skip the overlapping fire rather than queuing it.
+  group: discord-dispatch
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Hit /cron/dispatch
+        run: |
+          echo "Firing /cron/dispatch at $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          # --max-time 180 covers cold-start + full board build + any
+          # firing of agenda / picks / results on this tick.
+          curl -sS --max-time 180 \
+            "https://cheeks-model.onrender.com/cron/dispatch" \
+            || echo "::warning::dispatch call failed (non-fatal — next tick will retry)"
