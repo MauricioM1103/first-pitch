@@ -7550,6 +7550,52 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
         rows.append(row)
 
     rows.sort(key=lambda r: r.get("start_time") or "")
+
+    # Phase 31 Round 3 D+E: annotate rows with weather + injury risk
+    # flags so the UI can surface warnings. Scoped tightly to avoid
+    # per-row external API latency blowing the 60s worker budget:
+    #   - only rows with at least one pick
+    #   - only games starting within the next 24h
+    #   - calls are cached in pick_enhancers (weather 3h, injury 30min)
+    # Fail-safe: any error silently skipped so the board still renders.
+    try:
+        import pick_enhancers as _pe
+        now_utc = datetime.now(ZoneInfo("UTC"))
+        for row in rows:
+            if not row.get("picks"):
+                continue
+            start = row.get("start_time")
+            if not start:
+                continue
+            try:
+                st_iso = start[:-1] + "+00:00" if start.endswith("Z") else start
+                st_dt = datetime.fromisoformat(st_iso)
+                if st_dt.tzinfo is None:
+                    st_dt = st_dt.replace(tzinfo=ZoneInfo("UTC"))
+            except Exception:
+                continue
+            if st_dt < now_utc - timedelta(hours=4):
+                continue
+            if st_dt > now_utc + timedelta(hours=24):
+                continue
+            sport = (row.get("sport_slug") or "").lower()
+            home  = row.get("home") or ""
+            away  = row.get("away") or ""
+            try:
+                wrisk = _pe.get_weather_risk(sport, home, start)
+            except Exception:
+                wrisk = None
+            try:
+                irisk = _pe.get_injury_risk(sport, home, away, start)
+            except Exception:
+                irisk = None
+            if wrisk or irisk:
+                row["risk_flags"] = {"weather": wrisk, "injury": irisk}
+                for p in row.get("picks", []):
+                    p["risk_flags"] = row["risk_flags"]
+    except Exception:
+        pass
+
     return rows, all_picks
 
 
@@ -14714,6 +14760,27 @@ main.logged-page { max-width: 1040px; }
   </div>
   {% endif %}
 
+  {% if shrinkage_recs %}
+  <div class="active-adj" style="margin-top:10px">
+    <strong>Model calibration drift (30-day predicted vs actual):</strong>
+    <div style="color:var(--muted);font-size:12.5px;margin:4px 0 8px">
+      <code>delta &gt; 0</code> = model over-predicts (shrink toward 50%).
+      <code>delta &lt; 0</code> = under-predicts (expand away from 50%).
+      Picks pipeline will auto-apply recommended shrinkage per sport.
+      Only sports with >= 25 settled picks shown.
+    </div>
+    {% for r in shrinkage_recs %}
+      <span class="adj-chip {% if r.verdict != 'OK' %}bad{% endif %}">
+        {{ r.sport }} &middot; pred {{ (r.pred*100)|round(0, 'floor')|int }}% /
+        actual {{ (r.actual*100)|round(0, 'floor')|int }}% &middot;
+        delta {{ (r.delta*100)|round(1) }}pp &middot;
+        shrink {{ r.shrink }}&times;
+      </span>
+    {% endfor %}
+    <div style="margin-top:6px"><a href="/edge-mining" style="color:var(--accent);font-size:13px">View historical edge-mining &rarr;</a></div>
+  </div>
+  {% endif %}
+
   {% if analysis %}
   <section class="records-section">
     <h2>Daily Deep Analysis
@@ -16061,6 +16128,14 @@ def logged_plays():
         graded_by_date, lambda p: p.get("sport"))
     dates = sorted(graded_by_date.keys(), reverse=True)
 
+    # Phase 31 Round 3 H: calibration shrinkage recommendation per
+    # sport, computed on the fly from last 30 days of graded picks.
+    try:
+        import pick_enhancers as _pe
+        shrinkage_recs = _pe.compute_shrinkage_recs(graded_by_date, min_n=25)
+    except Exception:
+        shrinkage_recs = []
+
     # Per-filter 3-day pick lists — a focused mini-list rendered under
     # each record-tiles section. Replaces the old 'all picks by date'
     # mega-list. Each filter has its own predicate; the mini-list pulls
@@ -16294,7 +16369,61 @@ def logged_plays():
         grader_status=grader_status,
         odds_usage=odds_usage,
         poly_summary=poly_summary,
+        shrinkage_recs=shrinkage_recs,
     )
+
+
+@app.route("/edge-mining")
+def edge_mining_page():
+    """Phase 31 Round 3 F: mine (sport, market, signal) buckets from
+    the last 30-120 days of graded picks for high-hit-rate patterns.
+    Each row is a candidate 'edge' — if a (sport, market, signal) is
+    hitting 60%+ on >=15 settled picks, that's worth leaning into."""
+    import plays_log
+    try:
+        graded_by_date = plays_log.grade_all(limit_dates=120) or {}
+    except Exception:
+        graded_by_date = {}
+    try:
+        import pick_enhancers as _pe
+        edges = _pe.compute_edges(graded_by_date, min_n=15, top=30)
+    except Exception:
+        edges = []
+    rows_html = []
+    for e in edges:
+        units_cls = "pos" if e["units"] > 0 else ("neg" if e["units"] < 0 else "")
+        rows_html.append(
+            f"<tr>"
+            f"<td>{e['sport']}</td>"
+            f"<td>{e['market']}</td>"
+            f"<td>{e['signal']}</td>"
+            f"<td>{e['n']}</td>"
+            f"<td><b>{e['hit']:.1f}%</b></td>"
+            f"<td class='{units_cls}'>{e['units']:+.2f}u</td>"
+            f"</tr>"
+        )
+    body = (
+        FONTS_LINK + SHARED_STYLE
+        + '<main class="wrap" style="max-width:900px">'
+        + '<h1>Edges</h1>'
+        + '<p class="sub" style="color:var(--muted);font-size:13.5px">'
+        + 'Historical patterns from last 120 days of graded picks. Buckets with '
+        + '>= 15 settled bets, sorted by hit rate.</p>'
+        + '<table style="width:100%;border-collapse:collapse;margin-top:14px">'
+        + '<thead><tr style="color:var(--muted);font-size:12px;letter-spacing:.08em;text-transform:uppercase">'
+        + '<th style="text-align:left;padding:8px">Sport</th>'
+        + '<th style="text-align:left;padding:8px">Market</th>'
+        + '<th style="text-align:left;padding:8px">Signal</th>'
+        + '<th style="text-align:left;padding:8px">N</th>'
+        + '<th style="text-align:left;padding:8px">Hit%</th>'
+        + '<th style="text-align:left;padding:8px">Units</th>'
+        + '</tr></thead><tbody>'
+        + ("".join(rows_html) or "<tr><td colspan='6' style='padding:14px;color:var(--muted)'>No edges yet (need >= 15 settled picks per bucket).</td></tr>")
+        + '</tbody></table>'
+        + '<style>td{padding:8px;border-top:1px solid var(--rule);font-size:14px} .pos{color:var(--good)} .neg{color:var(--bad)}</style>'
+        + '</main>' + THEME_SCRIPT
+    )
+    return body
 
 
 if __name__ == "__main__":
