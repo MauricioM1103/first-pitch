@@ -161,14 +161,16 @@ _TRADES_TTL_S = 60
 
 def exchange_status():
     """Return Kalshi exchange status dict (exchange_active, trading_active,
-    intra_exchange_transfers_active) or None on failure. Cached 10 min."""
+    intra_exchange_transfers_active) or None on failure. Cached 10 min.
+    Short timeout — if Kalshi is slow the whole board build should NOT
+    wait on it."""
     global _STATUS_CACHE
     ts, cached = _STATUS_CACHE
     now = time.time()
     if cached is not None and (now - ts) < _STATUS_TTL_S:
         return cached
     try:
-        d = _fetch_json(f"{_BASE}/exchange/status", timeout=10)
+        d = _fetch_json(f"{_BASE}/exchange/status", timeout=3)
     except (URLError, ValueError, OSError, TimeoutError, ConnectionError):
         d = None
     _STATUS_CACHE = (now, d)
@@ -199,7 +201,7 @@ def market_orderbook(ticker):
     try:
         d = _fetch_json(
             f"{_BASE}/markets/{ticker}/orderbook?depth=5",
-            timeout=10,
+            timeout=3,
         )
         ob = (d or {}).get("orderbook") or None
     except (URLError, ValueError, OSError, TimeoutError, ConnectionError):
@@ -225,7 +227,7 @@ def market_last_trade_ts(ticker):
     try:
         d = _fetch_json(
             f"{_BASE}/markets/trades?ticker={ticker}&limit=1",
-            timeout=10,
+            timeout=3,
         )
         trades = (d or {}).get("trades") or []
         if trades:
@@ -254,6 +256,21 @@ def market_last_trade_ts(ticker):
 KALSHI_MIN_BOOK_DEPTH_USD = 500.0   # top-5 cumulative size × price in dollars
 KALSHI_MAX_TRADE_AGE_S    = 6 * 3600   # 6 hours
 KALSHI_MAX_PROB_GAP       = 0.05       # within 5pp of our fair_prob
+
+# Circuit breaker: if Kalshi starts timing out, stop issuing new calls
+# for a while so the main board doesn't accumulate 10+ second lag per
+# render. One failure flips the breaker open for 60s.
+_CB_OPEN_UNTIL = 0.0
+_CB_COOLDOWN_S = 60
+
+
+def _cb_open():
+    return time.time() < _CB_OPEN_UNTIL
+
+
+def _cb_trip():
+    global _CB_OPEN_UNTIL
+    _CB_OPEN_UNTIL = time.time() + _CB_COOLDOWN_S
 
 
 def _market_for_matchup(sport_slug, home_team):
@@ -306,6 +323,8 @@ def kalshi_confirms_pick(sport_slug, home_team, is_home_pick, our_fair_prob):
     Returns False (not None) when confirmation fails so the Signal math
     stays simple — the chip in the UI still shows the raw divergence.
     """
+    if _cb_open():
+        return False
     try:
         if not exchange_is_trading():
             return False
@@ -350,7 +369,85 @@ def kalshi_confirms_pick(sport_slug, home_team, is_home_pick, our_fair_prob):
             return False
         return True
     except Exception:
+        _cb_trip()
         return False
+
+
+# ---------------------------------------------------------------------------
+# Settlement + live results (Phase 22). Kalshi markets settle to "yes" or
+# "no" once a game ends — we use that as a fallback result source for ML
+# picks that our ESPN grader couldn't match (e.g. accented team names
+# that fall through all the fuzzy-match passes). For LIVE games the
+# yes_ask price is the market's current in-play win estimate, which we
+# surface alongside the ● LIVE badge on the main board.
+# ---------------------------------------------------------------------------
+
+# NOTE: once a Kalshi market is settled, its result never changes. We
+# use the series-listing endpoint (status=settled) rather than per-ticker
+# polling so one call covers every game of the day.
+_SETTLED_CACHE = {}   # sport_slug -> (ts, [markets])
+_SETTLED_TTL_S = 10 * 60   # settled markets never change — long cache
+
+
+def _settled_markets(sport_slug):
+    """Return Kalshi SETTLED game markets for this sport, cached. Settled
+    markets have status="settled" and result="yes"|"no"."""
+    pfx = _SERIES_PREFIX.get(sport_slug)
+    if not pfx:
+        return []
+    hit = _SETTLED_CACHE.get(sport_slug)
+    now = time.time()
+    if hit and (now - hit[0]) < _SETTLED_TTL_S:
+        return hit[1]
+    try:
+        d = _fetch_json(
+            f"{_BASE}/markets?limit=200&status=settled&series_ticker={pfx}",
+            timeout=20,
+        )
+        markets = d.get("markets") or []
+    except (URLError, ValueError, OSError, TimeoutError, ConnectionError):
+        markets = []
+    _SETTLED_CACHE[sport_slug] = (now, markets)
+    return markets
+
+
+def ml_result(sport_slug, home_team, away_team):
+    """Return 'home_win' / 'away_win' / None based on Kalshi's settled
+    market for this matchup. Kalshi encodes 'home team wins' as YES,
+    so result == 'yes' → home win; result == 'no' → away win."""
+    if _cb_open() or sport_slug not in _SERIES_PREFIX:
+        return None
+    markets = _settled_markets(sport_slug)
+    if not markets:
+        return None
+    home_norm = _norm_team(home_team)
+    for m in markets:
+        yes_team = _norm_team(m.get("yes_sub_title"))
+        if not yes_team:
+            continue
+        if not (yes_team == home_norm
+                or yes_team in home_norm
+                or home_norm in yes_team):
+            continue
+        result = (m.get("result") or "").lower()
+        if result == "yes":
+            return "home_win"
+        if result == "no":
+            return "away_win"
+        return None
+    return None
+
+
+def live_in_play_prob(sport_slug, home_team):
+    """Return the market's CURRENT in-play yes_ask (0..1) for this
+    matchup's open market, or None if the game isn't live or there's no
+    quote. Same lookup path as moneyline_yes_prob — the market stays
+    open while the game is in progress and the price updates with each
+    scoring event. Caller displays this as 'Kalshi live XX%' on the
+    pick card next to the LIVE badge."""
+    if _cb_open():
+        return None
+    return moneyline_yes_prob(sport_slug, home_team, None)
 
 
 if __name__ == "__main__":
@@ -358,4 +455,5 @@ if __name__ == "__main__":
     for sport in ("nfl", "mlb", "nhl", "nba"):
         mk = _series_markets(sport)
         traded = sum(1 for m in mk if m.get("yes_ask") or m.get("yes_bid"))
-        print(f"{sport}: {len(mk)} markets listed, {traded} with a live quote")
+        settled = _settled_markets(sport)
+        print(f"{sport}: {len(mk)} open markets ({traded} live-quote), {len(settled)} settled")

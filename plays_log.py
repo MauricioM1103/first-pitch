@@ -1573,6 +1573,28 @@ def grade_date(date_str, sport_key_by_slug, force=False, rescore=False):
         # can't find the game, pending stays pending.
         res = grade_pick(p, ev)
         home_s, away_s = _extract_scores(ev) if ev else (None, None)
+        # Phase 22: Kalshi settlement fallback for ML picks. When ESPN
+        # can't find/match the game but Kalshi has it listed and
+        # settled, use Kalshi's result. Only fires for ML markets on
+        # Kalshi-covered sports (NFL/NCAAF/NHL/MLB) — Kalshi doesn't
+        # list spreads, totals, or soccer/UFC/Liga MX.
+        if res == "pending" and "ML" in (p.get("market") or ""):
+            try:
+                import kalshi_odds as _ko
+                k_result = _ko.ml_result(
+                    p.get("sport_slug"), p.get("home_team"), p.get("away_team"))
+                if k_result in ("home_win", "away_win"):
+                    pick_text = (p.get("pick") or "").lower()
+                    home_lc = (p.get("home_team") or "").lower()
+                    away_lc = (p.get("away_team") or "").lower()
+                    picked_home = bool(home_lc and (pick_text == home_lc or home_lc in pick_text))
+                    picked_away = bool(away_lc and (pick_text == away_lc or away_lc in pick_text))
+                    if picked_home:
+                        res = "W" if k_result == "home_win" else "L"
+                    elif picked_away:
+                        res = "W" if k_result == "away_win" else "L"
+            except Exception:
+                pass
         # CLV: how much did Pinnacle's devigged line move from our FIRST
         # snapshot (opening-ish) to the latest save (closing-ish)? Positive
         # pp = market moved toward our side after we picked (sharp signal).
