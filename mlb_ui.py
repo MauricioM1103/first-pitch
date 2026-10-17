@@ -2486,8 +2486,8 @@ details.also-wrap .today-card { opacity: 0.88; }
         {% endif %}
       {% endif %}
       {% if streak.last7 %}
-        <span class="streak-7d">
-          Last 7d:
+        <span class="streak-7d" title="Current-filter picks only (Signal >= 3 + EV cushion + not model-only + stayed on until game start). Pre-filter noise is excluded so this matches what the TODAY tab actually recommends.">
+          Last 7d (current filter):
           <b>{{ streak.last7.wins }}&ndash;{{ streak.last7.losses }}</b>
           <span class="{{ 'good' if streak.last7.units > 0 else ('bad' if streak.last7.units < 0 else '') }}">({{ '%+.1f'|format(streak.last7.units) }}u)</span>
           &middot;
@@ -7667,19 +7667,17 @@ def today_landing():
                 today_tally["pending"] += 1
     today_tally["settled"] = today_tally["W"] + today_tally["L"] + today_tally["P"]
 
-    # Phase 29 (1): streak + 7d context + Kelly-safeguard suggestion.
-    # Pulls from the graded log — guarded against a cold Render where
-    # grade_all would issue external calls. Falls through silently on
-    # failure so the TODAY page isn't held hostage by the streak pill.
+    # Phase 29 (1) / 29b: streak + 7d context + Kelly-safeguard.
+    # Only picks that passed the CURRENT filter count (Signal >= 3 +
+    # EV cushion + not model-only + stayed on until game start).
+    # Pre-filter noise doesn't belong in the "how is today's picks
+    # process going?" indicator.
     streak = {"streak_type": None, "streak_n": 0, "last7": None, "clv7": None, "kelly_mult": 1.0}
     try:
         import plays_log as _pl
-        # Narrow window — the summary + streak only need 30 days.
-        # grade_all's 10-min ESPN cache + the earlier _build_board_rows
-        # call for today usually makes this a cheap in-process read.
         _graded = _pl.grade_all(limit_dates=30)
         _summary = _pl.summary(_graded)
-        _s7 = _summary.get("all_7d") or {}
+        _s7 = _summary.get("curfilter_7d") or {}
         if _s7.get("settled"):
             streak["last7"] = {
                 "wins":   _s7.get("wins"), "losses": _s7.get("losses"),
@@ -7687,15 +7685,21 @@ def today_landing():
                 "roi":    round(_s7.get("roi_pct", 0.0), 1),
                 "clv_pp": round(_s7.get("clv_avg_pp", 0.0), 2),
             }
-        # Walk graded picks newest-first, tally the current streak.
+        # Walk graded picks newest-first, tally the current streak —
+        # but only picks that pass the current filter. Historical
+        # all-picks noise would show a totally different streak than
+        # what we're actually recommending today.
         _flat = []
         for ds in sorted(_graded.keys(), reverse=True):
             for pk in _graded[ds] or []:
                 r = pk.get("result")
-                if r in ("W", "L"):
-                    _flat.append(r)
-                    if len(_flat) >= 40:
-                        break
+                if r not in ("W", "L"):
+                    continue
+                if not _pl._passes_current_filter(pk):
+                    continue
+                _flat.append(r)
+                if len(_flat) >= 40:
+                    break
             if len(_flat) >= 40:
                 break
         if _flat:
