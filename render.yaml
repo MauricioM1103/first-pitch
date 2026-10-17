@@ -28,20 +28,10 @@ services:
     #   stdout/stderr so Render's deploy log captures them.
     startCommand: gunicorn mlb_ui:app --workers 1 --threads 4 --timeout 120 --max-requests 80 --max-requests-jitter 20 --bind 0.0.0.0:$PORT --preload --log-level info --access-logfile - --error-logfile -
 
-  # Phase 31: drives /cron/dispatch every 15 min on Render's own
-  # cron scheduler — more reliable than GitHub Actions, which can lag
-  # scheduled runs by 15-60 min on free tier. The dispatcher is
-  # idempotent so overlap with the GH Actions workflow is harmless.
-  # Keeps the free-tier web service warm as a side effect (so cold
-  # starts don't delay user-facing requests).
-  - type: cron
-    name: cheeks-dispatch
-    env: python
-    plan: free
-    schedule: "*/15 * * * *"
-    buildCommand: "echo no-build-needed"
-    startCommand: >
-      python -c "from urllib.request import urlopen, Request;
-      r = Request('https://cheeks-model.onrender.com/cron/dispatch',
-      headers={'User-Agent': 'render-cron/1.0'});
-      print(urlopen(r, timeout=180).read().decode()[:500])"
+  # NOTE: a Phase 31 Render cron service was removed — Render's free
+  # tier doesn't support cron jobs (minimum: Starter plan ~$1/mo).
+  # /cron/dispatch is now driven externally by:
+  #   1. GitHub Actions workflow (.github/workflows/discord-dispatch.yml)
+  #   2. Optional: UptimeRobot HTTP monitor at 5-min interval (free)
+  # Both drive the same endpoint; the dispatcher is idempotent so
+  # overlap is harmless and acts as redundancy.
