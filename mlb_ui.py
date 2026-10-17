@@ -4777,6 +4777,76 @@ def _conf_tier(prob):
     return 1
 
 
+def _pick_to_kalshi_route(pick, is_home_side):
+    """Map a pick to a (market_key, is_yes_side) tuple for Kalshi
+    confirmation lookup, or None if Kalshi doesn't cover this
+    (sport, market) combo.
+
+      market_key=None → use the default moneyline series from
+                        kalshi_odds._SERIES_PREFIX
+      market_key="spread" / "total" / "btts" / "team_total" / "cs" /
+                 "1h_total" / "1h_spread" / "1h_btts" / "1h_cs" /
+                 "f5_ml" / "f5_total" / "f5_spread" / "distance"
+                                         → non-ML Kalshi series
+
+    is_yes_side is True iff our pick matches the YES side of the
+    Kalshi market. Semantics per market:
+      ML / F5 ML           : YES = home wins          → is_home_side
+      Spread / F5 Spread   : YES = home covers        → is_home_side
+      Total / F5 Total     : YES = OVER               → "over" in pick_lc
+      1H Total             : YES = OVER               → "over" in pick_lc
+      1H Spread            : YES = home covers 1H     → is_home_side
+      BTTS / 1H BTTS       : YES = Yes               → "yes" in pick_lc
+      Team Total           : YES = Over for the picked team
+                                                     → "over" in pick_lc
+      Correct Score / 1H CS: Yes/No per scoreline (approx is_home_side)
+      UFC Distance         : YES = goes the distance → "yes" / "no" in pick
+    """
+    import kalshi_odds as _ko
+    slug = pick.get("sport_slug")
+    market = (pick.get("market") or "")
+    cat = _market_category(market)
+    pick_lc = (pick.get("pick") or "").lower()
+    market_key = None
+    is_yes = is_home_side  # default — overridden below where needed
+    if cat == "ML":
+        if slug not in _ko._SERIES_PREFIX:
+            return None
+        market_key = None
+    elif cat == "F5-ML":
+        market_key = "f5_ml"
+    elif cat == "F5-Spread":
+        market_key = "f5_spread"
+    elif cat == "F5-Total":
+        market_key = "f5_total"
+        is_yes = "over" in pick_lc
+    elif cat == "Spread":
+        market_key = "spread"
+    elif cat == "Total":
+        market_key = "total"
+        is_yes = "over" in pick_lc
+    elif cat == "1H-Total":
+        market_key = "1h_total"
+        is_yes = "over" in pick_lc
+    elif cat == "TT":
+        market_key = "team_total"
+        is_yes = "over" in pick_lc
+    elif cat == "BTTS":
+        market_key = "btts"
+        is_yes = ("yes" in pick_lc) and ("no" not in pick_lc.split()[0:1])
+    elif cat == "CS":
+        market_key = "cs"
+    elif cat == "Distance":
+        market_key = "distance"
+        is_yes = ("yes" in pick_lc) and ("no" not in pick_lc.split()[0:1])
+    else:
+        return None
+    # Only route if Kalshi actually has this (sport, market) listed.
+    if market_key is not None and (slug, market_key) not in _ko._MARKET_SERIES:
+        return None
+    return (market_key, is_yes)
+
+
 def _signal_score(pick):
     """0..5 composite signal strength for a pick, replacing the binary
     ★ Strong tier. Research-cited: under ~2000-bet samples a 2-of-N hit
@@ -6720,26 +6790,16 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
         # API volume ~70% vs calling it on every ML pick.
         kalshi_confirmed = False
         try:
-            # Phase 23: route the Kalshi lookup via (sport, market_key)
-            # so F5 ML (KXMLBF5), UFC Distance (KXUFCDISTANCE), and
-            # UFC fight ML (KXUFCFIGHT) all participate too, not just
-            # the game-ML series.
-            _slug = p.get("sport_slug")
-            _market = (p.get("market") or "")
-            _cat = _market_category(_market)
-            _market_key = None   # None = default ML series
-            _eligible = False
-            if _slug in ("nfl", "ncaaf", "nhl", "mlb",
-                          "epl", "laliga", "ligamx",
-                          "ucl", "europa", "international") and _cat == "ML":
-                _eligible = True
-            elif _slug == "ufc" and _cat == "ML":
-                _eligible = True   # UFC fight ML via KXUFCFIGHT
-            elif _slug == "mlb" and _cat == "F5-ML":
-                _eligible = True; _market_key = "f5_ml"
-            elif _slug == "ufc" and "distance" in _market.lower():
-                _eligible = True; _market_key = "distance"
-            if _eligible and p.get("fair_prob") is not None:
+            # Phase 24: full-market Kalshi coverage via _pick_to_kalshi_route.
+            # Every market we emit now has a mapping (ML, Spread, Total,
+            # BTTS, Team Total, 1H variants, F5 variants, UFC Distance).
+            # The router returns (market_key, is_yes_side) where
+            # market_key=None means the default moneyline series; the
+            # is_yes_side flag reinterprets "is_home_pick" to match the
+            # YES side of whichever market we're probing.
+            _kalshi_route = _pick_to_kalshi_route(p, is_home)
+            if _kalshi_route is not None and p.get("fair_prob") is not None:
+                _market_key, _is_yes = _kalshi_route
                 _pre_score = p.get("signal_score")
                 if _pre_score is None:
                     _ev = float(p.get("ev_pct") or 0.0)
@@ -6751,8 +6811,8 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                 if 2 <= _pre_score <= 3:
                     import kalshi_odds as _ko
                     kalshi_confirmed = _ko.kalshi_confirms_pick(
-                        _slug, p.get("home_team"),
-                        is_home_pick=is_home,
+                        p.get("sport_slug"), p.get("home_team"),
+                        is_home_pick=_is_yes,
                         our_fair_prob=float(p.get("fair_prob")),
                         market_key=_market_key,
                     )

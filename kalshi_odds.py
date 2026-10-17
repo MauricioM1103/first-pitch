@@ -50,17 +50,89 @@ _SERIES_PREFIX = {
     "ufc":    "KXUFCFIGHT",
 }
 
-# Per-(sport, market) series tickers for non-ML markets we also want to
-# confirm or auto-settle from Kalshi. Phase 23 additions:
-#   mlb F5 ML / Total / Spread  — the three MLB F5 markets we emit
-#   ufc Distance                — "goes the distance" market we emit
-# All use the same yes_sub_title encoding; moneyline_yes_prob and
-# ml_result route via this map when a non-ML market key is passed.
+# Per-(sport, market) series tickers for every market we emit that
+# Kalshi also lists. Phase 24: full catalog — ties into Signal
+# confirmation for the entire pick board, not just moneyline.
+#
+# Note on YES/NO semantics (what Kalshi's `yes_sub_title` encodes):
+#   * ML / F5-ML / UFC fight ML : YES = home team wins
+#   * Spread / F5-Spread        : YES = home covers
+#   * Total / F5-Total          : YES = OVER the line
+#   * 1H-Total / P1-Total       : YES = OVER
+#   * BTTS                      : YES = yes (both teams score)
+#   * Team Total                : YES = Over for that specific team
+#   * Correct Score             : YES = exact scoreline
+#   * UFC Distance              : YES = fight goes the distance
+# The caller passes is_home_pick=True when the pick aligns with the
+# YES side per the market's semantics, False otherwise. The gate
+# code in mlb_ui computes this via _pick_to_kalshi_route().
 _MARKET_SERIES = {
-    ("mlb", "f5_ml"):     "KXMLBF5",
-    ("mlb", "f5_total"):  "KXMLBF5TOTAL",
-    ("mlb", "f5_spread"): "KXMLBF5SPREAD",
-    ("ufc", "distance"):  "KXUFCDISTANCE",
+    # ---- MLB ----
+    ("mlb", "spread"):      "KXMLBSPREAD",
+    ("mlb", "total"):       "KXMLBTOTAL",
+    ("mlb", "team_total"):  "KXMLBTEAMTOTAL",
+    ("mlb", "f5_ml"):       "KXMLBF5",
+    ("mlb", "f5_total"):    "KXMLBF5TOTAL",
+    ("mlb", "f5_spread"):   "KXMLBF5SPREAD",
+    # ---- NHL ----
+    ("nhl", "spread"):      "KXNHLSPREAD",
+    ("nhl", "total"):       "KXNHLTOTAL",
+    ("nhl", "team_total"):  "KXNHLTEAMTOTAL",
+    ("nhl", "1h_total"):    "KXNHL1PTOTAL",   # Period 1
+    ("nhl", "1h_spread"):   "KXNHL1PSPREAD",
+    ("nhl", "1h_btts"):     "KXNHL1PBTTS",
+    # ---- EPL ----
+    ("epl", "spread"):      "KXEPLSPREAD",
+    ("epl", "total"):       "KXEPLTOTAL",
+    ("epl", "btts"):        "KXEPLBTTS",
+    ("epl", "team_total"):  "KXEPLTEAMTOTAL",
+    ("epl", "cs"):          "KXEPLSCORE",
+    ("epl", "1h_total"):    "KXEPL1HTOTAL",
+    ("epl", "1h_spread"):   "KXEPL1HSPREAD",
+    ("epl", "1h_btts"):     "KXEPL1HBTTS",
+    ("epl", "1h_cs"):       "KXEPL1HSCORE",
+    # ---- La Liga ----
+    ("laliga", "spread"):     "KXLALIGASPREAD",
+    ("laliga", "total"):      "KXLALIGATOTAL",
+    ("laliga", "btts"):       "KXLALIGABTTS",
+    ("laliga", "team_total"): "KXLALIGATEAMTOTAL",
+    ("laliga", "cs"):         "KXLALIGASCORE",
+    # ---- Liga MX (richest coverage of all leagues) ----
+    ("ligamx", "spread"):     "KXLIGAMXSPREAD",
+    ("ligamx", "total"):      "KXLIGAMXTOTAL",
+    ("ligamx", "btts"):       "KXLIGAMXBTTS",
+    ("ligamx", "team_total"): "KXLIGAMXTEAMTOTAL",
+    ("ligamx", "cs"):         "KXLIGAMXSCORE",
+    ("ligamx", "1h_total"):   "KXLIGAMX1HTOTAL",
+    ("ligamx", "1h_spread"):  "KXLIGAMX1HSPREAD",
+    ("ligamx", "1h_btts"):    "KXLIGAMX1HBTTS",
+    ("ligamx", "1h_cs"):      "KXLIGAMX1HSCORE",
+    # ---- Champions League / Europa (UEFA Super Cup aggregate) ----
+    ("ucl", "spread"):        "KXUEFASCSPREAD",
+    ("ucl", "total"):         "KXUEFASCTOTAL",
+    ("ucl", "btts"):          "KXUEFASCBTTS",
+    ("ucl", "team_total"):    "KXUEFASCTEAMTOTAL",
+    ("ucl", "cs"):            "KXUEFASCSCORE",
+    ("ucl", "1h_total"):      "KXUEFASC1HTOTAL",
+    ("ucl", "1h_spread"):     "KXUEFASC1HSPREAD",
+    ("ucl", "1h_btts"):       "KXUEFASC1HBTTS",
+    ("ucl", "1h_cs"):         "KXUEFASC1HSCORE",
+    ("europa", "spread"):     "KXUEFASCSPREAD",
+    ("europa", "total"):      "KXUEFASCTOTAL",
+    ("europa", "btts"):       "KXUEFASCBTTS",
+    ("europa", "team_total"): "KXUEFASCTEAMTOTAL",
+    # ---- International (Nations League aggregate) ----
+    ("international", "spread"):     "KXUEFANLSPREAD",
+    ("international", "total"):      "KXUEFANLTOTAL",
+    ("international", "btts"):       "KXUEFANLBTTS",
+    ("international", "team_total"): "KXUEFANLTEAMTOTAL",
+    ("international", "cs"):         "KXUEFANLSCORE",
+    ("international", "1h_total"):   "KXUEFANL1HTOTAL",
+    ("international", "1h_spread"):  "KXUEFANL1HSPREAD",
+    ("international", "1h_btts"):    "KXUEFANL1HBTTS",
+    # ---- UFC ----
+    ("ufc", "distance"):    "KXUFCDISTANCE",
+    ("ufc", "mov"):         "KXUFCMOV",
 }
 
 
