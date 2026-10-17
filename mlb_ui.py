@@ -2473,32 +2473,19 @@ details.also-wrap .today-card { opacity: 0.88; }
       {% endif %}
     </div>
     {% endif %}
-    {# Phase 29 (1): streak + 7d context pill #}
-    {% if streak and (streak.streak_n or streak.last7) %}
-    <div class="streak-pill">
-      {% if streak.streak_n >= 2 %}
-        {% if streak.streak_type == 'W' %}
-          <span class="streak-fire">&#128293;</span>
-          <span class="streak-text good">{{ streak.streak_n }}-game win streak</span>
-        {% else %}
-          <span class="streak-cold">&#10060;</span>
-          <span class="streak-text bad">{{ streak.streak_n }}-loss streak</span>
+    {# Phase 29d: current-filter 7-day record pill (no streak). #}
+    {% if streak and streak.last7 %}
+    <div class="streak-pill" title="Current filter = Signal >= 3 + EV cushion + not model-only + stayed on until game start. Record updates as results come in (pending-pick backfill runs every page load).">
+      <span class="streak-7d">
+        Current filter &middot; Last 7d:
+        <b>{{ streak.last7.wins }}&ndash;{{ streak.last7.losses }}{% if streak.last7.pushes %}&ndash;{{ streak.last7.pushes }}{% endif %}</b>
+        <span class="{{ 'good' if streak.last7.units > 0 else ('bad' if streak.last7.units < 0 else '') }}">({{ '%+.1f'|format(streak.last7.units) }}u, {{ '%+.1f'|format(streak.last7.roi) }}% ROI)</span>
+        &middot;
+        <span class="{{ 'good' if streak.last7.clv_pp > 0 else ('bad' if streak.last7.clv_pp < 0 else '') }}">CLV {{ '%+.2f'|format(streak.last7.clv_pp) }}pp</span>
+        {% if streak.last7.pending %}
+          &middot; <span style="color:var(--muted)">{{ streak.last7.pending }} pending</span>
         {% endif %}
-      {% endif %}
-      {% if streak.last7 %}
-        <span class="streak-7d" title="Current-filter picks only (Signal >= 3 + EV cushion + not model-only + stayed on until game start). Pre-filter noise is excluded so this matches what the TODAY tab actually recommends.">
-          Last 7d (current filter):
-          <b>{{ streak.last7.wins }}&ndash;{{ streak.last7.losses }}</b>
-          <span class="{{ 'good' if streak.last7.units > 0 else ('bad' if streak.last7.units < 0 else '') }}">({{ '%+.1f'|format(streak.last7.units) }}u)</span>
-          &middot;
-          <span class="{{ 'good' if streak.last7.clv_pp > 0 else ('bad' if streak.last7.clv_pp < 0 else '') }}">CLV {{ '%+.2f'|format(streak.last7.clv_pp) }}pp</span>
-        </span>
-      {% endif %}
-      {% if streak.kelly_mult < 1 %}
-        <span class="streak-kelly" title="Bankroll safeguard: on a {{ streak.streak_n }}-loss streak, cutting stake to half the usual quarter-Kelly reduces variance drag without materially hurting EV.">
-          &#9888; Kelly: half-stake suggested
-        </span>
-      {% endif %}
+      </span>
     </div>
     {% endif %}
     <div class="sub">
@@ -7641,6 +7628,15 @@ def today_landing():
     star_picks  = [p for p in flat
                    if (p.get("signal_score") or 0) >= 3
                    or p.get("do_not_bet")]
+
+    # Phase 30 (#1): Discord/Pushover webhook for Signal 5/5 LOCK picks.
+    # Fires once per pick id; dedupes via logs/lock_webhook_sent.json.
+    # Non-blocking spawn so a slow webhook server can't stall the render.
+    try:
+        import threading as _th
+        _th.Thread(target=_maybe_notify_locks, args=(star_picks,), daemon=True).start()
+    except Exception:
+        pass
     also_likes  = [p for p in flat
                    if (p.get("signal_score") or 0) == 2
                    and not p.get("do_not_bet")]
@@ -7667,55 +7663,31 @@ def today_landing():
                 today_tally["pending"] += 1
     today_tally["settled"] = today_tally["W"] + today_tally["L"] + today_tally["P"]
 
-    # Phase 29 (1) / 29b: streak + 7d context + Kelly-safeguard.
-    # Only picks that passed the CURRENT filter count (Signal >= 3 +
-    # EV cushion + not model-only + stayed on until game start).
-    # Pre-filter noise doesn't belong in the "how is today's picks
-    # process going?" indicator.
-    streak = {"streak_type": None, "streak_n": 0, "last7": None, "clv7": None, "kelly_mult": 1.0}
+    # Phase 29d: current-filter 7-day record pill — no streak tracking.
+    # Force a pending-pick backfill on the last 2 days first so
+    # results that just landed are included in this request's record,
+    # not deferred to the next tick.
+    streak = {"last7": None}
     try:
         import plays_log as _pl
+        try:
+            _pl.grade_pending_backfill(days_back=2, grace_hours=1)
+        except Exception:
+            pass
         _graded = _pl.grade_all(limit_dates=30)
         _summary = _pl.summary(_graded)
         _s7 = _summary.get("curfilter_7d") or {}
-        if _s7.get("settled"):
+        if _s7.get("settled") or _s7.get("pending"):
             streak["last7"] = {
-                "wins":   _s7.get("wins"), "losses": _s7.get("losses"),
-                "units":  round(_s7.get("units", 0.0), 2),
-                "roi":    round(_s7.get("roi_pct", 0.0), 1),
-                "clv_pp": round(_s7.get("clv_avg_pp", 0.0), 2),
+                "wins":    _s7.get("wins", 0),
+                "losses":  _s7.get("losses", 0),
+                "pushes":  _s7.get("pushes", 0),
+                "settled": _s7.get("settled", 0),
+                "pending": _s7.get("pending", 0),
+                "units":   round(_s7.get("units", 0.0), 2),
+                "roi":     round(_s7.get("roi_pct", 0.0), 1),
+                "clv_pp":  round(_s7.get("clv_avg_pp", 0.0), 2),
             }
-        # Walk graded picks newest-first, tally the current streak —
-        # but only picks that pass the current filter. Historical
-        # all-picks noise would show a totally different streak than
-        # what we're actually recommending today.
-        _flat = []
-        for ds in sorted(_graded.keys(), reverse=True):
-            for pk in _graded[ds] or []:
-                r = pk.get("result")
-                if r not in ("W", "L"):
-                    continue
-                if not _pl._passes_current_filter(pk):
-                    continue
-                _flat.append(r)
-                if len(_flat) >= 40:
-                    break
-            if len(_flat) >= 40:
-                break
-        if _flat:
-            first = _flat[0]
-            n = 1
-            for r in _flat[1:]:
-                if r == first:
-                    n += 1
-                else:
-                    break
-            streak["streak_type"] = first
-            streak["streak_n"] = n
-            # Kelly safeguard: 3+ losses in a row -> suggest half the
-            # usual quarter-Kelly. Not a bet signal; a bankroll guard.
-            if first == "L" and n >= 3:
-                streak["kelly_mult"] = 0.5
     except Exception:
         pass
 
@@ -15193,6 +15165,10 @@ _SETTINGS_PATH = _settings_os.path.join(
     _settings_os.path.dirname(_settings_os.path.abspath(__file__)),
     "logs", "user_settings.json",
 )
+_LOCK_SENT_PATH = _settings_os.path.join(
+    _settings_os.path.dirname(_settings_os.path.abspath(__file__)),
+    "logs", "lock_webhook_sent.json",
+)
 
 
 def _load_settings():
@@ -15201,7 +15177,13 @@ def _load_settings():
         with open(_SETTINGS_PATH) as f:
             return json.load(f)
     except Exception:
-        return {"bankroll": 1000, "kelly_fraction": 0.25}
+        return {
+            "bankroll": 1000,
+            "kelly_fraction": 0.25,
+            "discord_webhook_url": "",
+            "pushover_user_key":   "",
+            "pushover_api_token":  "",
+        }
 
 
 def _save_settings(d):
@@ -15215,6 +15197,120 @@ def _save_settings(d):
         return False
 
 
+# Phase 30 (#1): webhook alerts for Signal 5/5 LOCK picks. Dedupe via a
+# small JSON of pick-ids we've already pinged for; survives Render
+# restarts because logs/ is mirrored to GitHub.
+_LOCK_WEBHOOK_LOCK = _threading.Lock()
+
+
+def _lock_sent_ids():
+    try:
+        import json
+        with open(_LOCK_SENT_PATH) as f:
+            return set(json.load(f) or [])
+    except Exception:
+        return set()
+
+
+def _mark_lock_sent(ids):
+    try:
+        import json
+        _settings_os.makedirs(_settings_os.path.dirname(_LOCK_SENT_PATH), exist_ok=True)
+        with open(_LOCK_SENT_PATH, "w") as f:
+            json.dump(sorted(ids)[:400], f)   # cap size, old ids drop off
+    except Exception:
+        pass
+
+
+def _format_lock_message(pick):
+    """One-line message for Discord / Pushover push."""
+    sport = pick.get("sport_name") or pick.get("sport") or "?"
+    text  = pick.get("pick") or "?"
+    away  = pick.get("away_team") or pick.get("game_away") or ""
+    home  = pick.get("home_team") or pick.get("game_home") or ""
+    ev    = pick.get("ev_pct")
+    dec   = pick.get("decimal")
+    book  = pick.get("book") or "pinnacle"
+    parts = [f":lock: LOCK (Signal 5/5)  —  {text}"]
+    if away and home:
+        parts.append(f"{sport}  {away} @ {home}")
+    extra = []
+    if ev is not None:
+        try: extra.append(f"+{float(ev):.1f}% EV")
+        except (TypeError, ValueError): pass
+    if dec:
+        try: extra.append(f"@ {float(dec):.2f} ({book})")
+        except (TypeError, ValueError): pass
+    if extra:
+        parts.append("  ·  ".join(extra))
+    return "\n".join(parts)
+
+
+def _send_discord(webhook_url, message):
+    try:
+        from urllib.request import Request, urlopen
+        import json
+        data = json.dumps({"content": message}).encode()
+        req = Request(webhook_url, data=data, method="POST",
+                      headers={"Content-Type": "application/json"})
+        urlopen(req, timeout=5).close()
+        return True
+    except Exception:
+        return False
+
+
+def _send_pushover(user_key, api_token, message, title="LOCK pick"):
+    try:
+        from urllib.request import Request, urlopen
+        from urllib.parse import urlencode
+        data = urlencode({
+            "token":   api_token,
+            "user":    user_key,
+            "message": message,
+            "title":   title,
+            "priority": "0",
+        }).encode()
+        req = Request("https://api.pushover.net/1/messages.json",
+                      data=data, method="POST")
+        urlopen(req, timeout=5).close()
+        return True
+    except Exception:
+        return False
+
+
+def _maybe_notify_locks(star_picks):
+    """Fire-and-forget webhook alerts for freshly-identified Signal 5/5
+    picks on today's board. Dedupes against lock_webhook_sent.json so
+    the same pick is pushed at most once ever."""
+    try:
+        settings = _load_settings()
+        discord = (settings.get("discord_webhook_url") or "").strip()
+        pu_user = (settings.get("pushover_user_key") or "").strip()
+        pu_tok  = (settings.get("pushover_api_token") or "").strip()
+        if not (discord or (pu_user and pu_tok)):
+            return
+        locks = [p for p in star_picks
+                 if (p.get("signal_score") or 0) >= 5
+                 and not p.get("do_not_bet")]
+        if not locks:
+            return
+        with _LOCK_WEBHOOK_LOCK:
+            sent = _lock_sent_ids()
+            new = [p for p in locks if p.get("id") and p.get("id") not in sent]
+            if not new:
+                return
+            for p in new:
+                msg = _format_lock_message(p)
+                if discord:
+                    _send_discord(discord, msg)
+                if pu_user and pu_tok:
+                    _send_pushover(pu_user, pu_tok, msg)
+                sent.add(p["id"])
+            _mark_lock_sent(sent)
+    except Exception:
+        pass
+
+
 @app.route("/settings", methods=["GET", "POST"])
 def settings_page():
     """Phase 29 (11): user preferences. Bankroll + Kelly fraction
@@ -15225,18 +15321,30 @@ def settings_page():
         try:
             s["bankroll"] = float(request.form.get("bankroll") or s.get("bankroll") or 1000)
             s["kelly_fraction"] = float(request.form.get("kelly_fraction") or 0.25)
+            s["discord_webhook_url"] = (request.form.get("discord_webhook_url") or "").strip()
+            s["pushover_user_key"]   = (request.form.get("pushover_user_key")   or "").strip()
+            s["pushover_api_token"]  = (request.form.get("pushover_api_token")  or "").strip()
             saved = _save_settings(s)
         except Exception:
             saved = False
+    _input_style = "padding:8px 10px;background:var(--card);border:1px solid var(--rule-strong);color:var(--ink);border-radius:8px;font-size:14px"
     html = (FONTS_LINK + SHARED_STYLE
-        + '<main class="wrap" style="max-width:520px">'
+        + '<main class="wrap" style="max-width:620px">'
         + '<h1>Settings</h1>'
         + '<p class="sub" style="color:var(--muted);font-size:13.5px">Local preferences. Stored on this instance only; survives Render restarts via the mirrored logs dir.</p>'
         + ('<div style="padding:10px 14px;background:color-mix(in oklab,var(--good) 15%,transparent);border:1px solid var(--good);border-radius:8px;color:var(--good);margin:12px 0">Saved.</div>' if saved else '')
-        + '<form method="post" style="display:flex;flex-direction:column;gap:14px;margin-top:16px">'
-        + f'<label>Bankroll (units reference)<br><input type="number" step="1" min="0" name="bankroll" value="{s.get("bankroll", 1000)}" style="padding:8px 10px;background:var(--card);border:1px solid var(--rule-strong);color:var(--ink);border-radius:8px;width:160px;font-size:14px"></label>'
-        + f'<label>Kelly fraction (0.10 - 0.50 safe range)<br><input type="number" step="0.05" min="0" max="1" name="kelly_fraction" value="{s.get("kelly_fraction", 0.25)}" style="padding:8px 10px;background:var(--card);border:1px solid var(--rule-strong);color:var(--ink);border-radius:8px;width:120px;font-size:14px"></label>'
-        + '<button type="submit" style="margin-top:4px;background:var(--good);color:var(--bg);border:none;padding:10px 20px;border-radius:8px;font-weight:600;cursor:pointer;align-self:flex-start">Save</button>'
+        + '<form method="post" style="display:flex;flex-direction:column;gap:18px;margin-top:16px">'
+        + '<fieldset style="border:1px solid var(--rule);border-radius:10px;padding:14px"><legend style="padding:0 6px;color:var(--muted);font-size:12px;letter-spacing:0.1em;text-transform:uppercase">Bankroll</legend>'
+        + f'<label style="display:block">Bankroll (units reference)<br><input type="number" step="1" min="0" name="bankroll" value="{s.get("bankroll", 1000)}" style="{_input_style};width:160px;margin-top:4px"></label>'
+        + f'<label style="display:block;margin-top:10px">Kelly fraction (0.10 - 0.50 safe range)<br><input type="number" step="0.05" min="0" max="1" name="kelly_fraction" value="{s.get("kelly_fraction", 0.25)}" style="{_input_style};width:120px;margin-top:4px"></label>'
+        + '</fieldset>'
+        + '<fieldset style="border:1px solid var(--rule);border-radius:10px;padding:14px"><legend style="padding:0 6px;color:var(--muted);font-size:12px;letter-spacing:0.1em;text-transform:uppercase">LOCK pick alerts</legend>'
+        + '<p style="margin:0 0 10px;color:var(--muted);font-size:12.5px">When a Signal 5/5 LOCK pick appears on the board, we can push an alert immediately. Each pick is sent at most once ever; leaving these blank disables the feature.</p>'
+        + f'<label style="display:block">Discord webhook URL<br><input type="url" name="discord_webhook_url" value="{s.get("discord_webhook_url", "")}" placeholder="https://discord.com/api/webhooks/..." style="{_input_style};width:100%;margin-top:4px;box-sizing:border-box"></label>'
+        + f'<label style="display:block;margin-top:10px">Pushover user key<br><input type="text" name="pushover_user_key" value="{s.get("pushover_user_key", "")}" placeholder="u...30 chars" style="{_input_style};width:260px;margin-top:4px"></label>'
+        + f'<label style="display:block;margin-top:10px">Pushover API token<br><input type="text" name="pushover_api_token" value="{s.get("pushover_api_token", "")}" placeholder="a...30 chars" style="{_input_style};width:260px;margin-top:4px"></label>'
+        + '</fieldset>'
+        + '<button type="submit" style="background:var(--good);color:var(--bg);border:none;padding:10px 24px;border-radius:8px;font-weight:600;cursor:pointer;align-self:flex-start">Save</button>'
         + '</form></main>' + THEME_SCRIPT)
     return html
 
