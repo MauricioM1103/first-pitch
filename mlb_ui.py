@@ -7010,18 +7010,10 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
             p["row_score_home"] = row.get("score_home")
             p["row_score_away"] = row.get("score_away")
             p["kalshi_live_prob"] = None
-            # Phase 27: DO NOT BET flag — a saved pick that WAS at
-            # Signal >= 3 when first recommended but has since fallen
-            # below the bar (market moved against us, EV collapsed,
-            # etc). We keep it visible so the user can see the full
-            # day's recommended set, but tag it so it's clearly off
-            # the table and doesn't contribute to the record tally.
-            p["do_not_bet"] = bool(
-                p.get("_from_saved")
-                and p.get("strong")
-                and (p.get("signal_score") or 0) < 3
-                and status_now == "upcoming"
-            )
+            # DO NOT BET flag gets set LATER in the signal_score loop
+            # once we know the current composite — can't compute here
+            # because signal_score hasn't been assigned yet.
+            p["do_not_bet"] = False
             if (status_now == "live"
                 and _market_category(p.get("market")) == "ML"
                 and p.get("sport_slug") in ("nfl", "ncaaf", "nhl", "mlb",
@@ -7281,7 +7273,19 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                 p["strong"] = False
                 p["whale"]  = False
             else:
-                p["strong"] = (p["signal_score"] >= 3)
+                # Phase 27 fix: a saved pick that WAS at Signal >= 3
+                # when recommended (strong flag locked at save time)
+                # but has since fallen below the bar — mark it DO NOT
+                # BET so the TODAY template can decorate it and the
+                # tally skips it. Status check uses the row's current
+                # status; _row_status is set in the earlier status loop.
+                _was_strong = bool(p.get("strong"))
+                _from_saved = bool(p.get("_from_saved"))
+                _is_upcoming = (p.get("_row_status") == "upcoming")
+                _current_strong = (p["signal_score"] >= 3)
+                p["strong"] = _current_strong
+                if _from_saved and _was_strong and not _current_strong and _is_upcoming:
+                    p["do_not_bet"] = True
                 # Whale tier: heavy-favorite "banker" picks. Short
                 # decimal odds (<= 1.60, i.e. -167 American or shorter),
                 # high model probability (>= 65%), and still-positive
@@ -7530,7 +7534,9 @@ def today_landing():
             _b = picks_late[0].get("start_time")
             if _b:
                 _dt = datetime.fromisoformat(_b.replace("Z", "+00:00")).astimezone(CENTRAL)
-                split_boundary_label = _dt.strftime("%-I:%M %p CT").lstrip("0")
+                # %I pads with leading zero on all platforms; strip
+                # it manually (%-I is Linux-only and crashes on Windows).
+                split_boundary_label = _dt.strftime("%I:%M %p CT").lstrip("0")
         except Exception:
             split_boundary_label = None
 
