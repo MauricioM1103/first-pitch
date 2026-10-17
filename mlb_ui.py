@@ -15384,10 +15384,14 @@ _CHANGE_WEBHOOK_LOCK = _threading.Lock()
 
 def _maybe_notify_changes(star_picks):
     """Fire-and-forget change-detection for the daily-picks Discord
-    channel. Only alerts when a NEW pick enters the top-N (default 15)
-    and the entrant's game hasn't started yet. All entrants in one
-    cycle are rolled into a single PNG, so most refreshes send zero
-    messages and at most one per detection cycle."""
+    channel. Rules:
+    - Silent until the first-half top-10 has been posted (no updates
+      before that gate — nothing to compare against).
+    - At most 2 new entrants surfaced per message, rate-limited to one
+      entrant message every 2 hours.
+    - DO NOT BET alerts fire whenever a pick that was in the POSTED
+      top-10 (either half) flips to DNB, with the alert naming which
+      half the pick belonged to. Deduped per pick id per day."""
     try:
         settings = _load_settings()
         webhook = (settings.get("daily_picks_webhook_url") or "").strip()
@@ -15397,10 +15401,27 @@ def _maybe_notify_changes(star_picks):
             import discord_bot as _db
         except Exception:
             return
+        sched = _load_dispatch_schedule()
+        h1 = sched.get("half1", {}) if sched else {}
+        h2 = sched.get("half2", {}) if sched else {}
+        if not h1.get("sent"):
+            # Gate: no alerts before the first-half picks are out.
+            # Still refresh the top-N baseline so when half-1 fires,
+            # the diff starts from "today's current top", not from
+            # some stale previous-day snapshot.
+            _db.diff_top_n(star_picks)
+            return
         with _CHANGE_WEBHOOK_LOCK:
-            entrants = _db.diff_top_n(star_picks)
-            if entrants:
-                _db.send_change_alert(webhook, entrants)
+            entrants    = _db.diff_top_n(star_picks)
+            dnb_alerts  = _db.diff_posted_dnb(
+                star_picks,
+                posted_half1=h1.get("pick_ids", []),
+                posted_half2=h2.get("pick_ids", []),
+            )
+            if entrants or dnb_alerts:
+                _db.send_change_alert(webhook,
+                                       entrants=entrants,
+                                       dnb_alerts=dnb_alerts)
     except Exception:
         pass
 

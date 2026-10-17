@@ -30,6 +30,7 @@ _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _SNAPSHOT_PATH    = os.path.join(_BASE_DIR, "logs", "discord_last_snapshot.json")
 _TOP_SNAP_PATH    = os.path.join(_BASE_DIR, "logs", "discord_top_n.json")
 _LAST_ALERT_PATH  = os.path.join(_BASE_DIR, "logs", "discord_last_alert.json")
+_DNB_SENT_PATH    = os.path.join(_BASE_DIR, "logs", "discord_dnb_sent.json")
 
 # Visual constants — matches the social-slides template.
 _W, _H = 1080, 1920
@@ -602,33 +603,117 @@ def diff_top_n(star_picks):
     return entrants
 
 
-def send_change_alert(webhook_url, entrants):
-    """ONE PNG with all newly-qualified top-N entrants. Rate-limited to
-    one message every _LIVE_ALERT_COOLDOWN_SEC so edge-of-cutoff picks
-    bouncing in and out of the top-N don't spam the channel."""
-    if not webhook_url or not entrants:
+def _today_ct_str():
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("America/Chicago")).date().isoformat()
+
+
+def _load_dnb_sent():
+    """Set of pick IDs already alerted for DNB today. Resets at day
+    change in CT so yesterday's picks don't block today's alerts."""
+    try:
+        with open(_DNB_SENT_PATH) as f:
+            data = json.load(f) or {}
+        if data.get("date") != _today_ct_str():
+            return set()
+        return set(data.get("ids") or [])
+    except Exception:
+        return set()
+
+
+def _write_dnb_sent(ids):
+    try:
+        os.makedirs(os.path.dirname(_DNB_SENT_PATH), exist_ok=True)
+        with open(_DNB_SENT_PATH, "w") as f:
+            json.dump({"date": _today_ct_str(), "ids": sorted(ids)}, f)
+    except Exception:
+        pass
+
+
+def diff_posted_dnb(star_picks, posted_half1, posted_half2):
+    """Return [(pick, half_label), ...] for POSTED top-10 picks that
+    just flipped to DO NOT BET and haven't been alerted today. Dedupes
+    via logs/discord_dnb_sent.json so each DNB fires at most once."""
+    posted_half1 = set(posted_half1 or [])
+    posted_half2 = set(posted_half2 or [])
+    sent = _load_dnb_sent()
+    pick_by_id = {p.get("id"): p for p in star_picks}
+    out = []
+    for pid in posted_half1:
+        p = pick_by_id.get(pid)
+        if p and p.get("do_not_bet") and pid not in sent:
+            out.append((p, "First Half"))
+            sent.add(pid)
+    for pid in posted_half2:
+        p = pick_by_id.get(pid)
+        if p and p.get("do_not_bet") and pid not in sent:
+            out.append((p, "Second Half"))
+            sent.add(pid)
+    if out:
+        _write_dnb_sent(sent)
+    return out
+
+
+# Max new entrants surfaced per live-update message. User wants a
+# very quiet channel — only alert when a short list of candidates
+# could replace a posted top-10 pick before game time.
+_ENTRANT_MAX_PER_ALERT = 2
+
+
+def send_change_alert(webhook_url, entrants=None, dnb_alerts=None):
+    """Post live updates. Entrants (new picks that could join the top
+    10 later today) are capped at _ENTRANT_MAX_PER_ALERT and rate-
+    limited to one message every _LIVE_ALERT_COOLDOWN_SEC. DNB alerts
+    for picks that were in a posted top-10 fire whenever they happen —
+    dedup is per pick ID in diff_posted_dnb — and the caption names
+    which half the pick belonged to."""
+    if not webhook_url:
         return 0
-    now = time.time()
-    last = _load_last_alert_ts()
-    if now - last < _LIVE_ALERT_COOLDOWN_SEC:
-        return 0
+    sent = 0
     stamp = datetime.utcnow().strftime("%H:%M UTC")
-    n = len(entrants)
-    png = render_picks_png_tall(
-        entrants,
-        title=f"+ Top {_TOP_N} update",
-        subtitle=f"{n} new pick{'s' if n > 1 else ''} just qualified — {stamp}",
-    )
-    if not png:
-        return 0
-    msg = (
-        f":star: **Live update** — {n} new pick{'s' if n > 1 else ''} "
-        f"entered the top {_TOP_N}"
-    )
-    ok = send_discord_image(webhook_url, png, "entrants.png", msg)
-    if ok:
-        _write_last_alert_ts(now)
-    return 1 if ok else 0
+
+    # --- DNB alerts (always fire; per-pick-id dedup upstream) ---
+    dnb_alerts = dnb_alerts or []
+    if dnb_alerts:
+        picks  = [p for p, _ in dnb_alerts]
+        labels = [lab for _, lab in dnb_alerts]
+        from_label = ", ".join(sorted(set(labels)))
+        png = render_picks_png_tall(
+            picks,
+            title=f"X {len(picks)} pick{'s' if len(picks) > 1 else ''} → DO NOT BET",
+            subtitle=f"From the {from_label} list — {stamp}",
+        )
+        if png:
+            if len(picks) == 1:
+                msg = (f":no_entry: **{labels[0]} pick flipped to DO NOT BET** — "
+                       "removed from the posted top 10")
+            else:
+                msg = (f":no_entry: **{len(picks)} posted picks flipped to "
+                       f"DO NOT BET** ({from_label})")
+            if send_discord_image(webhook_url, png, "dnb.png", msg):
+                sent += 1
+
+    # --- Entrant alerts (rate-limited + capped at 2) ---
+    entrants = (entrants or [])[:_ENTRANT_MAX_PER_ALERT]
+    if entrants:
+        now = time.time()
+        last = _load_last_alert_ts()
+        if now - last >= _LIVE_ALERT_COOLDOWN_SEC:
+            n = len(entrants)
+            png = render_picks_png_tall(
+                entrants,
+                title=f"+ Top {_TOP_N} candidate{'s' if n > 1 else ''}",
+                subtitle=f"{n} new pick{'s' if n > 1 else ''} could replace "
+                         f"a posted pick before game time — {stamp}",
+            )
+            if png:
+                msg = (f":star: **Candidate{'s' if n > 1 else ''}** — "
+                       f"{n} new pick{'s' if n > 1 else ''} could join the "
+                       f"top {_TOP_N} later today")
+                if send_discord_image(webhook_url, png, "entrants.png", msg):
+                    sent += 1
+                    _write_last_alert_ts(now)
+    return sent
 
 
 # -------------- Change detection snapshot --------------
