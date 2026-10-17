@@ -15405,11 +15405,11 @@ def _maybe_notify_changes(star_picks):
         pass
 
 
-def _send_daily_picks_png(force=False):
-    """Render today's star_picks list to 2-3 PNG cards and post to the
-    daily-picks Discord webhook. Called by /cron/daily-picks at 12 AM CT
-    once per day. Returns a dict with sent count + today's pick count
-    for logging."""
+def _send_daily_picks_png(half=None):
+    """Build today's Signal>=3 slate and post the top-10 PNG for the
+    given half of the day. half=1 → games starting before 3 PM CT;
+    half=2 → games at or after. half=None → full slate (legacy).
+    Returns a dict with sent count + today's pick count."""
     try:
         import discord_bot as _db
     except Exception:
@@ -15418,8 +15418,6 @@ def _send_daily_picks_png(force=False):
     webhook = (settings.get("daily_picks_webhook_url") or "").strip()
     if not webhook:
         return {"sent": 0, "error": "no_webhook"}
-    # Build the board like the TODAY route does, filtered down to the
-    # current-filter picks (Signal >= 3, not do_not_bet).
     try:
         _d = datetime.now(CENTRAL).date()
         _date_str = _d.isoformat()
@@ -15433,41 +15431,40 @@ def _send_daily_picks_png(force=False):
             if (p.get("signal_score") or 0) >= 3 and not p.get("do_not_bet"):
                 flat.append(p)
     if not flat:
-        return {"sent": 0, "picks": 0}
-    try:
-        flat.sort(key=lambda p: (
-            -(int(p.get("signal_score") or 0)),
-            -(float(p.get("ev_pct") or 0.0)),
-            p.get("start_time") or "",
-        ))
-    except Exception:
-        pass
+        return {"sent": 0, "picks": 0, "half": half}
     date_label = datetime.now(CENTRAL).strftime("%A, %B %d")
-    sent = _db.send_daily_picks(webhook, flat, date_label=date_label)
-    # Reset snapshot so change-detector starts from today's baseline.
-    try:
-        _db._write_snapshot({
-            p.get("id"): {
-                "signal_score": p.get("signal_score"),
-                "do_not_bet":   bool(p.get("do_not_bet")),
-            } for p in flat if p.get("id")
-        })
-    except Exception:
-        pass
-    return {"sent": sent, "picks": len(flat)}
+    sent = _db.send_daily_picks(webhook, flat, date_label=date_label, half=half)
+    return {"sent": sent, "picks": len(flat), "half": half}
 
 
 @app.route("/cron/daily-picks")
 def cron_daily_picks():
-    """Scheduled endpoint for Render cron. Fires at 12 AM CT.
-    Optionally gated by cron_secret setting — if set, request must
-    include ?key=<secret>. Returns JSON status."""
+    """Scheduled endpoint for Render cron. Pass ?half=1 (first half,
+    games before 3 PM CT) or ?half=2 (second half, 3 PM CT or later).
+    Omitting half auto-picks by current CT hour: 1 if before noon CT,
+    else 2. Optionally gated by cron_secret setting."""
     settings = _load_settings()
     secret = (settings.get("cron_secret") or "").strip()
     if secret and (request.args.get("key") or "") != secret:
         return Response(json.dumps({"ok": False, "error": "unauthorized"}),
                         status=401, mimetype="application/json")
-    result = _send_daily_picks_png(force=True)
+    raw_half = (request.args.get("half") or "").strip()
+    if raw_half in ("1", "2"):
+        half = int(raw_half)
+    elif raw_half == "both":
+        # Convenience: send BOTH halves in one call (useful for manual
+        # one-shot testing).
+        r1 = _send_daily_picks_png(half=1)
+        r2 = _send_daily_picks_png(half=2)
+        return Response(json.dumps({
+            "ok": bool(r1.get("sent") or r2.get("sent")),
+            "first_half": r1,
+            "second_half": r2,
+        }), mimetype="application/json")
+    else:
+        # Auto-pick by current CT hour: half 1 before noon, half 2 after.
+        half = 1 if datetime.now(CENTRAL).hour < 12 else 2
+    result = _send_daily_picks_png(half=half)
     result["ok"] = bool(result.get("sent"))
     return Response(json.dumps(result), mimetype="application/json")
 

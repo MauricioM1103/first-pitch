@@ -27,16 +27,25 @@ except Exception:
 
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-_SNAPSHOT_PATH   = os.path.join(_BASE_DIR, "logs", "discord_last_snapshot.json")
-_TOP_SNAP_PATH   = os.path.join(_BASE_DIR, "logs", "discord_top_n.json")
+_SNAPSHOT_PATH    = os.path.join(_BASE_DIR, "logs", "discord_last_snapshot.json")
+_TOP_SNAP_PATH    = os.path.join(_BASE_DIR, "logs", "discord_top_n.json")
+_LAST_ALERT_PATH  = os.path.join(_BASE_DIR, "logs", "discord_last_alert.json")
 
 # Visual constants — matches the social-slides template.
 _W, _H = 1080, 1920
 _PICKS_PER_PNG = 9
 # Daily cap + live-update ranking window. Picks beyond this don't go to
 # Discord — keeps the channel from being flooded. Rank = Signal desc,
-# then EV desc.
-_TOP_N = 15
+# then EV desc. Applied per HALF of the day (see _HALF_CUTOFF_HOUR).
+_TOP_N = 10
+# Split the slate at 3 PM Central: picks starting before this hour =
+# first half (morning / early-afternoon slate), picks at or after it =
+# second half (afternoon / evening slate). Matches the UI's 2-column
+# layout cutoff.
+_HALF_CUTOFF_HOUR = 15
+# Minimum seconds between live-update PNGs so the channel doesn't get
+# spammed when top-N compositions churn on edge-of-cutoff picks.
+_LIVE_ALERT_COOLDOWN_SEC = 2 * 3600
 
 # Colors (match the dark theme on the live site).
 _BG         = (14, 18, 24)
@@ -338,17 +347,19 @@ def post_text(webhook_url, message):
 
 _INTRO_MESSAGE = (
     "**Cheeks Model picks feed**\n\n"
-    "What this is: an automated daily feed from the Cheeks Model dashboard.\n\n"
-    "**At 12 AM CT every day** you get the full Signal 3+ betting slate for the "
-    "day (NFL, MLB, NHL, NBA, soccer, UFC, F5, etc.), split across 1-3 PNG cards "
-    "holding up to 9 picks each. Each pick carries:\n"
-    "- **Signal 1-5** composite score (EV cushion + line move + cross-book agreement)\n"
+    "What this is: an automated feed of the day's best bets from the Cheeks "
+    "Model dashboard (NFL, MLB, NHL, NBA, soccer, UFC, F5, etc.).\n\n"
+    "**Two scheduled posts per day — top 10 picks each:**\n"
+    "- :sun_with_face: **First Half** (games before 3 PM CT) — posted in the morning\n"
+    "- :city_sunset: **Second Half** (games 3 PM CT or later) — posted early afternoon\n\n"
+    "Each pick carries:\n"
+    "- **Signal 1-5** composite (EV cushion + line move + cross-book agreement)\n"
     "- **EV %** vs Pinnacle fair price\n"
     "- **LOCK** = 5/5 signal\n\n"
-    "**Picks change throughout the day.** When a new pick qualifies, you get a "
-    "live single-slide **+ New Pick** update. When an existing pick falls off the "
-    "filter it gets flagged **X DO NOT BET** (those don't count toward the daily "
-    "record). Changes are detected automatically whenever the main UI refreshes.\n\n"
+    "**Live updates are rare on purpose.** If a pick in the top 10 flips to "
+    "DO NOT BET and a new pick qualifies to replace it in time to still bet, "
+    "you get one combined update PNG — otherwise the channel stays quiet. "
+    "Rate-limited to one live update every ~2 hours.\n\n"
     "Dashboard: https://cheeks-model.onrender.com"
 )
 
@@ -415,35 +426,121 @@ def _rank_picks(picks):
     return live
 
 
-def send_daily_picks(webhook_url, picks, date_label=""):
-    """Post the daily preamble, then one tall PNG with the top-N picks.
-    Also seeds the top-N snapshot so the first live-update diff is
-    computed against today's starting baseline. Returns 1 if PNG was
-    sent, 0 if not."""
+def _pick_hour_ct(pick):
+    """Return the pick's game-start hour in Central Time (0-23), or
+    None if we can't parse it. Picks without a parseable start default
+    into the second half so they don't disappear."""
+    from zoneinfo import ZoneInfo
+    central = ZoneInfo("America/Chicago")
+    st = pick.get("start_time")
+    if not st:
+        return None
+    try:
+        if st.endswith("Z"):
+            st = st[:-1] + "+00:00"
+        dt = datetime.fromisoformat(st)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+        return dt.astimezone(central).hour
+    except Exception:
+        return None
+
+
+def _filter_half(picks, half, cutoff_hour=_HALF_CUTOFF_HOUR):
+    """half=1 → games starting BEFORE cutoff_hour CT.
+       half=2 → games starting AT OR AFTER cutoff_hour CT.
+       Picks without a parseable start fall into half 2."""
+    out = []
+    for p in picks:
+        h = _pick_hour_ct(p)
+        if h is None:
+            if half == 2:
+                out.append(p)
+            continue
+        if half == 1 and h < cutoff_hour:
+            out.append(p)
+        elif half == 2 and h >= cutoff_hour:
+            out.append(p)
+    return out
+
+
+def send_daily_picks(webhook_url, picks, date_label="", half=None):
+    """Post one tall PNG with the top-N picks for the given HALF of the
+    day. half=1 posts picks that start before 3 PM CT; half=2 posts
+    picks at or after. half=None sends the full top-N regardless of
+    time (legacy; kept for the autofire default).
+
+    Seeds the top-N snapshot so the live-update diff tracks only the
+    picks we just posted. Returns 1 if a PNG was sent, 0 if not."""
     if not webhook_url or not picks:
         return 0
     label = date_label or datetime.utcnow().strftime("%A, %B %d")
-    ranked = _rank_picks(picks)
+    half_label = {1: "First half", 2: "Second half"}.get(half)
+    pool = _filter_half(picks, half) if half in (1, 2) else list(picks)
+    ranked = _rank_picks(pool)
     top = ranked[:_TOP_N]
-    preamble = (
-        f":alarm_clock: **12 AM CT picks — {label}**\n\n"
-        f"Top {len(top)} picks for today (of {len(ranked)} Signal 3+ in total). "
-        "If one of these flips to DO NOT BET and a new pick qualifies to "
-        "take its place in time before kickoff, you'll get a live single "
-        "update showing only the new entrants. No other noise."
-    )
+    if not top:
+        # Nothing qualifies in this half yet — stay quiet rather than
+        # posting an empty frame.
+        return 0
+    # Build title + preamble that name the half + the earliest game so
+    # the user knows how much lead time they have.
+    hours = sorted([h for h in (_pick_hour_ct(p) for p in top) if h is not None])
+    earliest = f"{hours[0] % 12 or 12} {'AM' if hours[0] < 12 else 'PM'} CT" if hours else "later today"
+    if half == 1:
+        title = f"First Half — Top {len(top)}"
+        preamble = (
+            f":sun_with_face: **First-half picks — {label}**\n\n"
+            f"Top {len(top)} picks for games starting before 3 PM CT "
+            f"(earliest kickoff ~{earliest}). "
+            "Second-half slate posts later today. Live updates fire "
+            "only if a new pick enters the top 10 in time to still bet, "
+            "capped at one message every ~2 hours to stay quiet."
+        )
+    elif half == 2:
+        title = f"Second Half — Top {len(top)}"
+        preamble = (
+            f":city_sunset: **Second-half picks — {label}**\n\n"
+            f"Top {len(top)} picks for games starting 3 PM CT or later "
+            f"(earliest kickoff ~{earliest}). "
+            "Live updates fire only if a new pick enters the top 10 in "
+            "time to still bet, capped at one message every ~2 hours."
+        )
+    else:
+        title = f"Top {len(top)} Picks"
+        preamble = (
+            f":alarm_clock: **Picks — {label}**\n\n"
+            f"Top {len(top)} picks for today."
+        )
     post_text(webhook_url, preamble)
-    png = render_picks_png_tall(
-        top,
-        title=f"Top {len(top)} Picks",
-        subtitle=label,
-    )
+    png = render_picks_png_tall(top, title=title, subtitle=label)
     if not png:
         return 0
-    ok = send_discord_image(webhook_url, png, "daily_top.png")
-    # Seed the top-N snapshot so the change detector has a baseline.
-    _write_top_snapshot([p.get("id") for p in top if p.get("id")])
+    fname = f"half{half}.png" if half else "daily_top.png"
+    ok = send_discord_image(webhook_url, png, fname)
+    # Snapshot ONLY the top we just posted so the diff never alerts on
+    # a pick that was already in a prior half's post.
+    prev_ids = set(_load_top_snapshot())
+    posted_ids = set(p.get("id") for p in top if p.get("id"))
+    _write_top_snapshot(list(prev_ids | posted_ids))
     return 1 if ok else 0
+
+
+def _load_last_alert_ts():
+    try:
+        with open(_LAST_ALERT_PATH) as f:
+            return float(json.load(f).get("ts", 0))
+    except Exception:
+        return 0.0
+
+
+def _write_last_alert_ts(ts):
+    try:
+        os.makedirs(os.path.dirname(_LAST_ALERT_PATH), exist_ok=True)
+        with open(_LAST_ALERT_PATH, "w") as f:
+            json.dump({"ts": ts}, f)
+    except Exception:
+        pass
 
 
 def diff_top_n(star_picks):
@@ -479,9 +576,14 @@ def diff_top_n(star_picks):
 
 
 def send_change_alert(webhook_url, entrants):
-    """ONE PNG with all newly-qualified top-N entrants. Caption notes
-    how many new picks joined the list. If no entrants, no message."""
+    """ONE PNG with all newly-qualified top-N entrants. Rate-limited to
+    one message every _LIVE_ALERT_COOLDOWN_SEC so edge-of-cutoff picks
+    bouncing in and out of the top-N don't spam the channel."""
     if not webhook_url or not entrants:
+        return 0
+    now = time.time()
+    last = _load_last_alert_ts()
+    if now - last < _LIVE_ALERT_COOLDOWN_SEC:
         return 0
     stamp = datetime.utcnow().strftime("%H:%M UTC")
     n = len(entrants)
@@ -496,7 +598,10 @@ def send_change_alert(webhook_url, entrants):
         f":star: **Live update** — {n} new pick{'s' if n > 1 else ''} "
         f"entered the top {_TOP_N}"
     )
-    return 1 if send_discord_image(webhook_url, png, "entrants.png", msg) else 0
+    ok = send_discord_image(webhook_url, png, "entrants.png", msg)
+    if ok:
+        _write_last_alert_ts(now)
+    return 1 if ok else 0
 
 
 # -------------- Change detection snapshot --------------
