@@ -15426,10 +15426,30 @@ def _maybe_notify_changes(star_picks):
         pass
 
 
+def _suggested_units(pick, bankroll, kelly_frac):
+    """Fractional-Kelly suggested stake in units for a pick card.
+    Returns None if we can't compute it (missing probs/odds)."""
+    try:
+        fp  = float(pick.get("fair_prob") or 0.0)
+        dec = float(pick.get("decimal") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if dec <= 1.01 or fp <= 0 or fp >= 1:
+        return None
+    b = dec - 1.0
+    q = 1.0 - fp
+    kelly = (fp * b - q) / b
+    if kelly <= 0:
+        return None
+    stake_frac = kelly * max(0.0, min(1.0, kelly_frac))
+    units = stake_frac * bankroll / 100.0  # 100 units == full bankroll convention
+    return round(units, 2) if units >= 0.05 else None
+
+
 def _send_slate_png(slate):
-    """Post one slate's top-5 Signal>=4 picks for the given slate
-    window (1 Morning / 2 Afternoon / 3 Prime Time). Returns a dict
-    with sent count + posted pick_ids."""
+    """Post one slate's top-5 picks for the given slate window
+    (1 Morning / 2 Afternoon / 3 Prime Time). Returns a dict with sent
+    count + posted pick_ids."""
     try:
         import discord_bot as _db
     except Exception:
@@ -15452,6 +15472,15 @@ def _send_slate_png(slate):
                 flat.append(p)
     if not flat:
         return {"sent": 0, "picks": 0, "slate": slate, "pick_ids": []}
+    # Attach fractional-Kelly stake per pick so the Discord card shows
+    # a "Stake 0.5u" line next to the odds.
+    try:
+        bankroll = float(settings.get("bankroll") or 1000)
+        kelly    = float(settings.get("kelly_fraction") or 0.25)
+        for p in flat:
+            p["suggested_units"] = _suggested_units(p, bankroll, kelly)
+    except Exception:
+        pass
     date_label = datetime.now(CENTRAL).strftime("%A, %B %d")
     r = _db.send_slate_picks(webhook, flat, date_label=date_label, slate=slate)
     if r.get("sent") and r.get("pick_ids"):
@@ -15825,6 +15854,14 @@ def cron_dispatch():
                 sched["eod"] = eod
                 actions.append("eod_summary")
                 changed = True
+            # Nightly recompute of per-sport Signal 3 floors so
+            # tomorrow's discord picks respect current calibration.
+            try:
+                floors = _db.refresh_sport_signal_floors(graded_by_date)
+                if floors:
+                    actions.append(f"sport_floors:{len(floors)}")
+            except Exception:
+                pass
         except Exception:
             pass
 

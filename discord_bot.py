@@ -50,17 +50,100 @@ _MIN_SIGNAL_FOR_POST = 3
 _SIGNAL_3_MIN_EV = 3.0  # percent
 
 
+_SPORT_FLOORS_PATH = os.path.join(_BASE_DIR, "logs",
+                                   "sport_signal_floors.json")
+_SPORT_FLOORS_CACHE = {"data": None, "ts": 0.0}
+_SPORT_FLOORS_TTL = 300.0  # 5 min
+
+
+def _load_sport_signal_floors():
+    """Return {sport_slug: required_signal} map. Sports with a weak
+    Signal 3 hit rate get their floor bumped to 4 so the Discord feed
+    doesn't post picks from models that aren't performing."""
+    import time as _t
+    now = _t.time()
+    if (_SPORT_FLOORS_CACHE["data"] is not None
+            and (now - _SPORT_FLOORS_CACHE["ts"]) < _SPORT_FLOORS_TTL):
+        return _SPORT_FLOORS_CACHE["data"]
+    try:
+        with open(_SPORT_FLOORS_PATH) as f:
+            data = json.load(f) or {}
+    except Exception:
+        data = {}
+    _SPORT_FLOORS_CACHE["data"] = data
+    _SPORT_FLOORS_CACHE["ts"] = now
+    return data
+
+
 def _qualifies_for_discord(p):
-    """Signal 3.5 gate used by send_slate_picks."""
+    """Signal 3.5 gate with per-sport dynamic floors.
+
+    Rules:
+      - Signal >= 4 picks always qualify.
+      - Signal 3 picks qualify only if EV >= _SIGNAL_3_MIN_EV AND the
+        sport's historical hit rate at Signal 3 is healthy (floor set
+        at 3 in _SPORT_FLOORS_PATH).
+      - A sport whose Signal 3 picks have been hitting <48% long-term
+        has its floor auto-bumped to 4 by nightly recompute, so even
+        high-EV Signal 3 picks are blocked for that sport."""
     s = int(p.get("signal_score") or 0)
     if s >= 4:
         return True
+    sport = (p.get("sport_slug") or p.get("sport") or "").lower()
+    floors = _load_sport_signal_floors()
+    required = int(floors.get(sport, _MIN_SIGNAL_FOR_POST))
+    if required > 3:
+        # Sport's Signal 3 is cold — require >= 4 for this sport.
+        return False
     if s >= _MIN_SIGNAL_FOR_POST:
         try:
             return float(p.get("ev_pct") or 0.0) >= _SIGNAL_3_MIN_EV
         except (TypeError, ValueError):
             return False
     return False
+
+
+def refresh_sport_signal_floors(graded_by_date):
+    """Nightly recompute: scan last 30 days of graded picks, bump floor
+    to 4 for any sport whose Signal 3 picks (current-filter only) have
+    hit <48% on >=10 settled bets. Called from the EOD step."""
+    buckets = {}  # sport -> [W, L]
+    try:
+        import plays_log
+    except Exception:
+        return {}
+    for ds, picks in (graded_by_date or {}).items():
+        for p in picks or []:
+            if not plays_log._passes_current_filter(p):
+                continue
+            sig = int(p.get("signal_score") or 0)
+            if sig != 3:
+                continue
+            r = p.get("result")
+            if r not in ("W", "L"):
+                continue
+            sport = (p.get("sport") or "").lower()
+            if not sport:
+                continue
+            buckets.setdefault(sport, [0, 0])
+            buckets[sport][0 if r == "W" else 1] += 1
+    floors = {}
+    for sport, (w, l) in buckets.items():
+        n = w + l
+        if n < 10:
+            continue
+        hit = w / n
+        if hit < 0.48:
+            floors[sport] = 4
+    try:
+        os.makedirs(os.path.dirname(_SPORT_FLOORS_PATH), exist_ok=True)
+        with open(_SPORT_FLOORS_PATH, "w") as f:
+            json.dump(floors, f)
+    except Exception:
+        pass
+    _SPORT_FLOORS_CACHE["data"] = floors
+    _SPORT_FLOORS_CACHE["ts"] = time.time()
+    return floors
 # Hard DNB threshold — only alert when a posted pick's signal collapses
 # this low. Marginal drift (Signal 4 -> 3) no longer fires DNBs.
 _HARD_DNB_SIGNAL = 1
@@ -281,19 +364,26 @@ def _render_pick_card(canvas, draw, pick, y):
                    f"{arrow} {lm * 100:+.1f}pp", f_small,
                    fill=(_GOOD if lm > 0 else _BAD))
 
-    # Row 4: kickoff time LEFT, odds RIGHT (y+138)
+    # Row 4: kickoff time LEFT, suggested stake MIDDLE, odds RIGHT
     y_bottom = y + 138
     time_text = _format_pick_time(pick)
-    # Brighter than _MUTED_2 so the kickoff time doesn't get lost next
-    # to the odds on the right.
     _draw_text(draw, (x0 + 20, y_bottom), time_text, f_mono, fill=_MUTED)
-    dec  = pick.get("decimal")
-    book = pick.get("book") or ""
+    dec   = pick.get("decimal")
+    book  = pick.get("book") or ""
+    units = pick.get("suggested_units")
     if dec:
         try:
             price_txt = f"@ {float(dec):.2f}  {book}"
             _draw_text(draw, (x1 - 20, y_bottom), price_txt,
                        f_mono, fill=_INK, anchor="rt")
+        except (TypeError, ValueError):
+            pass
+    if units:
+        try:
+            stake_txt = f"Stake {float(units):g}u"
+            # Right-ish of center so it doesn't collide with time/odds
+            _draw_text(draw, (x1 - 240, y_bottom), stake_txt,
+                       f_mono, fill=_STAR, anchor="rt")
         except (TypeError, ValueError):
             pass
 
@@ -467,15 +557,73 @@ def render_picks_png_tall(picks, title, subtitle=""):
     return buf.getvalue()
 
 
+def _safe_float(v):
+    try:
+        return float(v or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _rank_picks(picks):
-    """Sort live (not do_not_bet) picks strongest-first for top-N."""
+    """Sort live (not do_not_bet) picks strongest-first for top-N.
+    Tiebreakers: Signal desc → line_move_pp desc (CLV favoring our
+    side ranks higher) → EV desc → earliest start first."""
     live = [p for p in picks if not p.get("do_not_bet")]
     live.sort(key=lambda p: (
         -(int(p.get("signal_score") or 0)),
-        -(float(p.get("ev_pct") or 0.0)),
+        -_safe_float(p.get("line_move_pp")),
+        -_safe_float(p.get("ev_pct")),
         p.get("start_time") or "",
     ))
     return live
+
+
+def _market_bucket(market):
+    """Rough market-type grouping used by diversification. Keeps the
+    top-5 from being 5 spreads or 5 totals."""
+    m = (market or "").lower()
+    if "ml" in m or "moneyline" in m or "dnb" in m or "draw" in m:
+        return "ML"
+    if "spread" in m or "run line" in m or "puck line" in m or "alt" in m or "handicap" in m:
+        return "SPREAD"
+    if "team total" in m or "tt " in m or m.startswith("tt"):
+        return "TT"
+    if "total" in m or " over " in m or " under " in m or m.startswith("over") or m.startswith("under"):
+        return "TOTAL"
+    if "btts" in m or "both teams" in m:
+        return "BTTS"
+    if "correct" in m:
+        return "CS"
+    if "distance" in m:
+        return "DIST"
+    if "1h" in m or "first half" in m or "first-half" in m or "half time" in m:
+        return "1H"
+    return "OTHER"
+
+
+def _diversify_by_market(ranked_picks, limit):
+    """Round-robin across market buckets so no single market dominates
+    the top-N. Preserves strongest-first within each bucket. If a
+    bucket runs dry we just keep pulling from the strongest remaining."""
+    buckets = {}
+    for p in ranked_picks:
+        b = _market_bucket(p.get("market"))
+        buckets.setdefault(b, []).append(p)
+    # Order buckets by the strongest pick inside each (so ML with a
+    # Signal 5 outranks TOTAL with a Signal 3 on the first pass).
+    def _bucket_rank(b):
+        p = buckets[b][0]
+        return (-(int(p.get("signal_score") or 0)), -_safe_float(p.get("ev_pct")))
+    out = []
+    while buckets and len(out) < limit:
+        for b in sorted(buckets.keys(), key=_bucket_rank):
+            if not buckets[b]:
+                continue
+            out.append(buckets[b].pop(0))
+            if len(out) >= limit:
+                break
+        buckets = {b: lst for b, lst in buckets.items() if lst}
+    return out
 
 
 def _pick_start_ct(pick):
@@ -576,10 +724,7 @@ def send_slate_picks(webhook_url, picks, date_label="", slate=1):
     pool = [p for p in pool if _qualifies_for_discord(p)]
     ranked = _rank_picks(pool)
     # Correlated-pick avoidance: at most 1 pick per game. If multiple
-    # picks on the same matchup qualify, keep only the strongest. This
-    # prevents a bad night in one game from torpedoing the whole slate,
-    # and spreads exposure across 5 independent events instead of 5
-    # correlated bets on the same outcome.
+    # picks on the same matchup qualify, keep only the strongest.
     deduped = []
     seen_games = set()
     for p in ranked:
@@ -592,7 +737,11 @@ def send_slate_picks(webhook_url, picks, date_label="", slate=1):
             continue
         seen_games.add(key)
         deduped.append(p)
-    top = deduped[:_TOP_N]
+    # Market-type diversification: don't let the top-5 be 5 spreads.
+    # Round-robin across market buckets (ML / SPREAD / TOTAL / etc.)
+    # Keeps variance across market types so one market's cold streak
+    # can't cost the whole slate.
+    top = _diversify_by_market(deduped, _TOP_N)
     if not top:
         # Stay quiet if nothing clears the Signal >= 4 bar — better than
         # posting an empty slide or dropping to Signal 3 noise.
