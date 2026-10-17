@@ -15471,6 +15471,29 @@ def cron_daily_picks():
     return Response(json.dumps(result), mimetype="application/json")
 
 
+@app.route("/cron/intro")
+def cron_intro():
+    """One-shot: posts the welcome intro text to the daily-picks
+    Discord channel. Call this once after configuring the webhook so
+    viewers see what the feed does; then pin that message in Discord."""
+    settings = _load_settings()
+    secret = (settings.get("cron_secret") or "").strip()
+    if secret and (request.args.get("key") or "") != secret:
+        return Response(json.dumps({"ok": False, "error": "unauthorized"}),
+                        status=401, mimetype="application/json")
+    webhook = (settings.get("daily_picks_webhook_url") or "").strip()
+    if not webhook:
+        return Response(json.dumps({"ok": False, "error": "no_webhook"}),
+                        mimetype="application/json")
+    try:
+        import discord_bot as _db
+        ok = _db.send_intro(webhook)
+    except Exception as e:
+        return Response(json.dumps({"ok": False, "error": str(e)}),
+                        mimetype="application/json")
+    return Response(json.dumps({"ok": bool(ok)}), mimetype="application/json")
+
+
 @app.route("/settings", methods=["GET", "POST"])
 def settings_page():
     """Phase 29 (11): user preferences. Bankroll + Kelly fraction
