@@ -2018,6 +2018,43 @@ TODAY_TEMPLATE = r"""<!doctype html>
 .today-tally .tally-units.good { color: var(--good); }
 .today-tally .tally-units.bad  { color: #ef4444; }
 .today-tally .tally-pending { color: var(--muted); font-size: 11px; }
+/* Phase 29 (1): streak + 7d pill */
+.streak-pill {
+  display: inline-flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  margin: 0 0 10px 0;
+  padding: 6px 12px;
+  background: color-mix(in oklab, var(--card) 85%, transparent);
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.streak-pill .streak-fire { font-size: 14px; }
+.streak-pill .streak-cold { font-size: 12px; opacity: 0.7; }
+.streak-pill .streak-text.good { color: var(--good); font-weight: 700; }
+.streak-pill .streak-text.bad  { color: #ef4444; font-weight: 700; }
+.streak-pill .streak-7d b { color: var(--ink); }
+.streak-pill .streak-7d .good { color: var(--good); }
+.streak-pill .streak-7d .bad  { color: #ef4444; }
+.streak-pill .streak-kelly {
+  color: #f59e0b; font-weight: 600;
+  border-left: 1px solid var(--rule); padding-left: 10px; margin-left: 2px;
+}
+/* Phase 29 (5): mobile UX — sticky status subheaders when scrolling
+   long lists; bigger tap targets on chips. */
+@media (max-width: 760px) {
+  .status-divider {
+    position: sticky; top: 0; z-index: 5;
+    background: var(--bg); padding: 10px 8px 6px;
+    margin: 12px -8px 6px;
+    border-radius: 8px;
+  }
+  .today-card .pick-head .signal-chip,
+  .today-card .pick-head .ev-chip,
+  .today-card .pick-head .kalshi-chip,
+  .today-card .pick-head .move-chip,
+  .today-card .pick-head .result-chip { font-size: 12px; padding: 3px 9px; }
+}
 .start-here {
   position: relative; background: color-mix(in oklab, #38bdf8 8%, var(--card));
   border: 1px solid color-mix(in oklab, #38bdf8 40%, var(--rule));
@@ -2191,6 +2228,40 @@ TODAY_TEMPLATE = r"""<!doctype html>
   background: color-mix(in oklab, #fb923c 15%, transparent);
   color: #fb923c;
 }
+/* Phase 29 (4): DK verify-at-book link */
+.today-card .pick-time .dk-verify {
+  margin-left: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.3px;
+  color: #22c55e;
+  text-decoration: none;
+  padding: 2px 8px;
+  background: color-mix(in oklab, #22c55e 10%, transparent);
+  border: 1px solid color-mix(in oklab, #22c55e 40%, transparent);
+  border-radius: 6px;
+}
+.today-card .pick-time .dk-verify:hover {
+  background: color-mix(in oklab, #22c55e 20%, transparent);
+}
+/* Phase 29 (7): LOCK of the day banner */
+.lock-of-day {
+  margin: 10px 0 16px;
+  padding: 10px 16px;
+  background: linear-gradient(90deg, color-mix(in oklab, #22c55e 14%, transparent),
+                                     color-mix(in oklab, #22c55e 4%, transparent));
+  border: 1px solid #22c55e;
+  border-radius: 12px;
+  box-shadow: 0 0 20px color-mix(in oklab, #22c55e 15%, transparent);
+  display: flex; align-items: center; gap: 10px;
+  font-size: 13px;
+}
+.lock-of-day .lock-icon { font-size: 18px; }
+.lock-of-day .lock-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 800; letter-spacing: 0.15em; text-transform: uppercase;
+  color: #22c55e; font-size: 11px;
+}
+.lock-of-day .lock-list { flex: 1; color: var(--ink); }
 .today-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -2402,6 +2473,34 @@ details.also-wrap .today-card { opacity: 0.88; }
       {% endif %}
     </div>
     {% endif %}
+    {# Phase 29 (1): streak + 7d context pill #}
+    {% if streak and (streak.streak_n or streak.last7) %}
+    <div class="streak-pill">
+      {% if streak.streak_n >= 2 %}
+        {% if streak.streak_type == 'W' %}
+          <span class="streak-fire">&#128293;</span>
+          <span class="streak-text good">{{ streak.streak_n }}-game win streak</span>
+        {% else %}
+          <span class="streak-cold">&#10060;</span>
+          <span class="streak-text bad">{{ streak.streak_n }}-loss streak</span>
+        {% endif %}
+      {% endif %}
+      {% if streak.last7 %}
+        <span class="streak-7d">
+          Last 7d:
+          <b>{{ streak.last7.wins }}&ndash;{{ streak.last7.losses }}</b>
+          <span class="{{ 'good' if streak.last7.units > 0 else ('bad' if streak.last7.units < 0 else '') }}">({{ '%+.1f'|format(streak.last7.units) }}u)</span>
+          &middot;
+          <span class="{{ 'good' if streak.last7.clv_pp > 0 else ('bad' if streak.last7.clv_pp < 0 else '') }}">CLV {{ '%+.2f'|format(streak.last7.clv_pp) }}pp</span>
+        </span>
+      {% endif %}
+      {% if streak.kelly_mult < 1 %}
+        <span class="streak-kelly" title="Bankroll safeguard: on a {{ streak.streak_n }}-loss streak, cutting stake to half the usual quarter-Kelly reduces variance drag without materially hurting EV.">
+          &#9888; Kelly: half-stake suggested
+        </span>
+      {% endif %}
+    </div>
+    {% endif %}
     <div class="sub">
       {% if star_picks %}
         Sorted strongest first (Signal composite). All picks cleared the 3% EV cushion, prob floor, and (where visible) favorable line movement. 0 picks is also a valid day &mdash; see <a href="/logged" style="color:var(--good)">RESULTS</a>.
@@ -2502,6 +2601,20 @@ details.also-wrap .today-card { opacity: 0.88; }
     </div>
   </details>
 
+  {# Phase 29 (7): LOCK of the day — Signal 5/5 picks earn a dedicated
+     banner above the regular picks list. Rare (~1/week), highlight them. #}
+  {% set _locks = star_picks|selectattr('signal_score','equalto',5)|rejectattr('do_not_bet')|list %}
+  {% if _locks %}
+  <div class="lock-of-day" title="Signal 5/5 — EV cushion + favorable line move + model floor + cross-book confirmation all green. Max signal in the composite.">
+    <span class="lock-icon">&#128274;</span>
+    <span class="lock-label">LOCK{{ 's' if _locks|length > 1 else '' }} OF THE DAY</span>
+    <span class="lock-list">
+      {% for lp in _locks %}
+        <b>{{ lp.pick }}</b> ({{ lp.sport_name }}){% if not loop.last %} &middot; {% endif %}
+      {% endfor %}
+    </span>
+  </div>
+  {% endif %}
   {% if star_picks %}
   <div class="today-section">
     <h2>&#9733; Signal picks</h2>
@@ -2579,6 +2692,12 @@ details.also-wrap .today-card { opacity: 0.88; }
       <div class="pick-time">
         <b>{{ p.countdown or p.time_abs or '' }}</b>
         {{ p.time_abs if p.countdown else '' }}
+        {# Phase 29 (4): DK verify-at-book quick-link. Opens DK search
+           for this matchup in a new tab so you can compare prices
+           without leaving. Only renders for upcoming games. #}
+        {% if p.status == 'upcoming' %}
+          <a class="dk-verify" href="https://sportsbook.draftkings.com/search?q={{ (p.game_away ~ ' ' ~ p.game_home)|urlencode }}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" title="Opens DraftKings sportsbook search for this matchup in a new tab — compare their current price before placing.">@ DK &rsaquo;</a>
+        {% endif %}
       </div>
     </a>
   {% endmacro %}
@@ -2692,6 +2811,33 @@ function dismissStartHere() {
   if (el) el.style.display = 'none';
   try { localStorage.setItem('bt_start_here_dismissed', '1'); } catch (e) {}
 }
+
+/* Phase 29 (1): auto-refresh when any pick is live.
+   Polls the current URL every 60s, swaps the picks region in place.
+   Zero flicker, no scroll jump. Pauses when the page is hidden. */
+(function initAutoRefresh() {
+  function anyLive() {
+    return !!document.querySelector('.today-card.status-live');
+  }
+  function refresh() {
+    if (document.hidden) return;
+    fetch(window.location.href + (window.location.href.includes('?') ? '&' : '?') + '_r=' + Date.now())
+      .then(function (r) { return r.ok ? r.text() : null; })
+      .then(function (html) {
+        if (!html) return;
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        var newMain = doc.querySelector('main.wrap');
+        var oldMain = document.querySelector('main.wrap');
+        if (newMain && oldMain) {
+          oldMain.innerHTML = newMain.innerHTML;
+        }
+      })
+      .catch(function () { /* silent — try again next tick */ });
+  }
+  if (anyLive()) {
+    setInterval(refresh, 60000);
+  }
+})();
 </script>
 </body>
 </html>
@@ -7521,6 +7667,54 @@ def today_landing():
                 today_tally["pending"] += 1
     today_tally["settled"] = today_tally["W"] + today_tally["L"] + today_tally["P"]
 
+    # Phase 29 (1): streak + 7d context + Kelly-safeguard suggestion.
+    # Pulls from the graded log — guarded against a cold Render where
+    # grade_all would issue external calls. Falls through silently on
+    # failure so the TODAY page isn't held hostage by the streak pill.
+    streak = {"streak_type": None, "streak_n": 0, "last7": None, "clv7": None, "kelly_mult": 1.0}
+    try:
+        import plays_log as _pl
+        # Narrow window — the summary + streak only need 30 days.
+        # grade_all's 10-min ESPN cache + the earlier _build_board_rows
+        # call for today usually makes this a cheap in-process read.
+        _graded = _pl.grade_all(limit_dates=30)
+        _summary = _pl.summary(_graded)
+        _s7 = _summary.get("all_7d") or {}
+        if _s7.get("settled"):
+            streak["last7"] = {
+                "wins":   _s7.get("wins"), "losses": _s7.get("losses"),
+                "units":  round(_s7.get("units", 0.0), 2),
+                "roi":    round(_s7.get("roi_pct", 0.0), 1),
+                "clv_pp": round(_s7.get("clv_avg_pp", 0.0), 2),
+            }
+        # Walk graded picks newest-first, tally the current streak.
+        _flat = []
+        for ds in sorted(_graded.keys(), reverse=True):
+            for pk in _graded[ds] or []:
+                r = pk.get("result")
+                if r in ("W", "L"):
+                    _flat.append(r)
+                    if len(_flat) >= 40:
+                        break
+            if len(_flat) >= 40:
+                break
+        if _flat:
+            first = _flat[0]
+            n = 1
+            for r in _flat[1:]:
+                if r == first:
+                    n += 1
+                else:
+                    break
+            streak["streak_type"] = first
+            streak["streak_n"] = n
+            # Kelly safeguard: 3+ losses in a row -> suggest half the
+            # usual quarter-Kelly. Not a bet signal; a bankroll guard.
+            if first == "L" and n >= 3:
+                streak["kelly_mult"] = 0.5
+    except Exception:
+        pass
+
     # Phase 27: 2-column split when >= 10 picks. Sort by start_time
     # ascending and split at the median so each column has roughly
     # equal count. Compute a human-readable boundary time label from
@@ -7567,6 +7761,7 @@ def today_landing():
         picks_late=picks_late,
         split_boundary_label=split_boundary_label,
         is_split=bool(picks_early and picks_late),
+        streak=streak,
     )
 
 
@@ -13803,6 +13998,10 @@ main.logged-page { max-width: 1040px; }
 .hero-block .sub { color: var(--muted); max-width: 760px; font-size: 13.5px; line-height: 1.55; }
 
 .records-section { margin-bottom: 32px; }
+.pnl-sparkline { padding: 8px 0 4px; }
+.pnl-sparkline svg { display: block; width: 100%; height: auto; }
+.calib-chart { padding: 8px 0; max-width: 520px; }
+.calib-chart svg { display: block; }
 .records-section h2 {
   font-family: "Fraunces", Georgia, serif; font-style: italic; font-weight: 500;
   font-size: 22px; margin: 0 0 10px;
@@ -14033,6 +14232,71 @@ main.logged-page { max-width: 1040px; }
     filter inline. For historical lookup, use the <b>Find picks</b> search at the
     bottom.</p>
   </div>
+
+  {# Phase 29 (3): 30-day daily P&L sparkline. One bar per day,
+     green/red by sign. Hover a bar for the date + units + pick count. #}
+  {% if pnl_bars %}
+    {% set _max_abs = 0.5 %}
+    {% for b in pnl_bars %}{% if (b.units|abs) > _max_abs %}{% set _max_abs = (b.units|abs) %}{% endif %}{% endfor %}
+    <section class="records-section">
+      <h2>Daily P&amp;L <span style="color:var(--muted);font-size:13px">last 30 days</span></h2>
+      <div class="pnl-sparkline">
+        <svg viewBox="0 0 600 110" width="100%" height="110" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+          <line x1="0" y1="55" x2="600" y2="55" stroke="var(--rule)" stroke-width="1" stroke-dasharray="2,3" />
+          {% for b in pnl_bars %}
+            {% set x = loop.index0 * 20 %}
+            {% set h = ((b.units|abs) / _max_abs * 45)|round(0,'floor')|int %}
+            {% set y = 55 - h if b.units > 0 else 55 %}
+            <rect x="{{ x + 2 }}" y="{{ y }}" width="16" height="{{ h if h else 1 }}"
+                  fill="{{ '#22c55e' if b.units > 0 else ('#ef4444' if b.units < 0 else 'var(--rule)') }}"
+                  opacity="{{ '1' if b.n else '0.35' }}">
+              <title>{{ b.date }} &middot; {{ b.n }} pick{{ 's' if b.n != 1 else '' }} &middot; {{ '%+.2f'|format(b.units) }}u</title>
+            </rect>
+          {% endfor %}
+        </svg>
+        <div style="display:flex;justify-content:space-between;font-size:10.5px;color:var(--muted-2);font-family:'JetBrains Mono',monospace;margin-top:2px">
+          <span>{{ pnl_bars[0].label }}</span>
+          <span>{{ pnl_bars[pnl_bars|length // 2].label }}</span>
+          <span>{{ pnl_bars[-1].label }}</span>
+        </div>
+      </div>
+    </section>
+  {% endif %}
+
+  {# Phase 29 (8): calibration chart — predicted vs actual hit rate
+     per fair_prob bucket. Dots above the 45-degree reference line =
+     model is sandbagging (good). Dots below = overconfident. #}
+  {% if calib_bins %}
+    <section class="records-section">
+      <h2>Model calibration <span style="color:var(--muted);font-size:13px">predicted vs actual hit rate</span></h2>
+      <div class="sub">Each dot is a 5pp probability bucket. Position above the 45&deg; line means picks in that band win more than the model predicted (sandbagging). Below means overconfident. Dot size reflects sample count.</div>
+      <div class="calib-chart">
+        <svg viewBox="0 0 420 320" width="100%" height="320" xmlns="http://www.w3.org/2000/svg">
+          <line x1="40" y1="20" x2="40" y2="280" stroke="var(--rule)" stroke-width="1" />
+          <line x1="40" y1="280" x2="400" y2="280" stroke="var(--rule)" stroke-width="1" />
+          <line x1="40" y1="280" x2="400" y2="20" stroke="var(--muted-2)" stroke-width="1" stroke-dasharray="4,4" />
+          {% for ax in [50, 60, 70, 80, 90] %}
+            {% set x = 40 + ((ax - 45) / 45) * 360 %}
+            <text x="{{ x }}" y="300" font-family="JetBrains Mono" font-size="10" fill="var(--muted-2)" text-anchor="middle">{{ ax }}%</text>
+            <text x="30" y="{{ 280 - ((ax - 45) / 45) * 260 + 3 }}" font-family="JetBrains Mono" font-size="10" fill="var(--muted-2)" text-anchor="end">{{ ax }}%</text>
+          {% endfor %}
+          <text x="220" y="315" font-size="11" fill="var(--muted)" text-anchor="middle" font-family="JetBrains Mono">Predicted</text>
+          <text x="15" y="150" font-size="11" fill="var(--muted)" text-anchor="middle" font-family="JetBrains Mono" transform="rotate(-90 15 150)">Actual</text>
+          {% for c in calib_bins %}
+            {% set cx = 40 + ((c.expected * 100 - 45) / 45) * 360 %}
+            {% set cy = 280 - ((c.actual * 100 - 45) / 45) * 260 %}
+            {% set r = (3 + (c.n ** 0.5))|round(1) %}
+            {% if r > 14 %}{% set r = 14 %}{% endif %}
+            <circle cx="{{ cx }}" cy="{{ cy }}" r="{{ r }}"
+                    fill="{{ '#22c55e' if c.actual >= c.expected else '#ef4444' }}" fill-opacity="0.75"
+                    stroke="var(--ink)" stroke-width="0.5">
+              <title>Bucket {{ (c.bucket_lo * 100)|round|int }}-{{ (c.bucket_hi * 100)|round|int }}%  &middot;  predicted {{ (c.expected * 100)|round(1) }}% &middot; actual {{ (c.actual * 100)|round(1) }}% &middot; n={{ c.n }}</title>
+            </circle>
+          {% endfor %}
+        </svg>
+      </div>
+    </section>
+  {% endif %}
 
   <div class="persist-status {{ 'ok' if persist_status.enabled else 'warn' }}">
     {% if persist_status.enabled %}
@@ -14848,6 +15112,97 @@ def logged_regrade():
     return redirect("/logged", code=302)
 
 
+@app.route("/whatsnew")
+def whats_new():
+    """Phase 29 (10): in-app changelog. Pulls the last 25 commits
+    from git log and groups by phase."""
+    import subprocess, os as _os_wn
+    try:
+        out = subprocess.check_output(
+            ["git", "log", "-25", "--pretty=%s|||%ad", "--date=short"],
+            cwd=_os_wn.path.dirname(_os_wn.path.abspath(__file__)),
+            stderr=subprocess.DEVNULL, timeout=5,
+        ).decode("utf-8", errors="replace")
+        lines = []
+        for line in out.splitlines():
+            if "|||" in line:
+                subj, date = line.split("|||", 1)
+                lines.append({"subject": subj.strip(), "date": date.strip()})
+    except Exception:
+        lines = []
+    html = (
+        FONTS_LINK + SHARED_STYLE
+        + '<main class="wrap" style="max-width:780px">'
+        + '<h1>What\'s new</h1>'
+        + '<p class="sub" style="color:var(--muted);font-size:14px">Recent changes to the picks pipeline, filters, and UI. Shows the last 25 commits on main.</p>'
+        + '<div style="display:flex;flex-direction:column;gap:10px;margin-top:16px">'
+    )
+    if not lines:
+        html += '<div style="color:var(--muted)">No git log available on this instance.</div>'
+    for ln in lines:
+        html += (
+            '<div style="padding:10px 14px;background:var(--card);border:1px solid var(--rule);border-radius:8px">'
+            f'<div style="font-family:JetBrains Mono,monospace;font-size:11px;color:var(--muted-2);letter-spacing:0.1em">{ln["date"]}</div>'
+            f'<div style="font-size:14px;color:var(--ink);margin-top:2px">{ln["subject"]}</div>'
+            '</div>'
+        )
+    html += '</div></main>' + THEME_SCRIPT
+    return html
+
+
+import os as _settings_os
+_SETTINGS_PATH = _settings_os.path.join(
+    _settings_os.path.dirname(_settings_os.path.abspath(__file__)),
+    "logs", "user_settings.json",
+)
+
+
+def _load_settings():
+    try:
+        import json
+        with open(_SETTINGS_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {"bankroll": 1000, "kelly_fraction": 0.25}
+
+
+def _save_settings(d):
+    try:
+        import json
+        _settings_os.makedirs(_settings_os.path.dirname(_SETTINGS_PATH), exist_ok=True)
+        with open(_SETTINGS_PATH, "w") as f:
+            json.dump(d, f)
+        return True
+    except Exception:
+        return False
+
+
+@app.route("/settings", methods=["GET", "POST"])
+def settings_page():
+    """Phase 29 (11): user preferences. Bankroll + Kelly fraction
+    saved to a local JSON (persisted via log_persist if available)."""
+    s = _load_settings()
+    saved = False
+    if request.method == "POST":
+        try:
+            s["bankroll"] = float(request.form.get("bankroll") or s.get("bankroll") or 1000)
+            s["kelly_fraction"] = float(request.form.get("kelly_fraction") or 0.25)
+            saved = _save_settings(s)
+        except Exception:
+            saved = False
+    html = (FONTS_LINK + SHARED_STYLE
+        + '<main class="wrap" style="max-width:520px">'
+        + '<h1>Settings</h1>'
+        + '<p class="sub" style="color:var(--muted);font-size:13.5px">Local preferences. Stored on this instance only; survives Render restarts via the mirrored logs dir.</p>'
+        + ('<div style="padding:10px 14px;background:color-mix(in oklab,var(--good) 15%,transparent);border:1px solid var(--good);border-radius:8px;color:var(--good);margin:12px 0">Saved.</div>' if saved else '')
+        + '<form method="post" style="display:flex;flex-direction:column;gap:14px;margin-top:16px">'
+        + f'<label>Bankroll (units reference)<br><input type="number" step="1" min="0" name="bankroll" value="{s.get("bankroll", 1000)}" style="padding:8px 10px;background:var(--card);border:1px solid var(--rule-strong);color:var(--ink);border-radius:8px;width:160px;font-size:14px"></label>'
+        + f'<label>Kelly fraction (0.10 - 0.50 safe range)<br><input type="number" step="0.05" min="0" max="1" name="kelly_fraction" value="{s.get("kelly_fraction", 0.25)}" style="padding:8px 10px;background:var(--card);border:1px solid var(--rule-strong);color:var(--ink);border-radius:8px;width:120px;font-size:14px"></label>'
+        + '<button type="submit" style="margin-top:4px;background:var(--good);color:var(--bg);border:none;padding:10px 20px;border-radius:8px;font-weight:600;cursor:pointer;align-self:flex-start">Save</button>'
+        + '</form></main>' + THEME_SCRIPT)
+    return html
+
+
 @app.route("/logged")
 def logged_plays():
     """Dashboard of past picks with W/L records (7d / 30d / 90d, strong vs all).
@@ -14975,6 +15330,77 @@ def logged_plays():
     # intact in case anything else still consumes it, but no longer passed
     # to the template.
     poly_summary = None
+
+    # Phase 29 (3): 30-day daily P&L sparkline. One bar per day,
+    # height proportional to units gained/lost that day.
+    from datetime import date as _date, timedelta as _td
+    pnl_bars = []
+    try:
+        today_d = _date.today()
+        for i in range(29, -1, -1):
+            d = today_d - _td(days=i)
+            ds = d.isoformat()
+            picks = graded_by_date.get(ds) or []
+            units = 0.0
+            n = 0
+            for pk in picks:
+                if pk.get("result") in ("W", "L", "P"):
+                    units += float(pk.get("profit_u") or 0.0)
+                    n += 1
+            pnl_bars.append({"date": ds, "units": units, "n": n,
+                             "label": d.strftime("%b %-d") if hasattr(d, "strftime") else ds})
+    except Exception:
+        # Windows strftime %-d fallback
+        pnl_bars = []
+        try:
+            today_d = _date.today()
+            for i in range(29, -1, -1):
+                d = today_d - _td(days=i)
+                ds = d.isoformat()
+                picks = graded_by_date.get(ds) or []
+                units = sum(float(p.get("profit_u") or 0.0) for p in picks if p.get("result") in ("W","L","P"))
+                n = sum(1 for p in picks if p.get("result") in ("W","L","P"))
+                pnl_bars.append({"date": ds, "units": units, "n": n,
+                                 "label": d.strftime("%b %d").lstrip("0").replace(" 0", " ")})
+        except Exception:
+            pnl_bars = []
+
+    # Phase 29 (8): calibration chart. Bucket picks by predicted
+    # fair_prob (5% bins from 45% to 90%), compare expected vs actual
+    # hit rate. Positive gap (actual > expected) = model is sandbagging;
+    # negative = overconfident. Points above the 45° line are good.
+    calib_bins = []
+    try:
+        bins = {}
+        for ds, picks in graded_by_date.items():
+            for pk in picks:
+                if pk.get("result") not in ("W", "L"):
+                    continue
+                fp = pk.get("fair_prob")
+                if fp is None:
+                    continue
+                try: fp = float(fp)
+                except (TypeError, ValueError): continue
+                if not (0.45 <= fp <= 0.90):
+                    continue
+                bucket = int((fp - 0.45) / 0.05)   # 0..8 -> 45-50, 50-55, ..., 85-90
+                b = bins.setdefault(bucket, {"n": 0, "w": 0, "sum_fp": 0.0})
+                b["n"] += 1
+                if pk.get("result") == "W":
+                    b["w"] += 1
+                b["sum_fp"] += fp
+        for bucket, b in sorted(bins.items()):
+            if b["n"] < 5:
+                continue
+            calib_bins.append({
+                "bucket_lo": 0.45 + bucket * 0.05,
+                "bucket_hi": 0.45 + (bucket + 1) * 0.05,
+                "n":         b["n"],
+                "expected":  b["sum_fp"] / b["n"],
+                "actual":    b["w"] / b["n"],
+            })
+    except Exception:
+        calib_bins = []
     # Trigger the daily analysis in a background thread (fire-and-forget) so
     # /logged never blocks on it. We still read the LATEST available analysis
     # synchronously — on first-ever visit this is None and the UI shows the
@@ -15013,6 +15439,8 @@ def logged_plays():
         graded_by_date=graded_by_date,
         persist_status=persist_status,
         anchor_status=anchor_status,
+        pnl_bars=pnl_bars,
+        calib_bins=calib_bins,
         analysis=analysis,
         active_adj=active_adj,
         grader_status=grader_status,
