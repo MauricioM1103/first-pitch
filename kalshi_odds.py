@@ -46,9 +46,35 @@ _SERIES_PREFIX = {
     "ucl":    "KXUEFAGAME",          # UEFA covers Champions League matches
     "europa": "KXUEFAGAME",          # same aggregate
     "international": "KXUEFANLGAME", # UEFA Nations League approx
+    # UFC moneyline (Phase 23) — "UFC Fight" is the per-matchup winner.
+    "ufc":    "KXUFCFIGHT",
 }
 
+# Per-(sport, market) series tickers for non-ML markets we also want to
+# confirm or auto-settle from Kalshi. Phase 23 additions:
+#   mlb F5 ML / Total / Spread  — the three MLB F5 markets we emit
+#   ufc Distance                — "goes the distance" market we emit
+# All use the same yes_sub_title encoding; moneyline_yes_prob and
+# ml_result route via this map when a non-ML market key is passed.
+_MARKET_SERIES = {
+    ("mlb", "f5_ml"):     "KXMLBF5",
+    ("mlb", "f5_total"):  "KXMLBF5TOTAL",
+    ("mlb", "f5_spread"): "KXMLBF5SPREAD",
+    ("ufc", "distance"):  "KXUFCDISTANCE",
+}
+
+
+def _series_for(sport_slug, market_key=None):
+    """Return the Kalshi series ticker for this (sport, market).
+    market_key=None (default) returns the moneyline series from
+    _SERIES_PREFIX. Non-ML keys route via _MARKET_SERIES."""
+    if market_key:
+        return _MARKET_SERIES.get((sport_slug, market_key))
+    return _SERIES_PREFIX.get(sport_slug)
+
+
 _cache = {}  # (sport_slug) -> (ts, [markets])
+_MARKET_CACHE = {}  # (sport_slug, market_key) -> (ts, [markets])
 
 
 def _fetch_json(url, timeout=15):
@@ -60,26 +86,29 @@ def _fetch_json(url, timeout=15):
         return json.load(r)
 
 
-def _series_markets(sport_slug):
-    """Return the current list of Kalshi game markets for this sport, with
-    caching. Empty list if the sport isn't in our map or the fetch fails
-    — callers never see an exception."""
-    pfx = _SERIES_PREFIX.get(sport_slug)
+def _series_markets(sport_slug, market_key=None):
+    """Return the current list of Kalshi game markets for this
+    (sport, market), with caching. market_key=None uses the moneyline
+    series. Empty list if the ticker isn't in our map or the fetch
+    fails — callers never see an exception."""
+    pfx = _series_for(sport_slug, market_key)
     if not pfx:
         return []
     now = time.time()
-    hit = _cache.get(sport_slug)
+    cache = _MARKET_CACHE if market_key else _cache
+    key = (sport_slug, market_key) if market_key else sport_slug
+    hit = cache.get(key)
     if hit and (now - hit[0]) < _TTL_S:
         return hit[1]
     try:
         d = _fetch_json(
             f"{_BASE}/markets?limit=200&status=open&series_ticker={pfx}",
-            timeout=20,
+            timeout=3,
         )
         markets = d.get("markets") or []
     except (URLError, ValueError, OSError, TimeoutError, ConnectionError):
         markets = []
-    _cache[sport_slug] = (now, markets)
+    cache[key] = (now, markets)
     return markets
 
 
@@ -288,11 +317,11 @@ def _cb_trip():
     _CB_OPEN_UNTIL = time.time() + _CB_COOLDOWN_S
 
 
-def _market_for_matchup(sport_slug, home_team):
+def _market_for_matchup(sport_slug, home_team, market_key=None):
     """Return the Kalshi market dict matching this matchup, or None.
-    Shared helper for moneyline_yes_prob + kalshi_confirms_pick so both
-    traverse the same series listing exactly once."""
-    markets = _series_markets(sport_slug)
+    market_key=None looks in the moneyline series. Non-ML keys route
+    via _MARKET_SERIES."""
+    markets = _series_markets(sport_slug, market_key)
     if not markets:
         return None
     home_norm = _norm_team(home_team)
@@ -324,7 +353,8 @@ def _orderbook_depth_usd(orderbook, side):
     return total
 
 
-def kalshi_confirms_pick(sport_slug, home_team, is_home_pick, our_fair_prob):
+def kalshi_confirms_pick(sport_slug, home_team, is_home_pick, our_fair_prob,
+                          market_key=None):
     """True iff Kalshi independently confirms our pick with a trustworthy
     quote. Confirmation requires ALL of:
       * exchange is trading
@@ -343,9 +373,13 @@ def kalshi_confirms_pick(sport_slug, home_team, is_home_pick, our_fair_prob):
     try:
         if not exchange_is_trading():
             return False
-        if our_fair_prob is None or sport_slug not in _SERIES_PREFIX:
+        if our_fair_prob is None:
             return False
-        m = _market_for_matchup(sport_slug, home_team)
+        if market_key is None and sport_slug not in _SERIES_PREFIX:
+            return False
+        if market_key is not None and (sport_slug, market_key) not in _MARKET_SERIES:
+            return False
+        m = _market_for_matchup(sport_slug, home_team, market_key)
         if not m:
             return False
         ticker = m.get("ticker")
@@ -404,35 +438,43 @@ _SETTLED_CACHE = {}   # sport_slug -> (ts, [markets])
 _SETTLED_TTL_S = 10 * 60   # settled markets never change — long cache
 
 
-def _settled_markets(sport_slug):
-    """Return Kalshi SETTLED game markets for this sport, cached. Settled
-    markets have status="settled" and result="yes"|"no"."""
-    pfx = _SERIES_PREFIX.get(sport_slug)
+def _settled_markets(sport_slug, market_key=None):
+    """Return Kalshi SETTLED markets for this (sport, market), cached.
+    market_key=None uses the moneyline series. Settled markets have
+    status="settled" and result="yes"|"no"."""
+    pfx = _series_for(sport_slug, market_key)
     if not pfx:
         return []
-    hit = _SETTLED_CACHE.get(sport_slug)
+    key = (sport_slug, market_key) if market_key else sport_slug
+    hit = _SETTLED_CACHE.get(key)
     now = time.time()
     if hit and (now - hit[0]) < _SETTLED_TTL_S:
         return hit[1]
     try:
         d = _fetch_json(
             f"{_BASE}/markets?limit=200&status=settled&series_ticker={pfx}",
-            timeout=20,
+            timeout=3,
         )
         markets = d.get("markets") or []
     except (URLError, ValueError, OSError, TimeoutError, ConnectionError):
         markets = []
-    _SETTLED_CACHE[sport_slug] = (now, markets)
+    _SETTLED_CACHE[key] = (now, markets)
     return markets
 
 
-def ml_result(sport_slug, home_team, away_team):
+def ml_result(sport_slug, home_team, away_team, market_key=None):
     """Return 'home_win' / 'away_win' / None based on Kalshi's settled
-    market for this matchup. Kalshi encodes 'home team wins' as YES,
-    so result == 'yes' → home win; result == 'no' → away win."""
-    if _cb_open() or sport_slug not in _SERIES_PREFIX:
+    market for this matchup. Kalshi encodes 'home team wins' as YES
+    on moneyline series. For non-ML markets (F5 ML, UFC Distance),
+    the YES side is market-specific — the caller interprets the
+    returned 'yes' / 'no' per market semantics via market_result()."""
+    if _cb_open():
         return None
-    markets = _settled_markets(sport_slug)
+    if market_key is None and sport_slug not in _SERIES_PREFIX:
+        return None
+    if market_key is not None and (sport_slug, market_key) not in _MARKET_SERIES:
+        return None
+    markets = _settled_markets(sport_slug, market_key)
     if not markets:
         return None
     home_norm = _norm_team(home_team)
@@ -449,6 +491,34 @@ def ml_result(sport_slug, home_team, away_team):
             return "home_win"
         if result == "no":
             return "away_win"
+        return None
+    return None
+
+
+def market_result(sport_slug, market_key, home_team, away_team):
+    """Return the YES/NO settlement for a non-ML market directly, as
+    'yes' / 'no' / None. Used for UFC Distance ("YES" = fight went
+    the distance) and F5 markets where the home-side mapping differs
+    from the moneyline convention."""
+    if _cb_open() or market_key is None:
+        return None
+    if (sport_slug, market_key) not in _MARKET_SERIES:
+        return None
+    markets = _settled_markets(sport_slug, market_key)
+    if not markets:
+        return None
+    home_norm = _norm_team(home_team)
+    for m in markets:
+        yes_team = _norm_team(m.get("yes_sub_title"))
+        if not yes_team:
+            continue
+        if not (yes_team == home_norm
+                or yes_team in home_norm
+                or home_norm in yes_team):
+            continue
+        result = (m.get("result") or "").lower()
+        if result in ("yes", "no"):
+            return result
         return None
     return None
 

@@ -2002,6 +2002,22 @@ TODAY_TEMPLATE = r"""<!doctype html>
 .today-hero { padding: 20px 0 10px; }
 .today-hero h1 { margin: 0 0 4px; font-size: 28px; font-weight: 700; letter-spacing: -0.02em; }
 .today-hero .sub { color: var(--muted); font-size: 14px; line-height: 1.5; max-width: 680px; }
+.today-tally {
+  display: inline-flex; align-items: center; gap: 10px;
+  margin: 4px 0 10px;
+  padding: 6px 14px;
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12.5px;
+}
+.today-tally .tally-label { color: var(--muted-2); text-transform: uppercase; letter-spacing: 0.1em; font-size: 10.5px; }
+.today-tally .tally-record { font-weight: 700; color: var(--ink); font-size: 14px; }
+.today-tally .tally-units { font-weight: 700; }
+.today-tally .tally-units.good { color: var(--good); }
+.today-tally .tally-units.bad  { color: #ef4444; }
+.today-tally .tally-pending { color: var(--muted); font-size: 11px; }
 .start-here {
   position: relative; background: color-mix(in oklab, #38bdf8 8%, var(--card));
   border: 1px solid color-mix(in oklab, #38bdf8 40%, var(--rule));
@@ -2139,6 +2155,14 @@ TODAY_TEMPLATE = r"""<!doctype html>
   border-color: color-mix(in oklab, #f59e0b 55%, var(--rule));
 }
 .today-card .pick-head .signal-chip.s3 { background: color-mix(in oklab, #38bdf8 12%, transparent); color: #38bdf8; border-color: color-mix(in oklab, #38bdf8 50%, var(--rule)); }
+.today-card .pick-head .kalshi-chip {
+  display: inline-flex; align-items: center; padding: 2px 7px;
+  border-radius: 10px; font-size: 10.5px; font-weight: 800;
+  letter-spacing: 0.5px;
+  background: color-mix(in oklab, #a855f7 15%, transparent);
+  color: #a855f7;
+  border: 1px solid color-mix(in oklab, #a855f7 55%, var(--rule));
+}
 .today-card .pick-head .ev-chip {
   display: inline-flex; padding: 2px 8px; border-radius: 10px; font-size: 11px;
   font-weight: 700; letter-spacing: 0.4px;
@@ -2275,6 +2299,22 @@ details.also-wrap .today-card { opacity: 0.88; }
         No bets today
       {% endif %}
     </h1>
+    {% if today_tally and (today_tally.settled or today_tally.pending) %}
+    <div class="today-tally" title="Running tally of today's picks that have already graded. Updates live as games finish and the grader catches up.">
+      <span class="tally-label">Today so far</span>
+      <span class="tally-record">
+        {{ today_tally.W }}&ndash;{{ today_tally.L }}{% if today_tally.P %}&ndash;{{ today_tally.P }}{% endif %}
+      </span>
+      {% if today_tally.settled %}
+        <span class="tally-units {{ 'good' if today_tally.units > 0 else ('bad' if today_tally.units < 0 else '') }}">
+          {{ '%+.2f'|format(today_tally.units) }}u
+        </span>
+      {% endif %}
+      {% if today_tally.pending %}
+        <span class="tally-pending">{{ today_tally.pending }} pending</span>
+      {% endif %}
+    </div>
+    {% endif %}
     <div class="sub">
       {% if star_picks %}
         Sorted strongest first (Signal composite). All picks cleared the 3% EV cushion, prob floor, and (where visible) favorable line movement. 0 picks is also a valid day &mdash; see <a href="/logged" style="color:var(--good)">RESULTS</a>.
@@ -2403,6 +2443,9 @@ details.also-wrap .today-card { opacity: 0.88; }
         {% endif %}
         {% if p.signal_score is not none %}
           <span class="signal-chip s{{ p.signal_score }}">Signal {{ p.signal_score }}/5</span>
+        {% endif %}
+        {% if p.kalshi_confirmed %}
+          <span class="kalshi-chip" title="Kalshi confirmation live: orderbook depth, trade freshness, and prob agreement all passed for this pick's +1 cross-book Signal point">&#10003; K</span>
         {% endif %}
         {% if p.ev_pct is not none and p.ev_pct > 0 %}
           <span class="ev-chip">+{{ '%.1f'|format(p.ev_pct) }}% EV</span>
@@ -6677,19 +6720,28 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
         # API volume ~70% vs calling it on every ML pick.
         kalshi_confirmed = False
         try:
-            # Phase 22b: added soccer leagues — EPL, LaLiga, Liga MX,
-            # UCL, Europa, international friendlies. Kalshi lists each
-            # as a KXxxxGAME series with the same yes_sub_title shape.
-            if (p.get("sport_slug") in ("nfl", "ncaaf", "nhl", "mlb",
-                                         "epl", "laliga", "ligamx",
-                                         "ucl", "europa", "international")
-                and _market_category(p.get("market")) == "ML"
-                and p.get("fair_prob") is not None):
+            # Phase 23: route the Kalshi lookup via (sport, market_key)
+            # so F5 ML (KXMLBF5), UFC Distance (KXUFCDISTANCE), and
+            # UFC fight ML (KXUFCFIGHT) all participate too, not just
+            # the game-ML series.
+            _slug = p.get("sport_slug")
+            _market = (p.get("market") or "")
+            _cat = _market_category(_market)
+            _market_key = None   # None = default ML series
+            _eligible = False
+            if _slug in ("nfl", "ncaaf", "nhl", "mlb",
+                          "epl", "laliga", "ligamx",
+                          "ucl", "europa", "international") and _cat == "ML":
+                _eligible = True
+            elif _slug == "ufc" and _cat == "ML":
+                _eligible = True   # UFC fight ML via KXUFCFIGHT
+            elif _slug == "mlb" and _cat == "F5-ML":
+                _eligible = True; _market_key = "f5_ml"
+            elif _slug == "ufc" and "distance" in _market.lower():
+                _eligible = True; _market_key = "distance"
+            if _eligible and p.get("fair_prob") is not None:
                 _pre_score = p.get("signal_score")
                 if _pre_score is None:
-                    # signal_score hasn't been computed yet — upper
-                    # bound: EV cushion (0-2) + line move (0-1) + prob
-                    # floor (0-1). Keep gate loose but non-trivial.
                     _ev = float(p.get("ev_pct") or 0.0)
                     _move = float(p.get("line_move_pp") or 0.0)
                     _fp = float(p.get("fair_prob") or 0.0)
@@ -6699,9 +6751,10 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                 if 2 <= _pre_score <= 3:
                     import kalshi_odds as _ko
                     kalshi_confirmed = _ko.kalshi_confirms_pick(
-                        p.get("sport_slug"), p.get("home_team"),
+                        _slug, p.get("home_team"),
                         is_home_pick=is_home,
                         our_fair_prob=float(p.get("fair_prob")),
+                        market_key=_market_key,
                     )
         except Exception:
             kalshi_confirmed = False
@@ -7202,6 +7255,28 @@ def today_landing():
     also_likes  = [p for p in flat if (p.get("signal_score") or 0) == 2]
 
     today = datetime.now(CENTRAL).date().isoformat()
+
+    # Phase 23: today's running record pill. Count only picks on the
+    # viewed date that already graded (W/L/P) — gives the user a
+    # live tally of how the day is going without needing to open
+    # /logged. Fed by the same graded_by_date pool _build_board_rows
+    # uses, so it stays in sync with the chip states on the cards.
+    today_tally = {"W": 0, "L": 0, "P": 0, "units": 0.0, "pending": 0}
+    for row in board_rows:
+        for p in row.get("picks", []):
+            if p.get("model_only"):
+                continue
+            r = p.get("result")
+            if r in ("W", "L", "P"):
+                today_tally[r] += 1
+                try:
+                    today_tally["units"] += float(p.get("profit_u") or 0.0)
+                except (TypeError, ValueError):
+                    pass
+            elif p.get("_row_status") in ("live", "final"):
+                today_tally["pending"] += 1
+    today_tally["settled"] = today_tally["W"] + today_tally["L"] + today_tally["P"]
+
     return render_template_string(
         TODAY_TEMPLATE,
         fonts_link=FONTS_LINK,
@@ -7217,6 +7292,7 @@ def today_landing():
         next_date=(d + timedelta(days=1)).isoformat(),
         today=today,
         is_today=(date_str == today),
+        today_tally=today_tally,
     )
 
 
