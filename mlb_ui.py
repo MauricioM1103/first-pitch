@@ -2250,6 +2250,11 @@ TODAY_TEMPLATE = r"""<!doctype html>
   font-weight: 700; letter-spacing: 0.4px;
   background: color-mix(in oklab, #22c55e 15%, transparent); color: #22c55e;
 }
+.today-card .pick-head .ev-chip.ev-chip-sanity {
+  background: color-mix(in oklab, #f59e0b 15%, transparent);
+  color: #f59e0b;
+  border: 1px solid color-mix(in oklab, #f59e0b 50%, transparent);
+}
 .today-card .pick-head .move-chip {
   display: inline-flex; align-items: center; padding: 2px 7px;
   border-radius: 10px; font-size: 11px;
@@ -2540,7 +2545,11 @@ details.also-wrap .today-card { opacity: 0.88; }
           <span class="kalshi-chip" title="Kalshi confirmation live: orderbook depth, trade freshness, and prob agreement all passed for this pick's +1 cross-book Signal point">&#10003; K</span>
         {% endif %}
         {% if p.ev_pct is not none and p.ev_pct > 0 %}
-          <span class="ev-chip">+{{ '%.1f'|format(p.ev_pct) }}% EV</span>
+          {% if p.ev_pct > 15 %}
+            <span class="ev-chip ev-chip-sanity" title="Unusually high EV ({{ '%.1f'|format(p.ev_pct) }}%). This often means a stale price, a model artifact, or a market we're overconfident on — verify the current line before placing. Signal composite caps the EV bonus at 2 points above 6%, so this doesn't bump the pick's rank over a sober +6% pick.">+{{ '%.1f'|format(p.ev_pct) }}% EV &#9888;</span>
+          {% else %}
+            <span class="ev-chip">+{{ '%.1f'|format(p.ev_pct) }}% EV</span>
+          {% endif %}
         {% endif %}
         {% if p.line_move_pp is not none and (p.line_move_pp|abs) >= 0.001 %}
           <span class="move-chip {{ 'adverse' if p.line_move_pp < 0 else '' }}">
@@ -5370,7 +5379,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 # the alt-spread/alt-total emission policy.
                 if ev_raw < 3.0:
                     continue
-                ev_capped = min(ev_raw, 15.0)
+                ev_capped = ev_raw   # Phase 28: no cap, show real EV
                 cons, pin_p = _cons(prob, pin_fair)
                 out.append({"category": "ML", "market": "ML",
                             "pick": label, "fair_prob": prob,
@@ -5446,7 +5455,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 ev_raw = (prob * dec - 1.0) * 100.0
                 if ev_raw < 3.0:
                     continue
-                ev_capped = min(ev_raw, 15.0)
+                ev_capped = ev_raw   # Phase 28: no cap, show real EV
                 cons, pin_p = _cons(prob, pin_side_fair)
                 out.append({"category": "Spread", "market": "Spread",
                             "pick": lbl, "fair_prob": prob,
@@ -5519,8 +5528,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     ev_pct = (prob * dec - 1.0) * 100.0
                     if ev_pct < MIN_EV_ALT:
                         continue
-                    if ev_pct > MAX_EV_PCT:
-                        ev_pct = MAX_EV_PCT
+                    # Phase 28: no cap, show real EV (previously min(ev_pct, MAX_EV_PCT))
                     # Snap the main-line reference to .5 so the label never
                     # shows a quarter-point spread the user's book can't trade.
                     main_disp_h = _snap_to_half(main_line_h) or main_line_h
@@ -5604,7 +5612,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     ev_raw = (prob * dec - 1.0) * 100.0
                     if ev_raw < 3.0:
                         continue
-                    ev_capped = min(ev_raw, 15.0)
+                    ev_capped = ev_raw   # Phase 28: no cap, show real EV
                     cons, pin_p = _cons(prob, pin_side_fair)
                     out.append({"category": "Total", "market": "Total",
                                 "pick": lbl, "fair_prob": prob,
@@ -5728,8 +5736,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     ev_pct = (prob * dec - 1.0) * 100.0
                     if ev_pct < MIN_EV_ALT:
                         continue
-                    if ev_pct > MAX_EV_PCT:
-                        ev_pct = MAX_EV_PCT   # cap display
+                    # Phase 28: no cap, show real EV (previously min(ev_pct, MAX_EV_PCT))
                     side_pin_fair = (pin_over_fair if direction == "Over"
                                       else (1 - pin_over_fair)) if pin_over_fair is not None else None
                     candidates.append((ev_pct, prob, direction, alt_line, am, dec, side_pin_fair))
@@ -5804,7 +5811,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                         and abs(prob - pin_side_fair) <= 0.12):
                     ev_raw = (prob * dec - 1.0) * 100.0
                     if ev_raw >= 3.0:
-                        ev_capped = min(ev_raw, 15.0)
+                        ev_capped = ev_raw   # Phase 28: no cap, show real EV
                         cons, pin_p = _cons(prob, pin_side_fair)
                         out.append({"category": "BTTS", "market": "BTTS",
                                     "pick": label, "fair_prob": prob,
@@ -5867,7 +5874,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                             best = (ev_raw, lbl, prob, am, dec, pin_fair)
                     if best:
                         ev_raw, lbl, prob, am, dec, pin_fair = best
-                        ev_capped = min(ev_raw, 15.0)
+                        ev_capped = ev_raw   # Phase 28: no cap, show real EV
                         cons, pin_p = _cons(prob, pin_fair)
                         out.append({
                             "category": "BTTS-TG",
@@ -5914,7 +5921,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                         best = (ev_raw, (h_g, a_g), prob, am, dec)
                 if best:
                     ev_raw, (h_g, a_g), prob, am, dec = best
-                    ev_capped = min(ev_raw, 15.0)
+                    ev_capped = ev_raw   # Phase 28: no cap, show real EV
                     # No sibling-side devig to work with (49 outcomes),
                     # so skip the market-blend here and use raw model prob
                     # as consensus. User sees Model % = Consensus % only
@@ -6059,7 +6066,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                         ev_raw = (prob * dec - 1.0) * 100.0
                         if ev_raw < 3.0:
                             continue
-                        ev_capped = min(ev_raw, 15.0)
+                        ev_capped = ev_raw   # Phase 28: no cap, show real EV
                         team = home if side_name == "home" else away
                         cons, pin_p = _cons(prob, pin_fair)
                         out.append({
@@ -6111,7 +6118,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
             if dec and dec > 1.0:
                 ev_raw = (prob * dec - 1.0) * 100.0
                 if ev_raw >= 3.0:
-                    ev_capped = min(ev_raw, 15.0)
+                    ev_capped = ev_raw   # Phase 28: no cap, show real EV
                     # Pinnacle devig on 1H total for the picked side
                     pin_side_fair = None
                     if (pin_total_h1.get("over_am") is not None
@@ -6179,7 +6186,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                 ev_raw = (prob * dec - 1.0) * 100.0
                 if ev_raw < 3.0:
                     continue
-                ev_capped = min(ev_raw, 15.0)
+                ev_capped = ev_raw   # Phase 28: no cap, show real EV
                 cons, pin_p = _cons(prob, side_pin_fair)
                 out.append({"category": "1H-Total", "market": "1H Total",
                             "pick": f"1H {direction} {line_h1:g}",
@@ -6225,7 +6232,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
             if dec and dec > 1.0:
                 ev_raw = (prob * dec - 1.0) * 100.0
                 if ev_raw >= 3.0:
-                    ev_capped = min(ev_raw, 15.0)
+                    ev_capped = ev_raw   # Phase 28: no cap, show real EV
                     pin_side_fair = None
                     if (pin_total_h1.get("over_am") is not None
                             and pin_total_h1.get("under_am") is not None):
@@ -6298,7 +6305,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     ev_raw = (prob * dec - 1.0) * 100.0
                     if ev_raw < 3.0:
                         continue
-                    ev_capped = min(ev_raw, 15.0)
+                    ev_capped = ev_raw   # Phase 28: no cap, show real EV
                     cons, pin_p = _cons(prob, side_pin_fair)
                     candidates.append({
                         "category": "TT", "market": "Team Total",
@@ -6378,7 +6385,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     ev_raw = (prob * dec - 1.0) * 100.0
                     if ev_raw < 3.0:
                         continue
-                    ev_capped = min(ev_raw, 15.0)
+                    ev_capped = ev_raw   # Phase 28: no cap, show real EV
                     cons, pin_p = _cons(prob, side_pin_fair)
                     candidates.append({
                         "category": "TT", "market": "Team Total",
@@ -6429,7 +6436,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     ev_raw = (prob * dec - 1.0) * 100.0
                     if ev_raw < 3.0:
                         continue
-                    ev_capped = min(ev_raw, 15.0)
+                    ev_capped = ev_raw   # Phase 28: no cap, show real EV
                     cons, pin_p = _cons(prob, pin_fair)
                     out.append({
                         "category": "Distance", "market": "Fight Distance",
