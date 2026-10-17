@@ -15406,28 +15406,26 @@ def _maybe_notify_changes(star_picks):
         h2 = sched.get("half2", {}) if sched else {}
         if not h1.get("sent"):
             # Gate: no alerts before the first-half picks are out.
-            # Still refresh the top-N baseline so when half-1 fires,
-            # the diff starts from "today's current top", not from
-            # some stale previous-day snapshot.
-            _db.diff_top_n(star_picks)
             return
+        posted_h1 = h1.get("pick_ids", [])
+        posted_h2 = h2.get("pick_ids", [])
         with _CHANGE_WEBHOOK_LOCK:
-            entrants    = _db.diff_top_n(star_picks)
-            dnb_alerts  = _db.diff_posted_dnb(
-                star_picks,
-                posted_half1=h1.get("pick_ids", []),
-                posted_half2=h2.get("pick_ids", []),
-            )
-            if entrants or dnb_alerts:
+            candidates = _db.diff_candidates(star_picks,
+                                              posted_half1=posted_h1,
+                                              posted_half2=posted_h2)
+            dnb_alerts = _db.diff_posted_dnb(star_picks,
+                                              posted_half1=posted_h1,
+                                              posted_half2=posted_h2)
+            if candidates or dnb_alerts:
                 _db.send_change_alert(webhook,
-                                       entrants=entrants,
+                                       entrants=candidates,
                                        dnb_alerts=dnb_alerts)
             # Per-pick result alerts: as soon as a posted top-10 pick
-            # grades W/L/P, send a single PNG. Dedup is per pick id
-            # per day inside diff_newly_graded.
+            # grades W/L/P, send a single PNG. Per-id dedup inside
+            # diff_newly_graded ensures one alert per pick per day.
             posted_pairs = (
-                [(pid, "First Half")  for pid in h1.get("pick_ids", [])] +
-                [(pid, "Second Half") for pid in h2.get("pick_ids", [])]
+                [(pid, "First Half")  for pid in posted_h1] +
+                [(pid, "Second Half") for pid in posted_h2]
             )
             if posted_pairs:
                 graded = _db.diff_newly_graded(star_picks, posted_pairs)
@@ -15532,6 +15530,42 @@ def _save_dispatch_schedule(d):
             json.dump(d, f)
     except Exception:
         pass
+    # Mirror to GitHub so the state survives Render's ephemeral-fs
+    # wipes (every 15-min spin-down and every deploy). If log_persist
+    # isn't configured, this silently no-ops.
+    try:
+        import log_persist
+        if log_persist.is_configured():
+            log_persist.write_file("logs/discord_schedule.json",
+                                    json.dumps(d),
+                                    message="dispatch state update")
+    except Exception:
+        pass
+
+
+def _load_dispatch_schedule_remote_fallback():
+    """When logs/ was just wiped, try to pull the latest schedule back
+    from GitHub so we don't blindly recompute (and re-fire 'sent'
+    events). Returns {} on any failure."""
+    try:
+        import log_persist
+        if not log_persist.is_configured():
+            return {}
+        remote = log_persist.read_file("logs/discord_schedule.json")
+        if remote:
+            try:
+                _settings_os.makedirs(
+                    _settings_os.path.dirname(_DISCORD_SCHEDULE_PATH),
+                    exist_ok=True)
+                with open(_DISCORD_SCHEDULE_PATH, "w") as f:
+                    f.write(remote if isinstance(remote, str)
+                            else json.dumps(remote))
+            except Exception:
+                pass
+            return json.loads(remote) if isinstance(remote, str) else remote
+    except Exception:
+        pass
+    return {}
 
 
 def _compute_today_dispatch_schedule():
@@ -15635,6 +15669,14 @@ def cron_dispatch():
     actions = []
 
     sched = _load_dispatch_schedule()
+    # If local state is missing or stale (common after Render spin-
+    # down or deploy wipes), try GitHub mirror before falling back to
+    # a fresh recompute. Avoids re-firing "sent" events on wake-up.
+    if sched.get("date") != today:
+        remote = _load_dispatch_schedule_remote_fallback()
+        if remote.get("date") == today:
+            sched = remote
+            actions.append("restored_from_remote")
     if sched.get("date") != today:
         sched = _compute_today_dispatch_schedule()
         _save_dispatch_schedule(sched)
@@ -15712,6 +15754,8 @@ def cron_dispatch():
         [(pid, "First Half")  for pid in h1.get("pick_ids", [])] +
         [(pid, "Second Half") for pid in h2.get("pick_ids", [])]
     )
+    posted_h1_ids = h1.get("pick_ids", [])
+    posted_h2_ids = h2.get("pick_ids", [])
     if posted_pairs:
         try:
             import plays_log as _pl
@@ -15726,6 +15770,35 @@ def cron_dispatch():
                 n = _db.send_result_alerts(webhook, graded)
                 if n:
                     actions.append(f"results:{n}")
+        except Exception:
+            pass
+
+    # 7. Candidates + DNB alerts from the current live board. Only
+    # runs after half-1 has been posted (same gate the TODAY-render
+    # path uses). The 15-min dispatcher ensures these fire even when
+    # the TODAY page gets no traffic.
+    if h1.get("sent"):
+        try:
+            _d = datetime.now(CENTRAL).date()
+            board_rows, _ = _build_board_rows(_d.isoformat(), _d, "all",
+                                                strong_only=False)
+            star = []
+            for row in board_rows or []:
+                for p in row.get("picks", []):
+                    if ((p.get("signal_score") or 0) >= 3) or p.get("do_not_bet"):
+                        star.append(p)
+            candidates = _db.diff_candidates(star,
+                                              posted_half1=posted_h1_ids,
+                                              posted_half2=posted_h2_ids)
+            dnb_alerts = _db.diff_posted_dnb(star,
+                                              posted_half1=posted_h1_ids,
+                                              posted_half2=posted_h2_ids)
+            if candidates or dnb_alerts:
+                n = _db.send_change_alert(webhook,
+                                           entrants=candidates,
+                                           dnb_alerts=dnb_alerts)
+                if n:
+                    actions.append(f"live_alerts:{n}")
         except Exception:
             pass
 

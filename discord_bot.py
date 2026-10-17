@@ -574,35 +574,37 @@ def _write_last_alert_ts(ts):
 
 
 def diff_top_n(star_picks):
-    """Return picks that just ENTERED the top-N since the last snapshot.
-    Entrants whose game has already started are dropped (can't act on
-    them). Writes the fresh snapshot before returning so repeated calls
-    don't re-alert on the same entrant."""
-    prev = _load_top_snapshot()
-    prev_set = set(prev or [])
+    """DEPRECATED — kept so legacy callers don't break. Returns [] and
+    just refreshes the baseline snapshot. New entry-detection goes
+    through diff_candidates (scoped against posted top-10s)."""
     ranked = _rank_picks(star_picks)
-    current_top = ranked[:_TOP_N]
-    current_ids = [p.get("id") for p in current_top if p.get("id")]
-    current_set = set(current_ids)
-    entrant_ids = current_set - prev_set
-    pick_by_id = {p.get("id"): p for p in star_picks}
-    entrants = []
-    for pid in entrant_ids:
-        p = pick_by_id.get(pid)
-        if not p:
+    _write_top_snapshot([p.get("id") for p in ranked[:_TOP_N] if p.get("id")])
+    return []
+
+
+def diff_candidates(star_picks, posted_half1=None, posted_half2=None):
+    """Return up to _ENTRANT_MAX_PER_ALERT picks that could still join
+    a posted top-10 later today. Rules:
+      - signal_score >= 3
+      - not do_not_bet
+      - game not yet started (_row_status == 'upcoming' or absent)
+      - NOT already in a posted top-10 (either half)
+    Sorted strongest first. The caller decides whether to actually
+    send based on the once-per-day dedup."""
+    posted = set(posted_half1 or []) | set(posted_half2 or [])
+    out = []
+    for p in _rank_picks(star_picks):
+        pid = p.get("id")
+        if not pid or pid in posted:
             continue
-        # Only pre-game picks — once the game starts, posting an alert
-        # is useless since the user can't realistically act on it.
+        if (p.get("signal_score") or 0) < 3:
+            continue
         if p.get("_row_status") and p.get("_row_status") != "upcoming":
             continue
-        entrants.append(p)
-    _write_top_snapshot(current_ids)
-    # Preserve ranking order for the output PNG
-    entrants.sort(key=lambda p: (
-        -(int(p.get("signal_score") or 0)),
-        -(float(p.get("ev_pct") or 0.0)),
-    ))
-    return entrants
+        out.append(p)
+        if len(out) >= _ENTRANT_MAX_PER_ALERT:
+            break
+    return out
 
 
 def _today_ct_str():
