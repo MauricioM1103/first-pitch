@@ -291,8 +291,11 @@ def send_discord_image(webhook_url, png_bytes, filename, message=""):
         body = b''.join(parts)
         req = Request(webhook_url, data=body, method="POST", headers={
             "Content-Type": f"multipart/form-data; boundary={boundary}",
+            # Discord webhooks reject requests without a User-Agent
+            # with a 403; always include one.
+            "User-Agent": "cheeks-model/1.0 (+https://cheeks-model.onrender.com)",
         })
-        urlopen(req, timeout=10).close()
+        urlopen(req, timeout=15).close()
         return True
     except Exception:
         return False

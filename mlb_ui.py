@@ -15192,21 +15192,44 @@ _LOCK_SENT_PATH = _settings_os.path.join(
 )
 
 
+_SETTINGS_ENV_KEYS = {
+    "discord_webhook_url":      "DISCORD_WEBHOOK_URL",
+    "pushover_user_key":        "PUSHOVER_USER_KEY",
+    "pushover_api_token":       "PUSHOVER_API_TOKEN",
+    "daily_picks_webhook_url":  "DAILY_PICKS_WEBHOOK_URL",
+    "cron_secret":              "CRON_SECRET",
+}
+
+
 def _load_settings():
+    """Load user settings from logs/user_settings.json, with env-var
+    fallback for sensitive fields so they survive Render's ephemeral
+    filesystem (logs/ is wiped on every spin-down / deploy)."""
+    defaults = {
+        "bankroll": 1000,
+        "kelly_fraction": 0.25,
+        "discord_webhook_url": "",
+        "pushover_user_key":   "",
+        "pushover_api_token":  "",
+        "daily_picks_webhook_url": "",
+        "cron_secret": "",
+    }
     try:
         import json
         with open(_SETTINGS_PATH) as f:
-            return json.load(f)
+            d = json.load(f) or {}
     except Exception:
-        return {
-            "bankroll": 1000,
-            "kelly_fraction": 0.25,
-            "discord_webhook_url": "",
-            "pushover_user_key":   "",
-            "pushover_api_token":  "",
-            "daily_picks_webhook_url": "",
-            "cron_secret": "",
-        }
+        d = {}
+    out = {**defaults, **d}
+    # Env-var fallback: if a sensitive field is blank in the saved
+    # file, use the environment variable instead. Set these in Render's
+    # service dashboard → Environment to survive spin-downs.
+    for key, env_name in _SETTINGS_ENV_KEYS.items():
+        if not out.get(key):
+            v = _settings_os.environ.get(env_name)
+            if v:
+                out[key] = v
+    return out
 
 
 def _save_settings(d):
@@ -15275,8 +15298,11 @@ def _send_discord(webhook_url, message):
         import json
         data = json.dumps({"content": message}).encode()
         req = Request(webhook_url, data=data, method="POST",
-                      headers={"Content-Type": "application/json"})
-        urlopen(req, timeout=5).close()
+                      headers={
+                          "Content-Type": "application/json",
+                          "User-Agent": "cheeks-model/1.0 (+https://cheeks-model.onrender.com)",
+                      })
+        urlopen(req, timeout=10).close()
         return True
     except Exception:
         return False
