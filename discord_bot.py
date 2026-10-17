@@ -575,7 +575,24 @@ def send_slate_picks(webhook_url, picks, date_label="", slate=1):
     # with EV >= _SIGNAL_3_MIN_EV. _rank_picks drops DNB separately.
     pool = [p for p in pool if _qualifies_for_discord(p)]
     ranked = _rank_picks(pool)
-    top = ranked[:_TOP_N]
+    # Correlated-pick avoidance: at most 1 pick per game. If multiple
+    # picks on the same matchup qualify, keep only the strongest. This
+    # prevents a bad night in one game from torpedoing the whole slate,
+    # and spreads exposure across 5 independent events instead of 5
+    # correlated bets on the same outcome.
+    deduped = []
+    seen_games = set()
+    for p in ranked:
+        key = (
+            (p.get("sport_slug") or "").lower(),
+            (p.get("home_team") or p.get("game_home") or "").lower(),
+            (p.get("away_team") or p.get("game_away") or "").lower(),
+        )
+        if key in seen_games:
+            continue
+        seen_games.add(key)
+        deduped.append(p)
+    top = deduped[:_TOP_N]
     if not top:
         # Stay quiet if nothing clears the Signal >= 4 bar — better than
         # posting an empty slide or dropping to Signal 3 noise.

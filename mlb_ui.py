@@ -15525,13 +15525,29 @@ _DISCORD_POSTED_PATH = _settings_os.path.join(
 )
 
 
+# In-memory cache for the Discord-posted log so /logged (which calls
+# the predicate once per pick, hundreds of times) doesn't hit disk on
+# every call. Invalidated when _record_discord_posted writes.
+_DISCORD_POSTED_CACHE = {"data": None, "ts": 0.0}
+_DISCORD_POSTED_CACHE_TTL = 60.0  # seconds
+
+
 def _load_discord_posted_log():
-    """Return {date_iso: [pick_ids]} dict of picks posted to Discord."""
+    """Return {date_iso: [pick_ids]} dict of picks posted to Discord.
+    Memoized for _DISCORD_POSTED_CACHE_TTL seconds."""
+    import time as _t
+    now = _t.time()
+    if (_DISCORD_POSTED_CACHE["data"] is not None
+            and (now - _DISCORD_POSTED_CACHE["ts"]) < _DISCORD_POSTED_CACHE_TTL):
+        return _DISCORD_POSTED_CACHE["data"]
     try:
         with open(_DISCORD_POSTED_PATH) as f:
-            return json.load(f) or {}
+            data = json.load(f) or {}
     except Exception:
-        return {}
+        data = {}
+    _DISCORD_POSTED_CACHE["data"] = data
+    _DISCORD_POSTED_CACHE["ts"]   = now
+    return data
 
 
 def _record_discord_posted(date_str, pick_ids):
@@ -15562,6 +15578,9 @@ def _record_discord_posted(date_str, pick_ids):
                                     message="discord posted log update")
     except Exception:
         pass
+    # Invalidate the in-memory cache so the next predicate call sees
+    # the updated set.
+    _DISCORD_POSTED_CACHE["data"] = None
 
 
 def _passes_discord_posted(pick):
@@ -15821,7 +15840,41 @@ def cron_dispatch():
                      3: "Prime Time"}.get(s, f"Slate {s}")
             for pid in ids:
                 posted_pairs.append((pid, label))
-    if posted_pairs:
+    # Throttles: UptimeRobot pings every 5 min, so step 5 (ESPN grade
+    # backfill) and step 6 (board rebuild for hard-DNB check) run far
+    # more often than their underlying data changes. Gate each with a
+    # time-based lock so we only run them every N minutes.
+    _now_ts = _settings_os.path.getmtime  # unused; just to keep import
+    import time as _t
+    _tnow = _t.time()
+    _grade_throttle_path = _settings_os.path.join(
+        _settings_os.path.dirname(_DISCORD_SCHEDULE_PATH),
+        "discord_grade_throttle.json")
+    _dnb_throttle_path = _settings_os.path.join(
+        _settings_os.path.dirname(_DISCORD_SCHEDULE_PATH),
+        "discord_dnb_throttle.json")
+
+    def _throttle_due(path, interval_sec):
+        try:
+            with open(path) as f:
+                last = float(json.load(f).get("ts", 0))
+        except Exception:
+            last = 0
+        return (_tnow - last) >= interval_sec
+
+    def _mark_throttle(path):
+        try:
+            _settings_os.makedirs(_settings_os.path.dirname(path),
+                                   exist_ok=True)
+            with open(path, "w") as f:
+                json.dump({"ts": _tnow}, f)
+        except Exception:
+            pass
+
+    GRADE_INTERVAL = 10 * 60  # 10 min between ESPN backfill calls
+    DNB_INTERVAL   = 15 * 60  # 15 min between board rebuilds for DNB
+
+    if posted_pairs and _throttle_due(_grade_throttle_path, GRADE_INTERVAL):
         try:
             import plays_log as _pl
             try:
@@ -15835,12 +15888,14 @@ def cron_dispatch():
                 n = _db.send_result_alerts(webhook, graded)
                 if n:
                     actions.append(f"results:{n}")
+            _mark_throttle(_grade_throttle_path)
         except Exception:
             pass
 
     # 6. Hard-DNB alerts (quiet by default — only fires when a posted
     # pick's signal collapses to <= 1 or do_not_bet flips true).
-    if posted_by_slate:
+    # Board rebuild is ~30-60s, so throttle to every 15 min max.
+    if posted_by_slate and _throttle_due(_dnb_throttle_path, DNB_INTERVAL):
         try:
             _d = datetime.now(CENTRAL).date()
             board_rows, _ = _build_board_rows(_d.isoformat(), _d, "all",
@@ -15855,6 +15910,7 @@ def cron_dispatch():
                                            dnb_alerts=dnb_alerts)
                 if n:
                     actions.append(f"hard_dnb:{n}")
+            _mark_throttle(_dnb_throttle_path)
         except Exception:
             pass
 
