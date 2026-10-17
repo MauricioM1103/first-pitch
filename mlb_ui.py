@@ -2661,9 +2661,9 @@ details.also-wrap .today-card { opacity: 0.88; }
         <span class="sport-tag">{{ p.sport_name }}</span>
         <span>{{ p.game_away }} @ {{ p.game_home }}</span>
         <span>&middot; {{ p.market }}</span>
-        {% if p.row_score_home is not none and p.row_score_away is not none %}
+        {% if p.get('row_score_home') is not none and p.get('row_score_away') is not none %}
           <span class="live-score" title="Current score as of last grader refresh">
-            {{ p.row_score_away|int }}&ndash;{{ p.row_score_home|int }}
+            {{ p.get('row_score_away')|int }}&ndash;{{ p.get('row_score_home')|int }}
           </span>
         {% endif %}
       </div>
@@ -7601,7 +7601,20 @@ def today_landing():
             # from TODAY entirely. GAMES still shows them.
             if p.get("model_only"):
                 continue
+            # Backfill row-level attributes for picks that were merged
+            # into a row AFTER the status loop ran (soccer team totals,
+            # correct score, 1H totals, DNB are built in picks.py and
+            # grafted on later, so they skip the earlier normalization
+            # pass). The template reads these fields directly — missing
+            # keys crash the render.
             flat.append({
+                "_row_status":        p.get("_row_status") or _derive_status(
+                    row.get("start_time"), now_dt,
+                    row.get("score_home") is not None),
+                "row_score_home":     row.get("score_home"),
+                "row_score_away":     row.get("score_away"),
+                "kalshi_live_prob":   p.get("kalshi_live_prob"),
+                "do_not_bet":         bool(p.get("do_not_bet")),
                 **p,
                 "game_away":    row.get("away"),
                 "game_home":    row.get("home"),
