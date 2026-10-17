@@ -15697,27 +15697,28 @@ def cron_dispatch():
     slates = sched.get("slates") or {}
     changed = False
 
-    # 1-3. Slate posts
+    # 1-3. Slate posts. Fire once per slate per day — whether we
+    # successfully post or not. If nothing clears Signal >= 4 in the
+    # slate's window, we skip (no PNG) but still mark the slate "sent"
+    # so we don't rebuild the board every 15 min for the rest of the
+    # day retrying something that will never qualify.
     for s in (1, 2, 3):
         meta = slates.get(str(s)) or {}
         post_at = _parse(meta.get("post_at_iso"))
         if (not meta.get("sent")) and post_at and now_ct >= post_at:
             r = _send_slate_png(s)
+            meta["sent"] = True
+            meta["pick_ids"] = r.get("pick_ids", [])
+            slates[str(s)] = meta
+            changed = True
             if r.get("sent"):
-                meta["sent"] = True
-                meta["pick_ids"] = r.get("pick_ids", [])
-                slates[str(s)] = meta
                 actions.append(f"slate{s}_picks")
-                changed = True
             else:
-                # Even if nothing qualifies (empty slate), mark sent so
-                # we don't retry 96 times today.
-                if "picks" in r and r["picks"] == 0:
-                    meta["sent"] = True
-                    meta["pick_ids"] = []
-                    slates[str(s)] = meta
-                    actions.append(f"slate{s}_empty")
-                    changed = True
+                reason = r.get("error") or (
+                    "no_picks_on_board" if r.get("picks") == 0
+                    else "nothing_qualified"
+                )
+                actions.append(f"slate{s}_skipped:{reason}")
 
     # 4. EOD summary — 1 AM next day, fires once per calendar day. We
     # pull the saved pick_ids from each slate and grade via plays_log.
