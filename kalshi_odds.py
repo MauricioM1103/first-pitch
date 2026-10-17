@@ -567,6 +567,101 @@ def ml_result(sport_slug, home_team, away_team, market_key=None):
     return None
 
 
+def kalshi_confirms_dnb_pick(sport_slug, home_team, away_team,
+                              picked_home, our_fair_prob):
+    """Draw No Bet confirmation via Kalshi's ML market, using the key
+    insight that DNB-on-Team-A is equivalent to NO-on-opposite-team's
+    ML (because Kalshi NO = team doesn't win = opponent wins OR draw,
+    which is exactly what the DNB pick wins on).
+
+    picked_home=True  → our DNB is on the home team (e.g. "Deportivo DNB"
+                        when Deportivo is home). We look up the Kalshi
+                        market where YES = AWAY team and want the NO side.
+    picked_home=False → DNB is on the away team. Look up market where
+                        YES = HOME team and want NO.
+
+    Same depth / liveness / prob-agreement gates as kalshi_confirms_pick.
+    """
+    if _cb_open():
+        return False
+    try:
+        if our_fair_prob is None or sport_slug not in _SERIES_PREFIX:
+            return False
+        if not exchange_is_trading():
+            return False
+        # Opposite team is the one Kalshi's YES side represents for our lookup
+        opposite = away_team if picked_home else home_team
+        m = _market_for_matchup(sport_slug, opposite)
+        if not m:
+            return False
+        ticker = m.get("ticker")
+        if not ticker:
+            return False
+        yes_cents = None
+        for key in ("yes_ask", "yes_bid", "last_price"):
+            v = m.get(key)
+            if v is None:
+                continue
+            try:
+                c = float(v)
+            except (TypeError, ValueError):
+                continue
+            if 0 < c < 100:
+                yes_cents = c
+                break
+        if yes_cents is None:
+            return False
+        # Our DNB side = NO on this market = 1 - YES
+        kalshi_no_prob = 1.0 - (yes_cents / 100.0)
+        if abs(kalshi_no_prob - our_fair_prob) > KALSHI_MAX_PROB_GAP:
+            return False
+        ob = market_orderbook(ticker)
+        depth = _orderbook_depth_usd(ob, "no")
+        if depth < KALSHI_MIN_BOOK_DEPTH_USD:
+            return False
+        last_ts = market_last_trade_ts(ticker)
+        if last_ts is None:
+            return False
+        if (time.time() - last_ts) > KALSHI_MAX_TRADE_AGE_S:
+            return False
+        return True
+    except Exception:
+        _cb_trip()
+        return False
+
+
+def dnb_result(sport_slug, home_team, away_team, picked_home):
+    """Settlement for a DNB pick via Kalshi's opposite-team ML market.
+    Returns 'W' / 'L' / None.
+       Opposite YES settled YES → opponent won → our DNB = L
+       Opposite YES settled NO  → opponent didn't win (draw or we won)
+                                   → our DNB = W  (per team-or-draw rule)
+    Mirrors plays_log's Phase 20 'draw counts as win' DNB grading.
+    """
+    if _cb_open() or sport_slug not in _SERIES_PREFIX:
+        return None
+    opposite = away_team if picked_home else home_team
+    markets = _settled_markets(sport_slug)
+    if not markets:
+        return None
+    opp_norm = _norm_team(opposite)
+    for m in markets:
+        yes_team = _norm_team(m.get("yes_sub_title"))
+        if not yes_team:
+            continue
+        if not (yes_team == opp_norm
+                or yes_team in opp_norm
+                or opp_norm in yes_team):
+            continue
+        result = (m.get("result") or "").lower()
+        if result == "yes":   # opponent won outright → our DNB loses
+            return "L"
+        if result == "no":    # opponent didn't win (draw or we won) → our DNB wins
+            return "W"
+        return None
+    return None
+
+
 def market_result(sport_slug, market_key, home_team, away_team):
     """Return the YES/NO settlement for a non-ML market directly, as
     'yes' / 'no' / None. Used for UFC Distance ("YES" = fight went

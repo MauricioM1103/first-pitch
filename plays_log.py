@@ -1595,6 +1595,30 @@ def grade_date(date_str, sport_key_by_slug, force=False, rescore=False):
                         res = "W" if k_result == "away_win" else "L"
             except Exception:
                 pass
+        # Phase 25: Kalshi settlement fallback for DRAW NO BET picks.
+        # DNB-on-A ≡ NO-on-B's ML. We look at Kalshi's opposite-team
+        # ML market: if opponent settled YES (opponent won), our DNB
+        # loses; if opponent settled NO (draw or we won), our DNB wins.
+        # Matches plays_log's Phase 20 team-or-draw grading convention.
+        _mkt_lc = (p.get("market") or "").lower()
+        if res == "pending" and ("draw no bet" in _mkt_lc or p.get("market") == "DNB"):
+            try:
+                import kalshi_odds as _ko
+                pick_lc = (p.get("pick") or "").lower()
+                home_lc = (p.get("home_team") or "").lower()
+                away_lc = (p.get("away_team") or "").lower()
+                picked_home = bool(home_lc and home_lc in pick_lc)
+                picked_away = bool(away_lc and away_lc in pick_lc)
+                if picked_home or picked_away:
+                    dnb_res = _ko.dnb_result(
+                        p.get("sport_slug"),
+                        p.get("home_team"), p.get("away_team"),
+                        picked_home=picked_home,
+                    )
+                    if dnb_res in ("W", "L"):
+                        res = dnb_res
+            except Exception:
+                pass
         # CLV: how much did Pinnacle's devigged line move from our FIRST
         # snapshot (opening-ish) to the latest save (closing-ish)? Positive
         # pp = market moved toward our side after we picked (sharp signal).

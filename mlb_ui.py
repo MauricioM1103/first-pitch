@@ -6790,32 +6790,41 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
         # API volume ~70% vs calling it on every ML pick.
         kalshi_confirmed = False
         try:
-            # Phase 24: full-market Kalshi coverage via _pick_to_kalshi_route.
-            # Every market we emit now has a mapping (ML, Spread, Total,
-            # BTTS, Team Total, 1H variants, F5 variants, UFC Distance).
-            # The router returns (market_key, is_yes_side) where
-            # market_key=None means the default moneyline series; the
-            # is_yes_side flag reinterprets "is_home_pick" to match the
-            # YES side of whichever market we're probing.
-            _kalshi_route = _pick_to_kalshi_route(p, is_home)
-            if _kalshi_route is not None and p.get("fair_prob") is not None:
-                _market_key, _is_yes = _kalshi_route
-                _pre_score = p.get("signal_score")
-                if _pre_score is None:
-                    _ev = float(p.get("ev_pct") or 0.0)
-                    _move = float(p.get("line_move_pp") or 0.0)
-                    _fp = float(p.get("fair_prob") or 0.0)
-                    _pre_score = ((2 if _ev >= 6 else (1 if _ev >= 3 else 0))
-                                   + (1 if _move > 0 else 0)
-                                   + (1 if _fp >= 0.60 else 0))
-                if 2 <= _pre_score <= 3:
-                    import kalshi_odds as _ko
-                    kalshi_confirmed = _ko.kalshi_confirms_pick(
-                        p.get("sport_slug"), p.get("home_team"),
-                        is_home_pick=_is_yes,
-                        our_fair_prob=float(p.get("fair_prob")),
-                        market_key=_market_key,
-                    )
+            # Phase 25: DNB picks route to Kalshi's OPPOSITE-team ML
+            # market, taking the NO side (DNB-on-A ≡ NO-on-B's ML).
+            # Everything else goes through the generic router added in
+            # Phase 24.
+            _market = (p.get("market") or "")
+            _cat = _market_category(_market)
+            _fair = p.get("fair_prob")
+            _pre_score = p.get("signal_score")
+            if _pre_score is None and _fair is not None:
+                _ev = float(p.get("ev_pct") or 0.0)
+                _move = float(p.get("line_move_pp") or 0.0)
+                _fp = float(_fair)
+                _pre_score = ((2 if _ev >= 6 else (1 if _ev >= 3 else 0))
+                               + (1 if _move > 0 else 0)
+                               + (1 if _fp >= 0.60 else 0))
+            if _cat == "DNB" and _fair is not None and _pre_score is not None and 2 <= _pre_score <= 3:
+                import kalshi_odds as _ko
+                kalshi_confirmed = _ko.kalshi_confirms_dnb_pick(
+                    p.get("sport_slug"),
+                    p.get("home_team"), p.get("away_team"),
+                    picked_home=is_home,
+                    our_fair_prob=float(_fair),
+                )
+            else:
+                _kalshi_route = _pick_to_kalshi_route(p, is_home)
+                if _kalshi_route is not None and _fair is not None:
+                    _market_key, _is_yes = _kalshi_route
+                    if _pre_score is not None and 2 <= _pre_score <= 3:
+                        import kalshi_odds as _ko
+                        kalshi_confirmed = _ko.kalshi_confirms_pick(
+                            p.get("sport_slug"), p.get("home_team"),
+                            is_home_pick=_is_yes,
+                            our_fair_prob=float(_fair),
+                            market_key=_market_key,
+                        )
         except Exception:
             kalshi_confirmed = False
         row["picks"].append({
