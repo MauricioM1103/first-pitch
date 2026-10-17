@@ -15383,15 +15383,14 @@ _CHANGE_WEBHOOK_LOCK = _threading.Lock()
 
 
 def _maybe_notify_changes(star_picks):
-    """Fire-and-forget change-detection for the daily-picks Discord
-    channel. Rules:
-    - Silent until the first-half top-10 has been posted (no updates
-      before that gate — nothing to compare against).
-    - At most 2 new entrants surfaced per message, rate-limited to one
-      entrant message every 2 hours.
-    - DO NOT BET alerts fire whenever a pick that was in the POSTED
-      top-10 (either half) flips to DNB, with the alert naming which
-      half the pick belonged to. Deduped per pick id per day."""
+    """Fire-and-forget mid-slate alerts for the daily-picks Discord
+    channel. v2 rules — much quieter than before:
+    - No candidate / entrant alerts at all. Picks are locked once
+      posted; late-blooming picks wait for the next slate.
+    - Hard DNB only (signal drops to <= 1 or do_not_bet flag flips).
+      Deduped per pick id per day. Alert names the slate.
+    - Per-pick result alerts fire as soon as a posted pick grades.
+      One PNG per pick per day."""
     try:
         settings = _load_settings()
         webhook = (settings.get("daily_picks_webhook_url") or "").strip()
@@ -15402,31 +15401,23 @@ def _maybe_notify_changes(star_picks):
         except Exception:
             return
         sched = _load_dispatch_schedule()
-        h1 = sched.get("half1", {}) if sched else {}
-        h2 = sched.get("half2", {}) if sched else {}
-        if not h1.get("sent"):
-            # Gate: no alerts before the first-half picks are out.
+        slates = (sched.get("slates") or {}) if sched else {}
+        posted_by_slate = {}
+        posted_pairs = []
+        for s_str, meta in slates.items():
+            s = int(s_str)
+            ids = meta.get("pick_ids") or []
+            if ids and meta.get("sent"):
+                posted_by_slate[s] = ids
+                label = {1: "Morning", 2: "Afternoon", 3: "Prime Time"}.get(s, f"Slate {s}")
+                for pid in ids:
+                    posted_pairs.append((pid, label))
+        if not posted_by_slate:
             return
-        posted_h1 = h1.get("pick_ids", [])
-        posted_h2 = h2.get("pick_ids", [])
         with _CHANGE_WEBHOOK_LOCK:
-            candidates = _db.diff_candidates(star_picks,
-                                              posted_half1=posted_h1,
-                                              posted_half2=posted_h2)
-            dnb_alerts = _db.diff_posted_dnb(star_picks,
-                                              posted_half1=posted_h1,
-                                              posted_half2=posted_h2)
-            if candidates or dnb_alerts:
-                _db.send_change_alert(webhook,
-                                       entrants=candidates,
-                                       dnb_alerts=dnb_alerts)
-            # Per-pick result alerts: as soon as a posted top-10 pick
-            # grades W/L/P, send a single PNG. Per-id dedup inside
-            # diff_newly_graded ensures one alert per pick per day.
-            posted_pairs = (
-                [(pid, "First Half")  for pid in posted_h1] +
-                [(pid, "Second Half") for pid in posted_h2]
-            )
+            dnb_alerts = _db.diff_posted_hard_dnb(star_picks, posted_by_slate)
+            if dnb_alerts:
+                _db.send_change_alert(webhook, entrants=[], dnb_alerts=dnb_alerts)
             if posted_pairs:
                 graded = _db.diff_newly_graded(star_picks, posted_pairs)
                 if graded:
@@ -15435,41 +15426,53 @@ def _maybe_notify_changes(star_picks):
         pass
 
 
-def _send_daily_picks_png(half=None):
-    """Build today's Signal>=3 slate and post the top-10 PNG for the
-    given half of the day. half=1 → games starting before 3 PM CT;
-    half=2 → games at or after. half=None → full slate (legacy).
-    Returns a dict with sent count + today's pick count."""
+def _send_slate_png(slate):
+    """Post one slate's top-5 Signal>=4 picks for the given slate
+    window (1 Morning / 2 Afternoon / 3 Prime Time). Returns a dict
+    with sent count + posted pick_ids."""
     try:
         import discord_bot as _db
     except Exception:
-        return {"sent": 0, "error": "pillow_missing"}
+        return {"sent": 0, "error": "pillow_missing", "pick_ids": []}
     settings = _load_settings()
     webhook = (settings.get("daily_picks_webhook_url") or "").strip()
     if not webhook:
-        return {"sent": 0, "error": "no_webhook"}
+        return {"sent": 0, "error": "no_webhook", "pick_ids": []}
     try:
         _d = datetime.now(CENTRAL).date()
         _date_str = _d.isoformat()
-        board_rows, _all_picks = _build_board_rows(_date_str, _d, "all",
-                                                    strong_only=False)
+        board_rows, _all = _build_board_rows(_date_str, _d, "all",
+                                              strong_only=False)
     except Exception:
-        return {"sent": 0, "error": "board_build_failed"}
+        return {"sent": 0, "error": "board_build_failed", "pick_ids": []}
     flat = []
     for row in board_rows or []:
         for p in row.get("picks", []):
             if (p.get("signal_score") or 0) >= 3 and not p.get("do_not_bet"):
                 flat.append(p)
     if not flat:
-        return {"sent": 0, "picks": 0, "half": half, "pick_ids": []}
+        return {"sent": 0, "picks": 0, "slate": slate, "pick_ids": []}
     date_label = datetime.now(CENTRAL).strftime("%A, %B %d")
-    sent = _db.send_daily_picks(webhook, flat, date_label=date_label, half=half)
-    # Capture the exact set of pick IDs we posted for this half so the
-    # end-of-half results post can look them back up later.
-    pool = _db._filter_half(flat, half) if half in (1, 2) else list(flat)
-    top = _db._rank_picks(pool)[:_db._TOP_N]
-    pick_ids = [p.get("id") for p in top if p.get("id")]
-    return {"sent": sent, "picks": len(flat), "half": half, "pick_ids": pick_ids}
+    r = _db.send_slate_picks(webhook, flat, date_label=date_label, slate=slate)
+    return {"sent": r.get("sent", 0),
+            "picks": len(flat),
+            "slate": slate,
+            "pick_ids": r.get("pick_ids", [])}
+
+
+# Legacy wrapper kept so /cron/daily-picks still works.
+def _send_daily_picks_png(half=None):
+    """Legacy: half=1 → slate 1; half=2 → whichever of slates 2/3 fires."""
+    if half == 1:
+        return _send_slate_png(1)
+    if half == 2:
+        for s in (2, 3):
+            r = _send_slate_png(s)
+            if r.get("sent"):
+                return r
+        return {"sent": 0, "picks": 0, "half": 2, "pick_ids": []}
+    # No arg → fire slate 1 as a reasonable default.
+    return _send_slate_png(1)
 
 
 @app.route("/cron/daily-picks")
@@ -15570,41 +15573,36 @@ def _load_dispatch_schedule_remote_fallback():
 
 
 def _compute_today_dispatch_schedule():
-    """Build today's dispatch state from the current board."""
+    """Build today's dispatch state. v2 uses three FIXED CT slate post
+    times (7 AM / 12:30 PM / 6 PM) plus an EOD summary at 1 AM next
+    day. No per-day recompute — the only thing we need from the board
+    is the pick candidates when each slate fires."""
     import discord_bot as _db
+    from datetime import time as _time
     _d = datetime.now(CENTRAL).date()
-    try:
-        board_rows, _all = _build_board_rows(_d.isoformat(), _d, "all",
-                                              strong_only=False)
-    except Exception:
-        board_rows = []
-    picks = []
-    for row in board_rows or []:
-        for p in row.get("picks", []):
-            if (p.get("signal_score") or 0) >= 3 and not p.get("do_not_bet"):
-                picks.append(p)
-    sched = _db.compute_schedule(picks, today_ct=_d)
 
-    def _iso(dt):
-        return dt.isoformat() if dt is not None else None
+    def _at(hh, mm, next_day=False):
+        base = _d
+        if next_day:
+            base = _d + timedelta(days=1)
+        return datetime.combine(base, _time(hh, mm), CENTRAL).isoformat()
 
+    slates = {}
+    for s, (hh, mm) in _db._SLATE_POST_TIMES.items():
+        slates[str(s)] = {
+            "post_at_iso": _at(hh, mm),
+            "sent":        False,
+            "pick_ids":    [],
+        }
+
+    eod_h, eod_m, eod_next = _db._EOD_POST_TIME
     return {
-        "date":          _d.isoformat(),
-        "split_hour":    sched["split_hour"],
-        "agenda_sent":   False,
-        "half1": {
-            "post_at_iso":    _iso(sched["half1"]["post_at"]),
-            "results_at_iso": _iso(sched["half1"]["results_at"]),
-            "sent":           False,
-            "results_sent":   False,
-            "pick_ids":       [],
-        },
-        "half2": {
-            "post_at_iso":    _iso(sched["half2"]["post_at"]),
-            "results_at_iso": _iso(sched["half2"]["results_at"]),
-            "sent":           False,
-            "results_sent":   False,
-            "pick_ids":       [],
+        "version": 2,
+        "date":    _d.isoformat(),
+        "slates":  slates,
+        "eod": {
+            "post_at_iso": _at(eod_h, eod_m, next_day=eod_next),
+            "sent":        False,
         },
     }
 
@@ -15647,9 +15645,14 @@ def _send_half_results(half, pick_ids):
 
 @app.route("/cron/dispatch")
 def cron_dispatch():
-    """Fire every ~15 min from Render cron. Decides what's due today
-    (agenda / half-1 picks / half-2 picks / half-1 results / half-2
-    results) and fires each only once per day."""
+    """Fire every ~15 min. Decides what's due today and fires each
+    event only once per day. v2 schedule:
+      - 7:00 AM CT  : Morning slate (top 5, games < 12 PM CT)
+      - 12:30 PM CT : Afternoon slate (top 5, games 12 PM - 6 PM CT)
+      - 6:00 PM CT  : Prime Time slate (top 5, games 6 PM CT+)
+      - 1:00 AM CT  : End-of-day summary (next day)
+    Plus per-pick result PNGs as picks grade, and hard-DNB alerts if a
+    posted pick's signal collapses."""
     settings = _load_settings()
     secret = (settings.get("cron_secret") or "").strip()
     if secret and (request.args.get("key") or "") != secret:
@@ -15670,15 +15673,15 @@ def cron_dispatch():
     actions = []
 
     sched = _load_dispatch_schedule()
-    # If local state is missing or stale (common after Render spin-
-    # down or deploy wipes), try GitHub mirror before falling back to
-    # a fresh recompute. Avoids re-firing "sent" events on wake-up.
-    if sched.get("date") != today:
+    # Reset on date change OR schema upgrade (v1 → v2 slate layout).
+    stale = (sched.get("date") != today) or (sched.get("version") != 2)
+    if stale:
         remote = _load_dispatch_schedule_remote_fallback()
-        if remote.get("date") == today:
+        if remote.get("date") == today and remote.get("version") == 2:
             sched = remote
             actions.append("restored_from_remote")
-    if sched.get("date") != today:
+            stale = False
+    if stale:
         sched = _compute_today_dispatch_schedule()
         _save_dispatch_schedule(sched)
         actions.append("reset_schedule")
@@ -15691,72 +15694,73 @@ def cron_dispatch():
         except Exception:
             return None
 
-    # 1. Agenda (any time at/after 12:15 AM CT)
-    agenda_due = now_ct.replace(hour=0, minute=15, second=0, microsecond=0)
-    if not sched.get("agenda_sent") and now_ct >= agenda_due:
-        date_label = now_ct.strftime("%A, %B %d")
-        if _db.send_agenda(webhook, {
-            "split_hour": sched["split_hour"],
-            "half1": {"post_at":   _parse(sched["half1"]["post_at_iso"]),
-                      "results_at": _parse(sched["half1"]["results_at_iso"])},
-            "half2": {"post_at":   _parse(sched["half2"]["post_at_iso"]),
-                      "results_at": _parse(sched["half2"]["results_at_iso"])},
-        }, date_label):
-            sched["agenda_sent"] = True
-            actions.append("agenda")
-            _save_dispatch_schedule(sched)
+    slates = sched.get("slates") or {}
+    changed = False
 
-    # 2. Half-1 picks
-    h1 = sched.get("half1", {})
-    post1 = _parse(h1.get("post_at_iso"))
-    if (not h1.get("sent")) and post1 and now_ct >= post1:
-        r = _send_daily_picks_png(half=1)
-        if r.get("sent"):
-            h1["sent"] = True
-            h1["pick_ids"] = r.get("pick_ids", [])
-            sched["half1"] = h1
-            actions.append("half1_picks")
-            _save_dispatch_schedule(sched)
+    # 1-3. Slate posts
+    for s in (1, 2, 3):
+        meta = slates.get(str(s)) or {}
+        post_at = _parse(meta.get("post_at_iso"))
+        if (not meta.get("sent")) and post_at and now_ct >= post_at:
+            r = _send_slate_png(s)
+            if r.get("sent"):
+                meta["sent"] = True
+                meta["pick_ids"] = r.get("pick_ids", [])
+                slates[str(s)] = meta
+                actions.append(f"slate{s}_picks")
+                changed = True
+            else:
+                # Even if nothing qualifies (empty slate), mark sent so
+                # we don't retry 96 times today.
+                if "picks" in r and r["picks"] == 0:
+                    meta["sent"] = True
+                    meta["pick_ids"] = []
+                    slates[str(s)] = meta
+                    actions.append(f"slate{s}_empty")
+                    changed = True
 
-    # 3. Half-2 picks
-    h2 = sched.get("half2", {})
-    post2 = _parse(h2.get("post_at_iso"))
-    if (not h2.get("sent")) and post2 and now_ct >= post2:
-        r = _send_daily_picks_png(half=2)
-        if r.get("sent"):
-            h2["sent"] = True
-            h2["pick_ids"] = r.get("pick_ids", [])
-            sched["half2"] = h2
-            actions.append("half2_picks")
-            _save_dispatch_schedule(sched)
+    # 4. EOD summary — 1 AM next day, fires once per calendar day. We
+    # pull the saved pick_ids from each slate and grade via plays_log.
+    eod = sched.get("eod") or {}
+    eod_at = _parse(eod.get("post_at_iso"))
+    if (not eod.get("sent")) and eod_at and now_ct >= eod_at:
+        try:
+            import plays_log as _pl
+            try:
+                _pl.grade_pending_backfill(days_back=2, grace_hours=1)
+            except Exception:
+                pass
+            graded_by_date = _pl.grade_all(limit_dates=3) or {}
+            pool = (graded_by_date.get(today) or [])
+            # Also include previous CT day in case EOD runs just past midnight UTC
+            prev = (datetime.now(CENTRAL) - timedelta(days=1)).date().isoformat()
+            pool += (graded_by_date.get(prev) or [])
+            by_id = {p.get("id"): p for p in pool if p.get("id")}
+            picks_by_slate = {}
+            for s_str, meta in slates.items():
+                ids = meta.get("pick_ids") or []
+                picks_by_slate[int(s_str)] = [by_id[i] for i in ids if i in by_id]
+            if _db.send_eod_summary(webhook, picks_by_slate,
+                                     date_label=now_ct.strftime("%A, %B %d")):
+                eod["sent"] = True
+                sched["eod"] = eod
+                actions.append("eod_summary")
+                changed = True
+        except Exception:
+            pass
 
-    # 4. Half-1 results
-    res1 = _parse(h1.get("results_at_iso"))
-    if (not h1.get("results_sent")) and h1.get("sent") and res1 and now_ct >= res1:
-        if _send_half_results(half=1, pick_ids=h1.get("pick_ids", [])):
-            h1["results_sent"] = True
-            sched["half1"] = h1
-            actions.append("half1_results")
-            _save_dispatch_schedule(sched)
-
-    # 5. Half-2 results
-    res2 = _parse(h2.get("results_at_iso"))
-    if (not h2.get("results_sent")) and h2.get("sent") and res2 and now_ct >= res2:
-        if _send_half_results(half=2, pick_ids=h2.get("pick_ids", [])):
-            h2["results_sent"] = True
-            sched["half2"] = h2
-            actions.append("half2_results")
-            _save_dispatch_schedule(sched)
-
-    # 6. Per-pick result alerts — fire for any posted top-10 pick that
-    # just graded W/L/P and hasn't been alerted today. Uses plays_log
-    # (not a full board rebuild) so this stays fast per 15-min tick.
-    posted_pairs = (
-        [(pid, "First Half")  for pid in h1.get("pick_ids", [])] +
-        [(pid, "Second Half") for pid in h2.get("pick_ids", [])]
-    )
-    posted_h1_ids = h1.get("pick_ids", [])
-    posted_h2_ids = h2.get("pick_ids", [])
+    # 5. Per-pick result alerts (as soon as each posted pick grades)
+    posted_pairs = []
+    posted_by_slate = {}
+    for s_str, meta in slates.items():
+        s = int(s_str)
+        ids = meta.get("pick_ids") or []
+        if ids and meta.get("sent"):
+            posted_by_slate[s] = ids
+            label = {1: "Morning", 2: "Afternoon",
+                     3: "Prime Time"}.get(s, f"Slate {s}")
+            for pid in ids:
+                posted_pairs.append((pid, label))
     if posted_pairs:
         try:
             import plays_log as _pl
@@ -15774,11 +15778,9 @@ def cron_dispatch():
         except Exception:
             pass
 
-    # 7. Candidates + DNB alerts from the current live board. Only
-    # runs after half-1 has been posted (same gate the TODAY-render
-    # path uses). The 15-min dispatcher ensures these fire even when
-    # the TODAY page gets no traffic.
-    if h1.get("sent"):
+    # 6. Hard-DNB alerts (quiet by default — only fires when a posted
+    # pick's signal collapses to <= 1 or do_not_bet flips true).
+    if posted_by_slate:
         try:
             _d = datetime.now(CENTRAL).date()
             board_rows, _ = _build_board_rows(_d.isoformat(), _d, "all",
@@ -15786,22 +15788,19 @@ def cron_dispatch():
             star = []
             for row in board_rows or []:
                 for p in row.get("picks", []):
-                    if ((p.get("signal_score") or 0) >= 3) or p.get("do_not_bet"):
-                        star.append(p)
-            candidates = _db.diff_candidates(star,
-                                              posted_half1=posted_h1_ids,
-                                              posted_half2=posted_h2_ids)
-            dnb_alerts = _db.diff_posted_dnb(star,
-                                              posted_half1=posted_h1_ids,
-                                              posted_half2=posted_h2_ids)
-            if candidates or dnb_alerts:
-                n = _db.send_change_alert(webhook,
-                                           entrants=candidates,
+                    star.append(p)
+            dnb_alerts = _db.diff_posted_hard_dnb(star, posted_by_slate)
+            if dnb_alerts:
+                n = _db.send_change_alert(webhook, entrants=[],
                                            dnb_alerts=dnb_alerts)
                 if n:
-                    actions.append(f"live_alerts:{n}")
+                    actions.append(f"hard_dnb:{n}")
         except Exception:
             pass
+
+    if changed:
+        sched["slates"] = slates
+        _save_dispatch_schedule(sched)
 
     return Response(json.dumps({
         "ok": True, "now_ct": now_ct.isoformat(),

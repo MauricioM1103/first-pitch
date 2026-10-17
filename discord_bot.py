@@ -37,18 +37,45 @@ _CANDIDATES_SENT_PATH  = os.path.join(_BASE_DIR, "logs", "discord_candidates_sen
 # Visual constants — matches the social-slides template.
 _W, _H = 1080, 1920
 _PICKS_PER_PNG = 9
-# Daily cap + live-update ranking window. Picks beyond this don't go to
-# Discord — keeps the channel from being flooded. Rank = Signal desc,
-# then EV desc. Applied per HALF of the day (see _HALF_CUTOFF_HOUR).
-_TOP_N = 10
-# Split the slate at 3 PM Central: picks starting before this hour =
-# first half (morning / early-afternoon slate), picks at or after it =
-# second half (afternoon / evening slate). Matches the UI's 2-column
-# layout cutoff.
+# Phase 31 v2: three fixed slates per day, top 5 per slate, Signal >= 4.
+# Site still shows Signal 3+ picks; Discord gets the stronger subset so
+# the channel stays quiet and high-conviction.
+_TOP_N = 5
+_MIN_SIGNAL_FOR_POST = 4
+# Hard DNB threshold — only alert when a posted pick's signal collapses
+# this low. Marginal drift (Signal 4 -> 3) no longer fires DNBs.
+_HARD_DNB_SIGNAL = 1
+# Legacy constant some callers still reference. New flow uses slates.
 _HALF_CUTOFF_HOUR = 15
-# Minimum seconds between live-update PNGs so the channel doesn't get
-# spammed when top-N compositions churn on edge-of-cutoff picks.
 _LIVE_ALERT_COOLDOWN_SEC = 2 * 3600
+
+# Slate windows in Central Time. Each tuple is (start_hour, end_hour)
+# for games starting in [start, end). Picks posted at the slate's own
+# post time so you have ~1-2 hours to act before the earliest game.
+_SLATE_WINDOWS = {
+    1: (0,  12),   # Morning:   games before 12 PM CT
+    2: (12, 18),   # Afternoon: games 12 PM - 6 PM CT
+    3: (18, 28),   # Prime:     games 6 PM CT+ (28 = next-day 4 AM, catches 10 PM+)
+}
+_SLATE_LABELS = {
+    1: "Morning",
+    2: "Afternoon",
+    3: "Prime Time",
+}
+_SLATE_EMOJI = {
+    1: ":sun_with_face:",
+    2: ":partly_sunny:",
+    3: ":city_sunset:",
+}
+# Post times (hour, minute) in Central Time. Each ~1-2h before its
+# slate's typical earliest game.
+_SLATE_POST_TIMES = {
+    1: (7,  0),    # 7:00 AM CT
+    2: (12, 30),   # 12:30 PM CT
+    3: (18, 0),    # 6:00 PM CT
+}
+# End-of-day summary post time (hour, minute, next_day_flag).
+_EOD_POST_TIME = (1, 0, True)
 
 # Colors (match the dark theme on the live site).
 _BG         = (14, 18, 24)
@@ -477,9 +504,7 @@ def _format_pick_time(pick):
 
 
 def _filter_half(picks, half, cutoff_hour=_HALF_CUTOFF_HOUR):
-    """half=1 → games starting BEFORE cutoff_hour CT.
-       half=2 → games starting AT OR AFTER cutoff_hour CT.
-       Picks without a parseable start fall into half 2."""
+    """LEGACY. New code uses _filter_slate."""
     out = []
     for p in picks:
         h = _pick_hour_ct(p)
@@ -494,66 +519,197 @@ def _filter_half(picks, half, cutoff_hour=_HALF_CUTOFF_HOUR):
     return out
 
 
-def send_daily_picks(webhook_url, picks, date_label="", half=None):
-    """Post one tall PNG with the top-N picks for the given HALF of the
-    day. half=1 posts picks that start before 3 PM CT; half=2 posts
-    picks at or after. half=None sends the full top-N regardless of
-    time (legacy; kept for the autofire default).
+def _filter_slate(picks, slate):
+    """slate ∈ {1, 2, 3}: filter picks whose game starts in that
+    slate's time window (CT). Picks without a parseable start_time
+    fall into Prime Time (slate 3)."""
+    start_h, end_h = _SLATE_WINDOWS[slate]
+    out = []
+    for p in picks:
+        h = _pick_hour_ct(p)
+        if h is None:
+            if slate == 3:
+                out.append(p)
+            continue
+        if start_h <= h < end_h:
+            out.append(p)
+    return out
 
-    Seeds the top-N snapshot so the live-update diff tracks only the
-    picks we just posted. Returns 1 if a PNG was sent, 0 if not."""
+
+def send_slate_picks(webhook_url, picks, date_label="", slate=1):
+    """Post one tall PNG with the top-N (Signal >= 4) picks for the
+    given slate (1 Morning / 2 Afternoon / 3 Prime Time).
+
+    Returns {"sent": 0|1, "pick_ids": [...]} so the caller can store
+    exactly which picks were posted for later DNB tracking + results."""
     if not webhook_url or not picks:
-        return 0
+        return {"sent": 0, "pick_ids": []}
     label = date_label or datetime.utcnow().strftime("%A, %B %d")
-    half_label = {1: "First half", 2: "Second half"}.get(half)
-    pool = _filter_half(picks, half) if half in (1, 2) else list(picks)
+    slate_name = _SLATE_LABELS.get(slate, "Slate")
+    emoji = _SLATE_EMOJI.get(slate, ":star:")
+
+    pool = _filter_slate(picks, slate)
+    # Signal >= 4 bar + no DNB; _rank_picks already drops DNB.
+    pool = [p for p in pool if (p.get("signal_score") or 0) >= _MIN_SIGNAL_FOR_POST]
     ranked = _rank_picks(pool)
     top = ranked[:_TOP_N]
     if not top:
-        # Nothing qualifies in this half yet — stay quiet rather than
-        # posting an empty frame.
-        return 0
-    # Build title + preamble that name the half + the earliest game so
-    # the user knows how much lead time they have.
+        # Stay quiet if nothing clears the Signal >= 4 bar — better than
+        # posting an empty slide or dropping to Signal 3 noise.
+        return {"sent": 0, "pick_ids": []}
+
     hours = sorted([h for h in (_pick_hour_ct(p) for p in top) if h is not None])
-    earliest = f"{hours[0] % 12 or 12} {'AM' if hours[0] < 12 else 'PM'} CT" if hours else "later today"
-    if half == 1:
-        title = f"First Half — Top {len(top)}"
-        preamble = (
-            f":sun_with_face: **First-half picks — {label}**\n\n"
-            f"Top {len(top)} picks for games starting before 3 PM CT "
-            f"(earliest kickoff ~{earliest}). "
-            "Second-half slate posts later today. Live updates fire "
-            "only if a new pick enters the top 10 in time to still bet, "
-            "capped at one message every ~2 hours to stay quiet."
-        )
-    elif half == 2:
-        title = f"Second Half — Top {len(top)}"
-        preamble = (
-            f":city_sunset: **Second-half picks — {label}**\n\n"
-            f"Top {len(top)} picks for games starting 3 PM CT or later "
-            f"(earliest kickoff ~{earliest}). "
-            "Live updates fire only if a new pick enters the top 10 in "
-            "time to still bet, capped at one message every ~2 hours."
-        )
+    if hours:
+        h = hours[0]
+        earliest = f"{h % 12 or 12}:00 {'AM' if h < 12 else 'PM'} CT"
     else:
-        title = f"Top {len(top)} Picks"
-        preamble = (
-            f":alarm_clock: **Picks — {label}**\n\n"
-            f"Top {len(top)} picks for today."
-        )
+        earliest = "later today"
+
+    start_h, end_h = _SLATE_WINDOWS[slate]
+    window_desc = {
+        1: "games starting before 12 PM CT",
+        2: "games starting 12 PM - 6 PM CT",
+        3: "games starting 6 PM CT or later",
+    }[slate]
+    preamble = (
+        f"{emoji} **{slate_name} picks — {label}**\n\n"
+        f"Top {len(top)} Signal 4+ picks for {window_desc} "
+        f"(earliest kickoff ~{earliest}). "
+        "This list is **locked for the day** — only hard DO NOT BET "
+        "reversals or final results will post here until the next slate."
+    )
     post_text(webhook_url, preamble)
-    png = render_picks_png_tall(top, title=title, subtitle=label)
+
+    png = render_picks_png_tall(
+        top,
+        title=f"{slate_name} — Top {len(top)}",
+        subtitle=label,
+    )
+    if not png:
+        return {"sent": 0, "pick_ids": []}
+    posted_ids = [p.get("id") for p in top if p.get("id")]
+    ok = send_discord_image(webhook_url, png, f"slate{slate}.png")
+    return {"sent": 1 if ok else 0, "pick_ids": posted_ids}
+
+
+def diff_posted_hard_dnb(star_picks, posted_slate_ids):
+    """Return [(pick, slate_label), ...] for POSTED picks whose signal
+    has collapsed to <= _HARD_DNB_SIGNAL (true market reversal, not
+    marginal drift). Deduped via logs/discord_dnb_sent.json so each
+    pick fires at most once.
+
+    posted_slate_ids: {slate_num: [ids]} dict."""
+    sent = _load_dnb_sent()
+    pick_by_id = {p.get("id"): p for p in star_picks}
+    out = []
+    for slate_num, ids in (posted_slate_ids or {}).items():
+        label = _SLATE_LABELS.get(slate_num, "Slate")
+        for pid in ids:
+            p = pick_by_id.get(pid)
+            if not p or pid in sent:
+                continue
+            # Fire only on genuine reversal: either explicit DNB flag
+            # OR signal dropped very low. Keeps edge-of-cutoff drift
+            # from spamming (Signal 4 -> 3 no longer alerts).
+            sig = int(p.get("signal_score") or 0)
+            if p.get("do_not_bet") or sig <= _HARD_DNB_SIGNAL:
+                out.append((p, label))
+                sent.add(pid)
+    if out:
+        _write_dnb_sent(sent)
+    return out
+
+
+def send_eod_summary(webhook_url, picks_by_slate, date_label=""):
+    """End-of-day summary PNG. picks_by_slate = {slate_num: [picks]}
+    where each pick has been graded (result + profit_u). Shows the
+    whole day's record + units + per-slate breakdown."""
+    if not webhook_url or not picks_by_slate:
+        return 0
+    label = date_label or datetime.utcnow().strftime("%A, %B %d")
+
+    all_picks = []
+    per_slate_rec = {}
+    for s, picks in picks_by_slate.items():
+        if not picks:
+            continue
+        all_picks.extend(picks)
+        w = sum(1 for p in picks if p.get("result") == "W")
+        l = sum(1 for p in picks if p.get("result") == "L")
+        pu = sum(1 for p in picks if p.get("result") == "P")
+        u = 0.0
+        for p in picks:
+            try:
+                u += float(p.get("profit_u") or 0.0)
+            except (TypeError, ValueError):
+                pass
+        per_slate_rec[s] = (w, l, pu, u, len(picks) - (w + l + pu))
+
+    if not all_picks:
+        return 0
+
+    tw = sum(1 for p in all_picks if p.get("result") == "W")
+    tl = sum(1 for p in all_picks if p.get("result") == "L")
+    tp = sum(1 for p in all_picks if p.get("result") == "P")
+    tu = 0.0
+    for p in all_picks:
+        try:
+            tu += float(p.get("profit_u") or 0.0)
+        except (TypeError, ValueError):
+            pass
+    settled = tw + tl + tp
+    pend = len(all_picks) - settled
+    hit = f"{(tw / settled * 100):.0f}%" if settled else "n/a"
+
+    lines = [
+        f":bar_chart: **Day summary — {label}**",
+        "",
+        f"Total: **{tw}-{tl}-{tp}**  ·  {hit} hit on {settled} settled  ·  **{tu:+.2f}u**",
+    ]
+    if pend:
+        lines.append(f"_({pend} still pending — will update on re-run.)_")
+    lines.append("")
+    for s, (w, l, pu, u, pending) in sorted(per_slate_rec.items()):
+        sname = _SLATE_LABELS.get(s, f"Slate {s}")
+        emoji = _SLATE_EMOJI.get(s, ":star:")
+        line = f"{emoji} **{sname}:** {w}-{l}-{pu}  ·  {u:+.2f}u"
+        if pending:
+            line += f"  ·  _{pending} pending_"
+        lines.append(line)
+    post_text(webhook_url, "\n".join(lines))
+
+    # One tall PNG with every graded pick, sorted by result
+    def _rank(p):
+        order = {"W": 0, "L": 1, "P": 2}.get(p.get("result"), 3)
+        return (order, -(int(p.get("signal_score") or 0)))
+    sorted_picks = sorted(all_picks, key=_rank)
+    png = render_picks_png_tall(
+        sorted_picks[:_TOP_N * 3],  # cap height at ~15 cards
+        title=f"Day Summary — {tw}-{tl}-{tp}",
+        subtitle=f"{label}  ·  {tu:+.2f}u",
+    )
     if not png:
         return 0
-    fname = f"half{half}.png" if half else "daily_top.png"
-    ok = send_discord_image(webhook_url, png, fname)
-    # Snapshot ONLY the top we just posted so the diff never alerts on
-    # a pick that was already in a prior half's post.
-    prev_ids = set(_load_top_snapshot())
-    posted_ids = set(p.get("id") for p in top if p.get("id"))
-    _write_top_snapshot(list(prev_ids | posted_ids))
-    return 1 if ok else 0
+    return 1 if send_discord_image(webhook_url, png, "eod_summary.png") else 0
+
+
+# Keep send_daily_picks + diff_posted_dnb as aliases for backward
+# compatibility with any callers that haven't migrated yet.
+def send_daily_picks(webhook_url, picks, date_label="", half=None):
+    """DEPRECATED — maps half -> slate (half 1 → slate 1, half 2 → merged
+    slate 2+3). Prefer send_slate_picks."""
+    if half == 1:
+        r = send_slate_picks(webhook_url, picks, date_label, slate=1)
+        return r.get("sent", 0)
+    if half == 2:
+        # Legacy half 2 = afternoon + prime time; pick whichever has picks.
+        for s in (2, 3):
+            r = send_slate_picks(webhook_url, picks, date_label, slate=s)
+            if r.get("sent"):
+                return r["sent"]
+        return 0
+    r = send_slate_picks(webhook_url, picks, date_label, slate=1)
+    return r.get("sent", 0)
 
 
 def _load_last_alert_ts():
