@@ -15431,10 +15431,15 @@ def _send_daily_picks_png(half=None):
             if (p.get("signal_score") or 0) >= 3 and not p.get("do_not_bet"):
                 flat.append(p)
     if not flat:
-        return {"sent": 0, "picks": 0, "half": half}
+        return {"sent": 0, "picks": 0, "half": half, "pick_ids": []}
     date_label = datetime.now(CENTRAL).strftime("%A, %B %d")
     sent = _db.send_daily_picks(webhook, flat, date_label=date_label, half=half)
-    return {"sent": sent, "picks": len(flat), "half": half}
+    # Capture the exact set of pick IDs we posted for this half so the
+    # end-of-half results post can look them back up later.
+    pool = _db._filter_half(flat, half) if half in (1, 2) else list(flat)
+    top = _db._rank_picks(pool)[:_db._TOP_N]
+    pick_ids = [p.get("id") for p in top if p.get("id")]
+    return {"sent": sent, "picks": len(flat), "half": half, "pick_ids": pick_ids}
 
 
 @app.route("/cron/daily-picks")
@@ -15467,6 +15472,211 @@ def cron_daily_picks():
     result = _send_daily_picks_png(half=half)
     result["ok"] = bool(result.get("sent"))
     return Response(json.dumps(result), mimetype="application/json")
+
+
+# Phase 31 orchestrator — one Render cron hits /cron/dispatch every
+# 15 min; this computes/loads the day's schedule and fires whatever's
+# due (agenda, half-1 picks, half-2 picks, half-1 results, half-2
+# results). State persists in logs/discord_schedule.json for the day.
+_DISCORD_SCHEDULE_PATH = _settings_os.path.join(
+    _settings_os.path.dirname(_settings_os.path.abspath(__file__)),
+    "logs", "discord_schedule.json",
+)
+
+
+def _load_dispatch_schedule():
+    try:
+        with open(_DISCORD_SCHEDULE_PATH) as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _save_dispatch_schedule(d):
+    try:
+        _settings_os.makedirs(_settings_os.path.dirname(_DISCORD_SCHEDULE_PATH),
+                               exist_ok=True)
+        with open(_DISCORD_SCHEDULE_PATH, "w") as f:
+            json.dump(d, f)
+    except Exception:
+        pass
+
+
+def _compute_today_dispatch_schedule():
+    """Build today's dispatch state from the current board."""
+    import discord_bot as _db
+    _d = datetime.now(CENTRAL).date()
+    try:
+        board_rows, _all = _build_board_rows(_d.isoformat(), _d, "all",
+                                              strong_only=False)
+    except Exception:
+        board_rows = []
+    picks = []
+    for row in board_rows or []:
+        for p in row.get("picks", []):
+            if (p.get("signal_score") or 0) >= 3 and not p.get("do_not_bet"):
+                picks.append(p)
+    sched = _db.compute_schedule(picks, today_ct=_d)
+
+    def _iso(dt):
+        return dt.isoformat() if dt is not None else None
+
+    return {
+        "date":          _d.isoformat(),
+        "split_hour":    sched["split_hour"],
+        "agenda_sent":   False,
+        "half1": {
+            "post_at_iso":    _iso(sched["half1"]["post_at"]),
+            "results_at_iso": _iso(sched["half1"]["results_at"]),
+            "sent":           False,
+            "results_sent":   False,
+            "pick_ids":       [],
+        },
+        "half2": {
+            "post_at_iso":    _iso(sched["half2"]["post_at"]),
+            "results_at_iso": _iso(sched["half2"]["results_at"]),
+            "sent":           False,
+            "results_sent":   False,
+            "pick_ids":       [],
+        },
+    }
+
+
+def _send_half_results(half, pick_ids):
+    """Look up graded picks for the given ids and post the results PNG."""
+    if not pick_ids:
+        return False
+    try:
+        import discord_bot as _db
+        import plays_log as _pl
+    except Exception:
+        return False
+    settings = _load_settings()
+    webhook = (settings.get("daily_picks_webhook_url") or "").strip()
+    if not webhook:
+        return False
+    try:
+        _pl.grade_pending_backfill(days_back=1, grace_hours=1)
+    except Exception:
+        pass
+    try:
+        graded = _pl.grade_all(limit_dates=2) or {}
+    except Exception:
+        graded = {}
+    lookup = {}
+    for _dt, picks_list in graded.items():
+        for p in picks_list:
+            if p.get("id") in pick_ids:
+                lookup[p.get("id")] = p
+    # Preserve the originally-posted order so the PNG matches what the
+    # user saw earlier (sorted again by W/L/P inside send_half_results).
+    picks_for_results = [lookup[pid] for pid in pick_ids if pid in lookup]
+    if not picks_for_results:
+        return False
+    date_label = datetime.now(CENTRAL).strftime("%A, %B %d")
+    return bool(_db.send_half_results(webhook, picks_for_results,
+                                       half=half, date_label=date_label))
+
+
+@app.route("/cron/dispatch")
+def cron_dispatch():
+    """Fire every ~15 min from Render cron. Decides what's due today
+    (agenda / half-1 picks / half-2 picks / half-1 results / half-2
+    results) and fires each only once per day."""
+    settings = _load_settings()
+    secret = (settings.get("cron_secret") or "").strip()
+    if secret and (request.args.get("key") or "") != secret:
+        return Response(json.dumps({"ok": False, "error": "unauthorized"}),
+                        status=401, mimetype="application/json")
+    webhook = (settings.get("daily_picks_webhook_url") or "").strip()
+    if not webhook:
+        return Response(json.dumps({"ok": False, "error": "no_webhook"}),
+                        mimetype="application/json")
+    try:
+        import discord_bot as _db
+    except Exception:
+        return Response(json.dumps({"ok": False, "error": "pillow_missing"}),
+                        mimetype="application/json")
+
+    now_ct = datetime.now(CENTRAL)
+    today = now_ct.date().isoformat()
+    actions = []
+
+    sched = _load_dispatch_schedule()
+    if sched.get("date") != today:
+        sched = _compute_today_dispatch_schedule()
+        _save_dispatch_schedule(sched)
+        actions.append("reset_schedule")
+
+    def _parse(iso):
+        if not iso:
+            return None
+        try:
+            return datetime.fromisoformat(iso)
+        except Exception:
+            return None
+
+    # 1. Agenda (any time at/after 12:15 AM CT)
+    agenda_due = now_ct.replace(hour=0, minute=15, second=0, microsecond=0)
+    if not sched.get("agenda_sent") and now_ct >= agenda_due:
+        date_label = now_ct.strftime("%A, %B %d")
+        if _db.send_agenda(webhook, {
+            "split_hour": sched["split_hour"],
+            "half1": {"post_at":   _parse(sched["half1"]["post_at_iso"]),
+                      "results_at": _parse(sched["half1"]["results_at_iso"])},
+            "half2": {"post_at":   _parse(sched["half2"]["post_at_iso"]),
+                      "results_at": _parse(sched["half2"]["results_at_iso"])},
+        }, date_label):
+            sched["agenda_sent"] = True
+            actions.append("agenda")
+            _save_dispatch_schedule(sched)
+
+    # 2. Half-1 picks
+    h1 = sched.get("half1", {})
+    post1 = _parse(h1.get("post_at_iso"))
+    if (not h1.get("sent")) and post1 and now_ct >= post1:
+        r = _send_daily_picks_png(half=1)
+        if r.get("sent"):
+            h1["sent"] = True
+            h1["pick_ids"] = r.get("pick_ids", [])
+            sched["half1"] = h1
+            actions.append("half1_picks")
+            _save_dispatch_schedule(sched)
+
+    # 3. Half-2 picks
+    h2 = sched.get("half2", {})
+    post2 = _parse(h2.get("post_at_iso"))
+    if (not h2.get("sent")) and post2 and now_ct >= post2:
+        r = _send_daily_picks_png(half=2)
+        if r.get("sent"):
+            h2["sent"] = True
+            h2["pick_ids"] = r.get("pick_ids", [])
+            sched["half2"] = h2
+            actions.append("half2_picks")
+            _save_dispatch_schedule(sched)
+
+    # 4. Half-1 results
+    res1 = _parse(h1.get("results_at_iso"))
+    if (not h1.get("results_sent")) and h1.get("sent") and res1 and now_ct >= res1:
+        if _send_half_results(half=1, pick_ids=h1.get("pick_ids", [])):
+            h1["results_sent"] = True
+            sched["half1"] = h1
+            actions.append("half1_results")
+            _save_dispatch_schedule(sched)
+
+    # 5. Half-2 results
+    res2 = _parse(h2.get("results_at_iso"))
+    if (not h2.get("results_sent")) and h2.get("sent") and res2 and now_ct >= res2:
+        if _send_half_results(half=2, pick_ids=h2.get("pick_ids", [])):
+            h2["results_sent"] = True
+            sched["half2"] = h2
+            actions.append("half2_results")
+            _save_dispatch_schedule(sched)
+
+    return Response(json.dumps({
+        "ok": True, "now_ct": now_ct.isoformat(),
+        "actions": actions, "state": sched,
+    }, default=str), mimetype="application/json")
 
 
 @app.route("/cron/intro")
