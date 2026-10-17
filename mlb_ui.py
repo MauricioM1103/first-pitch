@@ -7631,6 +7631,28 @@ def today_landing():
         board_rows = []
     scan_time_ms = int((time.time() - t0) * 1000)
 
+    # Persist today's current-filter picks so plays_log has something
+    # to grade later. Previously only /sport/<slug> saved picks — if a
+    # user drove the app purely via TODAY or Discord, nothing landed
+    # in plays_log and /logged stayed empty for the day.
+    if date_str == datetime.now(CENTRAL).date().isoformat():
+        try:
+            import plays_log as _pl_save
+            to_save = []
+            seen_pids = set()
+            for _row in board_rows or []:
+                for _p in _row.get("picks", []):
+                    _pid = _p.get("id")
+                    if not _pid or _pid in seen_pids:
+                        continue
+                    if (_p.get("signal_score") or 0) >= 3 and not _p.get("do_not_bet"):
+                        to_save.append({**_p, "model_only": False})
+                        seen_pids.add(_pid)
+            if to_save:
+                _pl_save.save_daily_picks(date_str, to_save)
+        except Exception:
+            pass
+
     # Flatten picks across all rows, attaching the game context inline on
     # each so the template doesn't need the row->picks relationship.
     now_dt = datetime.now(CENTRAL)
@@ -15532,6 +15554,27 @@ def _send_slate_png(slate):
                                               strong_only=False)
     except Exception:
         return {"sent": 0, "error": "board_build_failed", "pick_ids": []}
+    # Persist today's picks to plays_log. The TODAY (/) page doesn't
+    # save; only /sport/<slug> does. If the user drives the app purely
+    # via the Discord feed, no picks would ever get logged or graded.
+    # Save every pick that cleared the current filter so /logged
+    # populates and the grader has something to grade.
+    try:
+        import plays_log as _pl
+        to_save = []
+        seen_ids = set()
+        for row in board_rows or []:
+            for p in row.get("picks", []):
+                pid = p.get("id")
+                if not pid or pid in seen_ids:
+                    continue
+                if (p.get("signal_score") or 0) >= 3 and not p.get("do_not_bet"):
+                    to_save.append({**p, "model_only": False})
+                    seen_ids.add(pid)
+        if to_save:
+            _pl.save_daily_picks(_date_str, to_save)
+    except Exception:
+        pass
     flat = []
     for row in board_rows or []:
         for p in row.get("picks", []):
