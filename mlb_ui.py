@@ -15546,26 +15546,27 @@ def _save_dispatch_schedule(d):
 def _load_dispatch_schedule_remote_fallback():
     """When logs/ was just wiped, try to pull the latest schedule back
     from GitHub so we don't blindly recompute (and re-fire 'sent'
-    events). Returns {} on any failure."""
+    events). Returns {} on any failure.
+
+    log_persist.read_file returns (text, sha) — hence the unpacking."""
     try:
         import log_persist
         if not log_persist.is_configured():
             return {}
-        remote = log_persist.read_file("logs/discord_schedule.json")
-        if remote:
-            try:
-                _settings_os.makedirs(
-                    _settings_os.path.dirname(_DISCORD_SCHEDULE_PATH),
-                    exist_ok=True)
-                with open(_DISCORD_SCHEDULE_PATH, "w") as f:
-                    f.write(remote if isinstance(remote, str)
-                            else json.dumps(remote))
-            except Exception:
-                pass
-            return json.loads(remote) if isinstance(remote, str) else remote
+        text, _sha = log_persist.read_file("logs/discord_schedule.json")
+        if not text:
+            return {}
+        try:
+            _settings_os.makedirs(
+                _settings_os.path.dirname(_DISCORD_SCHEDULE_PATH),
+                exist_ok=True)
+            with open(_DISCORD_SCHEDULE_PATH, "w") as f:
+                f.write(text)
+        except Exception:
+            pass
+        return json.loads(text)
     except Exception:
-        pass
-    return {}
+        return {}
 
 
 def _compute_today_dispatch_schedule():
