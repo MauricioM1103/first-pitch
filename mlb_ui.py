@@ -5209,7 +5209,16 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
             if isinstance(margins_arr, list) else []
         if main_line_h is not None and numeric_margins:
             n = len(numeric_margins)
-            MAX_GAP = 0.12
+            # Phase 20: alt-spread filters tightened after 90-day
+            # -34.8% ROI result. Core change: narrow the "sweet spot"
+            # of alts we trust, so we're not accepting marginal picks
+            # just because they technically clear +5% EV. Agreement
+            # gap also tightened — the alts that lost most were ones
+            # where our model and Pinnacle devig disagreed by 10+pp.
+            MAX_GAP = 0.08            # was 0.12
+            MIN_FAIR_ALT = 0.58       # was 0.55
+            MAX_FAIR_ALT = 0.68       # was 0.72
+            MIN_EV_ALT = 8.0          # was 5.0 — require bigger cushion
             MAX_EV_PCT = 15.0
             candidates = []
             for cand in pin_spread_alts:
@@ -5233,7 +5242,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     ("home", home_cover,     cand.get("home_am"), home, alt_h),
                     ("away", 1 - home_cover, cand.get("away_am"), away, -alt_h),
                 ):
-                    if am is None or not (0.55 <= prob <= 0.72):
+                    if am is None or not (MIN_FAIR_ALT <= prob <= MAX_FAIR_ALT):
                         continue
                     # Model-vs-market agreement check
                     if pin_home_fair is not None:
@@ -5244,7 +5253,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     if not dec or dec <= 1.0:
                         continue
                     ev_pct = (prob * dec - 1.0) * 100.0
-                    if ev_pct < 5.0:
+                    if ev_pct < MIN_EV_ALT:
                         continue
                     if ev_pct > MAX_EV_PCT:
                         ev_pct = MAX_EV_PCT
@@ -5404,7 +5413,15 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
             # plenty of room for genuine model-vs-market disagreement
             # (which does happen on alt lines where volume is low) while
             # killing the obvious artifacts.
-            MAX_MODEL_VS_MARKET_GAP = 0.12
+            # Phase 20: alt-total filters tightened after 90-day
+            # -18.9% ROI result. Same approach as Alt Spread — the
+            # alts that lost most were ones where our model/market
+            # disagreement was 10+pp and the picks landed just above
+            # the +5% EV minimum. Tighten both.
+            MAX_MODEL_VS_MARKET_GAP = 0.08   # was 0.12
+            MIN_FAIR_ALT = 0.58              # was 0.55
+            MAX_FAIR_ALT = 0.68              # was 0.72
+            MIN_EV_ALT   = 8.0               # was 5.0
             MAX_EV_PCT = 15.0   # hard ceiling — anything above almost
                                 # certainly reflects a sim bug or a stale
                                 # Pinnacle price; display cap only
@@ -5434,7 +5451,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     ("Over",  p_over,     cand.get("over_am")),
                     ("Under", 1 - p_over, cand.get("under_am")),
                 ):
-                    if am is None or not (0.55 <= prob <= 0.72):
+                    if am is None or not (MIN_FAIR_ALT <= prob <= MAX_FAIR_ALT):
                         continue
                     # Model-vs-market agreement check per side
                     if pin_over_fair is not None:
@@ -5445,7 +5462,7 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
                     if not dec or dec <= 1.0:
                         continue
                     ev_pct = (prob * dec - 1.0) * 100.0
-                    if ev_pct < 5.0:
+                    if ev_pct < MIN_EV_ALT:
                         continue
                     if ev_pct > MAX_EV_PCT:
                         ev_pct = MAX_EV_PCT   # cap display
@@ -6171,17 +6188,17 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
         # looks real on paper but doesn't hit (2-11, -75% ROI).
         ("nhl", "ML"),         # 2-11, -75% ROI
         ("nhl", "Spread"),     # 1-4, -70% ROI (puck line structural)
-        # NFL Alt Total was 0-5, -100% ROI — model's total projection vs
-        # Pinnacle alt line has been consistently wrong on the direction.
-        ("nfl", "Alt Total"),  # 0-5, -100%
-        # NFL Total main: 3-10, -55% ROI. Mostly Unders that aren't hitting
-        # — the pin_total anchor fix helps but recent history is bad enough
-        # that we hold off until more samples prove the fix worked.
+        # Phase 20 (2026-10-16): (nfl, Alt Total) and (ncaaf, Alt Total)
+        # removed. User asked to re-enable alt markets with tightened
+        # emission filters (EV 5->8, band 0.55-0.72 -> 0.58-0.68,
+        # agreement gap 0.12 -> 0.08). Those filters now sit at the
+        # alt-emission site below so individual bad picks get rejected
+        # before they reach the record, rather than killing the whole
+        # (sport, market) bucket.
+        # NFL Total main: 3-10, -55% ROI. Still blacklisted — the mains
+        # kept missing even after the pin_total anchor fix. Revisit on
+        # next sample doubling.
         ("nfl", "Total"),      # 3-10, -55%
-        # NCAAF Alt Total: huge sample (n=68), consistently 48.5% / -17.9%.
-        # NCAAF totals are volatile and our model's edge disappears on
-        # alt lines where sample variance dominates.
-        ("ncaaf", "Alt Total"), # 33-35, -18% ROI
         # La Liga ML: 2-7, -23% ROI. Draws kill ML picks; our 3-way DC
         # draw estimate is too low for La Liga specifically.
         ("laliga", "ML"),      # 2-7, -23% ROI

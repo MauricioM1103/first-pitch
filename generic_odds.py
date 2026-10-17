@@ -1020,12 +1020,26 @@ def build_sport_games(sport, model_prob_fn=None, use_us_books=True):
             sp = g["spread"]
             h_dec = american_to_decimal(sp["home_am"])
             a_dec = american_to_decimal(sp["away_am"])
+            # Skip whole-number main spreads: labels like "Chiefs -3" or
+            # "+4" push on the exact key margin and show up ugly next to
+            # the .5 alts. _model_fill_picks (in mlb_ui) emits a snapped
+            # .5 version via its own path with the proper margin-dist
+            # fair prob + re-fetched Pinnacle alt-line price, so dropping
+            # the whole-number variant here doesn't lose coverage — just
+            # removes the duplicate ugly version.
+            hpt = sp["line_home"]
+            if hpt is not None:
+                try:
+                    _h = float(hpt)
+                    if abs(_h - int(_h)) < 1e-9:
+                        continue
+                except (TypeError, ValueError):
+                    pass
             if h_dec and a_dec:
                 p_h = american_to_prob(sp["home_am"])
                 p_a = american_to_prob(sp["away_am"])
                 fair_h, fair_a = devig_two_sided(p_h, p_a)
 
-                hpt = sp["line_home"]
                 apt = -hpt if hpt is not None else None
                 home_label = f"{home_name} {'' if (hpt or 0) < 0 else '+'}{hpt}"
                 away_label = f"{away_name} {'' if (apt or 0) < 0 else '+'}{apt}"
