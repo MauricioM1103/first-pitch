@@ -15222,13 +15222,31 @@ def _load_settings():
         d = {}
     out = {**defaults, **d}
     # Env-var fallback: if a sensitive field is blank in the saved
-    # file, use the environment variable instead. Set these in Render's
-    # service dashboard → Environment to survive spin-downs.
+    # file, read it from Render. Supports both:
+    #   1. Environment Variables (os.environ)
+    #   2. Secret Files mounted at /etc/secrets/<name> (Render's
+    #      preferred way to inject secrets — the file name matches the
+    #      env-var name, and its contents are the value).
+    # Set either in Render's service dashboard → Environment or Secret
+    # Files to survive spin-downs.
     for key, env_name in _SETTINGS_ENV_KEYS.items():
-        if not out.get(key):
-            v = _settings_os.environ.get(env_name)
-            if v:
-                out[key] = v
+        if out.get(key):
+            continue
+        v = _settings_os.environ.get(env_name)
+        if not v:
+            # Try Render Secret File — mounted at /etc/secrets/<name>.
+            # Also try lowercase, since the user may have named the
+            # secret file after the settings-form field.
+            for cand in (env_name, key, env_name.lower()):
+                try:
+                    with open(f"/etc/secrets/{cand}") as f:
+                        v = f.read().strip()
+                    if v:
+                        break
+                except Exception:
+                    continue
+        if v:
+            out[key] = v
     return out
 
 
