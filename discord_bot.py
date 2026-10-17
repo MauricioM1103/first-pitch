@@ -37,11 +37,14 @@ _CANDIDATES_SENT_PATH  = os.path.join(_BASE_DIR, "logs", "discord_candidates_sen
 # Visual constants — matches the social-slides template.
 _W, _H = 1080, 1920
 _PICKS_PER_PNG = 9
-# Phase 31 v2: three fixed slates per day, top 5 per slate, Signal >= 4.
-# Site still shows Signal 3+ picks; Discord gets the stronger subset so
-# the channel stays quiet and high-conviction.
+# Phase 31 v2: three fixed slates per day, top 5 per slate, Signal >= 3.
+# (First draft used Signal >= 4 but today's test showed morning and
+# afternoon slates had ZERO qualifying picks — too strict. Signal >= 3
+# matches the site's current filter and still stays quiet because top-5
+# per slate caps the volume. The channel's noise reduction comes from
+# lock-on-post + hard-DNB-only, not the signal floor.)
 _TOP_N = 5
-_MIN_SIGNAL_FOR_POST = 4
+_MIN_SIGNAL_FOR_POST = 3
 # Hard DNB threshold — only alert when a posted pick's signal collapses
 # this low. Marginal drift (Signal 4 -> 3) no longer fires DNBs.
 _HARD_DNB_SIGNAL = 1
