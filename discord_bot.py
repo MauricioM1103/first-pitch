@@ -37,14 +37,30 @@ _CANDIDATES_SENT_PATH  = os.path.join(_BASE_DIR, "logs", "discord_candidates_sen
 # Visual constants — matches the social-slides template.
 _W, _H = 1080, 1920
 _PICKS_PER_PNG = 9
-# Phase 31 v2: three fixed slates per day, top 5 per slate, Signal >= 3.
-# (First draft used Signal >= 4 but today's test showed morning and
-# afternoon slates had ZERO qualifying picks — too strict. Signal >= 3
-# matches the site's current filter and still stays quiet because top-5
-# per slate caps the volume. The channel's noise reduction comes from
-# lock-on-post + hard-DNB-only, not the signal floor.)
+# Phase 31 v2: three fixed slates per day, top 5 per slate, "Signal 3.5"
+# effective threshold:
+#   - Signal >= 4 picks always qualify (strong across most signals)
+#   - Signal 3 picks qualify only if their EV cushion is strong enough
+#     (>= _SIGNAL_3_MIN_EV). The marginal Signal 3 picks — those that
+#     just barely cleared the composite — are the churn-prone edge, so
+#     holding them to a stricter EV bar filters out the noise without
+#     starving the feed on days without many Signal 4+ picks.
 _TOP_N = 5
 _MIN_SIGNAL_FOR_POST = 3
+_SIGNAL_3_MIN_EV = 3.0  # percent
+
+
+def _qualifies_for_discord(p):
+    """Signal 3.5 gate used by send_slate_picks."""
+    s = int(p.get("signal_score") or 0)
+    if s >= 4:
+        return True
+    if s >= _MIN_SIGNAL_FOR_POST:
+        try:
+            return float(p.get("ev_pct") or 0.0) >= _SIGNAL_3_MIN_EV
+        except (TypeError, ValueError):
+            return False
+    return False
 # Hard DNB threshold — only alert when a posted pick's signal collapses
 # this low. Marginal drift (Signal 4 -> 3) no longer fires DNBs.
 _HARD_DNB_SIGNAL = 1
@@ -78,7 +94,10 @@ _SLATE_POST_TIMES = {
     3: (18, 0),    # 6:00 PM CT
 }
 # End-of-day summary post time (hour, minute, next_day_flag).
-_EOD_POST_TIME = (1, 0, True)
+# 2 AM CT next day — gives late Prime Time games (NFL SNF, UFC main
+# event, west-coast MLB) that end 11 PM-1 AM time to fully grade
+# before the summary fires.
+_EOD_POST_TIME = (2, 0, True)
 
 # Colors (match the dark theme on the live site).
 _BG         = (14, 18, 24)
@@ -552,8 +571,9 @@ def send_slate_picks(webhook_url, picks, date_label="", slate=1):
     emoji = _SLATE_EMOJI.get(slate, ":star:")
 
     pool = _filter_slate(picks, slate)
-    # Signal >= 4 bar + no DNB; _rank_picks already drops DNB.
-    pool = [p for p in pool if (p.get("signal_score") or 0) >= _MIN_SIGNAL_FOR_POST]
+    # Signal 3.5 gate — Signal 4+ always qualifies, Signal 3 only
+    # with EV >= _SIGNAL_3_MIN_EV. _rank_picks drops DNB separately.
+    pool = [p for p in pool if _qualifies_for_discord(p)]
     ranked = _rank_picks(pool)
     top = ranked[:_TOP_N]
     if not top:
