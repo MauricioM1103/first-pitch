@@ -229,12 +229,12 @@ def _render_pick_card(canvas, draw, pick, y):
                    f"{arrow} {lm * 100:+.1f}pp", f_small,
                    fill=(_GOOD if lm > 0 else _BAD))
 
-    # Row 4: start time LEFT, odds RIGHT (y+138)
+    # Row 4: kickoff time LEFT, odds RIGHT (y+138)
     y_bottom = y + 138
-    time_abs  = pick.get("time_abs") or ""
-    countdown = pick.get("countdown") or ""
-    time_text = f"{countdown}  {time_abs}".strip() if countdown else time_abs
-    _draw_text(draw, (x0 + 20, y_bottom), time_text, f_mono, fill=_MUTED_2)
+    time_text = _format_pick_time(pick)
+    # Brighter than _MUTED_2 so the kickoff time doesn't get lost next
+    # to the odds on the right.
+    _draw_text(draw, (x0 + 20, y_bottom), time_text, f_mono, fill=_MUTED)
     dec  = pick.get("decimal")
     book = pick.get("book") or ""
     if dec:
@@ -426,10 +426,9 @@ def _rank_picks(picks):
     return live
 
 
-def _pick_hour_ct(pick):
-    """Return the pick's game-start hour in Central Time (0-23), or
-    None if we can't parse it. Picks without a parseable start default
-    into the second half so they don't disappear."""
+def _pick_start_ct(pick):
+    """Return the pick's game-start datetime in Central Time, or None
+    if we can't parse it."""
     from zoneinfo import ZoneInfo
     central = ZoneInfo("America/Chicago")
     st = pick.get("start_time")
@@ -441,9 +440,37 @@ def _pick_hour_ct(pick):
         dt = datetime.fromisoformat(st)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=ZoneInfo("UTC"))
-        return dt.astimezone(central).hour
+        return dt.astimezone(central)
     except Exception:
         return None
+
+
+def _pick_hour_ct(pick):
+    """Hour (0-23) in Central Time, or None if unparseable."""
+    dt = _pick_start_ct(pick)
+    return dt.hour if dt is not None else None
+
+
+def _format_pick_time(pick):
+    """Return a clear kickoff string like '7:30 PM CT' (plus
+    countdown if present). Falls back to parsing start_time when
+    time_abs is blank, and always suffixes CT so the TZ is obvious."""
+    time_abs  = (pick.get("time_abs") or "").strip()
+    countdown = (pick.get("countdown") or "").strip()
+    # Prefer a parsed start_time so we always render the TZ.
+    dt = _pick_start_ct(pick)
+    if dt is not None:
+        base = dt.strftime("%I:%M %p CT").lstrip("0")
+    elif time_abs:
+        # No parseable start_time — use what the UI gave us and tack
+        # on CT if it doesn't already carry a TZ.
+        has_tz = any(x in time_abs for x in ("CT", "ET", "PT", "UTC", "GMT"))
+        base = time_abs if has_tz else f"{time_abs} CT"
+    else:
+        return "Time TBD"
+    if countdown:
+        return f"{base}  ·  {countdown}"
+    return base
 
 
 def _filter_half(picks, half, cutoff_hour=_HALF_CUTOFF_HOUR):
