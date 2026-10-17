@@ -15454,6 +15454,10 @@ def _send_slate_png(slate):
         return {"sent": 0, "picks": 0, "slate": slate, "pick_ids": []}
     date_label = datetime.now(CENTRAL).strftime("%A, %B %d")
     r = _db.send_slate_picks(webhook, flat, date_label=date_label, slate=slate)
+    if r.get("sent") and r.get("pick_ids"):
+        # Log posted ids so /logged can show a dedicated "Discord posted"
+        # record alongside the current filter.
+        _record_discord_posted(_date_str, r["pick_ids"])
     return {"sent": r.get("sent", 0),
             "picks": len(flat),
             "slate": slate,
@@ -15515,6 +15519,61 @@ _DISCORD_SCHEDULE_PATH = _settings_os.path.join(
     _settings_os.path.dirname(_settings_os.path.abspath(__file__)),
     "logs", "discord_schedule.json",
 )
+_DISCORD_POSTED_PATH = _settings_os.path.join(
+    _settings_os.path.dirname(_settings_os.path.abspath(__file__)),
+    "logs", "discord_posted.json",
+)
+
+
+def _load_discord_posted_log():
+    """Return {date_iso: [pick_ids]} dict of picks posted to Discord."""
+    try:
+        with open(_DISCORD_POSTED_PATH) as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _record_discord_posted(date_str, pick_ids):
+    """Append pick_ids to the Discord-posted log for a given date, cap
+    at 180 days, mirror to GitHub via log_persist so the record
+    survives Render's ephemeral-fs wipes."""
+    if not date_str or not pick_ids:
+        return
+    data = _load_discord_posted_log()
+    existing = set(data.get(date_str) or [])
+    existing.update(pick_ids)
+    data[date_str] = sorted(existing)
+    if len(data) > 180:
+        for d in sorted(data.keys())[:-180]:
+            del data[d]
+    try:
+        _settings_os.makedirs(_settings_os.path.dirname(_DISCORD_POSTED_PATH),
+                               exist_ok=True)
+        with open(_DISCORD_POSTED_PATH, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+    try:
+        import log_persist
+        if log_persist.is_configured():
+            log_persist.write_file("logs/discord_posted.json",
+                                    json.dumps(data),
+                                    message="discord posted log update")
+    except Exception:
+        pass
+
+
+def _passes_discord_posted(pick):
+    """Predicate: True if this pick's id appears in the Discord-posted
+    log for its date. Requires `_date` to be injected on the pick
+    (logged_plays does this before applying predicates)."""
+    date_str = pick.get("_date")
+    pick_id  = pick.get("id")
+    if not date_str or not pick_id:
+        return False
+    data = _load_discord_posted_log()
+    return pick_id in set(data.get(date_str) or [])
 
 
 def _load_dispatch_schedule():
@@ -15918,11 +15977,20 @@ def logged_plays():
         # Mirror the tightened plays_log._is_whale_pick definition —
         # fp >= 68%, dec <= 1.60, EV >= 0, and (EV >= 3% OR Signal >= 2).
         return plays_log._is_whale_pick(pk)
+    # Inject date onto each pick so predicates that need date context
+    # (like Discord-posted, which looks picks up in a per-day map) can
+    # read it off the pick dict. Idempotent — safe to repeat.
+    for _ds, _picks in (graded_by_date or {}).items():
+        for _p in (_picks or []):
+            if _p.get("_date") != _ds:
+                _p["_date"] = _ds
+
     _FILTER_PREDICATES = {
         "all":        ("All picks",             lambda p: True),
         "signal":     ("Signal >= 3",           lambda p: plays_log._backtest_signal_score(p) >= 3),
         "whale":      ("Strong picks only",     _is_whale_pick),
         "curfilter":  ("Current filter",        plays_log._passes_current_filter),
+        "discord":    ("Discord posted",        _passes_discord_posted),
         "ev9":        ("+EV >= 9%",             lambda p: (p.get("ev_pct") is not None
                                                            and (p.get("ev_pct") or 0) >= 9)),
         "1h_goals":   ("1H Goals",              lambda p: p.get("source") == "1h_goals"),
