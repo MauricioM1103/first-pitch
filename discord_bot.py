@@ -304,9 +304,26 @@ def _render_pick_card(canvas, draw, pick, y):
     tx = x0 + 20
     is_whale = bool(pick.get("whale"))
     if is_whale:
-        # Whale emoji + badge — bankroll-maximum tier, stands out most.
-        draw.text((tx, y_row - 2), "WHALE", font=f_chip, fill=(56, 189, 248))
-        tx += 82
+        # Whale pill — bankroll-max tier. Filled cyan pill with white
+        # text so it reads as a BADGE, not just a label. Stands out
+        # against the dark card and the pick-text that follows.
+        whale_text = "WHALE"
+        try:
+            bbox = draw.textbbox((0, 0), whale_text, font=f_chip)
+            pw = bbox[2] - bbox[0] + 20
+            ph = bbox[3] - bbox[1] + 10
+        except Exception:
+            pw, ph = 92, 30
+        try:
+            draw.rounded_rectangle(
+                [tx, y_row - 4, tx + pw, y_row - 4 + ph],
+                radius=14, fill=(56, 189, 248), outline=None)
+        except Exception:
+            draw.rectangle(
+                [tx, y_row - 4, tx + pw, y_row - 4 + ph],
+                fill=(56, 189, 248))
+        draw.text((tx + 10, y_row - 2), whale_text, font=f_chip, fill=(10, 10, 15))
+        tx += pw + 10
     if pick.get("signal_score") == 5:
         draw.text((tx, y_row + 4), "LOCK", font=f_chip, fill=_LOCK)
         tx += 72
@@ -785,12 +802,22 @@ def send_slate_picks(webhook_url, picks, date_label="", slate=1):
         2: "games starting 12 PM - 6 PM CT",
         3: "games starting 6 PM CT or later",
     }[slate]
+    whale_count = sum(1 for p in top if p.get("whale"))
+    whale_line = ""
+    if whale_count:
+        whale_line = (
+            f"\n:whale: **{whale_count} whale pick"
+            f"{'s' if whale_count != 1 else ''}** today — "
+            "bankroll-max tier (short-price, high-prob, confirmed Signal). "
+            "Flagged with a cyan WHALE pill in the slide."
+        )
     preamble = (
         f"{emoji} **{slate_name} picks — {label}**\n\n"
         f"Top {len(top)} Signal 3.5+ picks for {window_desc} "
         f"(earliest kickoff ~{earliest}). "
         "This list is **locked for the day** — only hard DO NOT BET "
         "reversals or final results will post here until the next slate."
+        + whale_line
     )
     # If a prior slate posted earlier today and some of its picks have
     # already graded, surface the running record as context.

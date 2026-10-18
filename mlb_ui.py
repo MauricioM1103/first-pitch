@@ -7448,37 +7448,16 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                 p["strong"] = _current_strong
                 if _from_saved and _was_strong and not _current_strong and _is_upcoming:
                     p["do_not_bet"] = True
-                # Whale tier: heavy-favorite "banker" picks. Short
-                # decimal odds (<= 1.60, i.e. -167 American or shorter),
-                # high model probability (>= 65%), and still-positive
-                # EV. Whales (large-bankroll bettors) ladder these at
-                # higher stakes because the probability is so high the
-                # variance is manageable even at thin returns.
+                # Whale tier: bankroll-max picks. Single source of
+                # truth is plays_log._is_whale_pick so the TODAY board,
+                # the /logged filter, and the Discord slate PNG all
+                # agree on which picks earn the whale badge. Current
+                # rule is fp >= 0.72, decimal in [1.30, 1.65],
+                # signal_score >= 4, ev >= 1.5%, no risk flags.
                 try:
-                    _fp  = float(p.get("fair_prob") or 0.0)
-                except (TypeError, ValueError):
-                    _fp = 0.0
-                try:
-                    _dec = float(p.get("decimal") or 0.0)
-                except (TypeError, ValueError):
-                    _dec = 0.0
-                try:
-                    _ev = float(p.get("ev_pct") or 0.0)
-                except (TypeError, ValueError):
-                    _ev = 0.0
-                # Tightened on 2026-10-16: raised fp floor 0.65->0.68
-                # and now also requires either EV >= 3% OR signal_score
-                # >= 2. The old 0.65/decimal<=1.60/EV>=0 rule hit 67%
-                # but still lost -3.6% ROI because 1.4-1.6 odds don't
-                # pay enough for one loss to be offset by only two
-                # wins — needed either a stiffer prob floor or a
-                # second confirming signal.
-                p["whale"] = (
-                    _fp >= 0.68
-                    and 1.01 < _dec <= 1.60
-                    and _ev >= 0.0
-                    and (_ev >= 3.0 or p["signal_score"] >= 2)
-                )
+                    p["whale"] = bool(plays_log._is_whale_pick(p))
+                except Exception:
+                    p["whale"] = False
 
         # Order picks within a game by signal_score desc (strongest first),
         # then market category to keep the ML/Spread/Total/… triplet shape,
