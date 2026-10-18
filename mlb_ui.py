@@ -9228,7 +9228,9 @@ def edges():
         games_with_odds += 1
         bets = o.get("bets") or []
         for b in bets:
-            if b["ev_pct"] <= 0:
+            # Guard against None ev_pct — some F5 / alt markets emit it
+            # without a devig step and would TypeError on comparison.
+            if (b.get("ev_pct") or 0) <= 0:
                 continue
             if market_filter not in ("ALL", b["market"].upper().replace(" ", "_")):
                 # allow filter like market=ml, market=total, market=run_line, market=f5_ml, market=f5_total
