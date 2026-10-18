@@ -15677,17 +15677,38 @@ _DISCORD_POSTED_CACHE_TTL = 60.0  # seconds
 
 def _load_discord_posted_log():
     """Return {date_iso: [pick_ids]} dict of picks posted to Discord.
-    Memoized for _DISCORD_POSTED_CACHE_TTL seconds."""
+    Memoized for _DISCORD_POSTED_CACHE_TTL seconds. Falls back to the
+    GitHub mirror when the local file is empty (Render spin-down wipes
+    logs/, but the GitHub-mirrored copy persists)."""
     import time as _t
     now = _t.time()
     if (_DISCORD_POSTED_CACHE["data"] is not None
             and (now - _DISCORD_POSTED_CACHE["ts"]) < _DISCORD_POSTED_CACHE_TTL):
         return _DISCORD_POSTED_CACHE["data"]
+    data = {}
     try:
         with open(_DISCORD_POSTED_PATH) as f:
             data = json.load(f) or {}
     except Exception:
-        data = {}
+        pass
+    if not data:
+        try:
+            import log_persist
+            if log_persist.is_configured():
+                text, _sha = log_persist.read_file("logs/discord_posted.json")
+                if text:
+                    data = json.loads(text) or {}
+                    # Persist locally so we don't hit GitHub every call.
+                    try:
+                        _settings_os.makedirs(
+                            _settings_os.path.dirname(_DISCORD_POSTED_PATH),
+                            exist_ok=True)
+                        with open(_DISCORD_POSTED_PATH, "w") as f:
+                            f.write(text)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
     _DISCORD_POSTED_CACHE["data"] = data
     _DISCORD_POSTED_CACHE["ts"]   = now
     return data
