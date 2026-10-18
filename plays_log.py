@@ -330,6 +330,7 @@ def save_daily_picks(date_str, picks, overwrite_today=True):
         )
     except Exception:
         pass
+    _invalidate_caches_on_change()
     return True
 
 
@@ -1651,7 +1652,17 @@ def grade_date(date_str, sport_key_by_slug, force=False, rescore=False):
 
     graded = {"date": date_str, "picks": graded_picks}
     write_graded(date_str, graded)
+    _invalidate_caches_on_change()
     return graded
+
+
+def _invalidate_caches_on_change():
+    """Shared post-write hook so grade_all / downstream consumers see
+    fresh data immediately rather than up to 60s later."""
+    try:
+        invalidate_grade_all_cache()
+    except Exception:
+        pass
 
 
 def grade_pending_backfill(days_back=14, grace_hours=4, force_rescan=False):
@@ -1715,8 +1726,23 @@ def grade_pending_backfill(days_back=14, grace_hours=4, force_rescan=False):
             "still_pending": still_pending}
 
 
+_GRADE_ALL_CACHE = {}   # limit_dates -> (ts, result dict)
+_GRADE_ALL_TTL_S = 60   # keep hot callers (/logged, TODAY, dispatcher,
+                        # notify-changes) from re-reading every pick-
+                        # file on every tick.
+
+
 def grade_all(limit_dates=90):
-    """Grade every logged date up to `limit_dates` back. Returns dict by date."""
+    """Grade every logged date up to `limit_dates` back. Returns dict by date.
+    Cached for _GRADE_ALL_TTL_S so repeat calls within the window reuse
+    the computed result instead of re-reading every picks_YYYY-MM-DD.json
+    file. Call invalidate_grade_all_cache() if you need fresh data (eg
+    right after a save_daily_picks or grade_pending_backfill)."""
+    import time as _t
+    now = _t.time()
+    hit = _GRADE_ALL_CACHE.get(limit_dates)
+    if hit and (now - hit[0]) < _GRADE_ALL_TTL_S:
+        return hit[1]
     import sports as _sports
     sport_key_by_slug = {s["slug"]: s.get("odds_api_key") for s in _sports.SPORTS}
     out = {}
@@ -1724,7 +1750,14 @@ def grade_all(limit_dates=90):
         g = grade_date(ds, sport_key_by_slug)
         if g:
             out[ds] = g["picks"]
+    _GRADE_ALL_CACHE[limit_dates] = (now, out)
     return out
+
+
+def invalidate_grade_all_cache():
+    """Call after save_daily_picks / grade_pending_backfill so the next
+    grade_all() call sees fresh data instead of a 60s-stale snapshot."""
+    _GRADE_ALL_CACHE.clear()
 
 
 # ---------------------------------------------------------------------------
