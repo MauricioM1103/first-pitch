@@ -15710,6 +15710,75 @@ _DISCORD_POSTED_PATH = _settings_os.path.join(
     _settings_os.path.dirname(_settings_os.path.abspath(__file__)),
     "logs", "discord_posted.json",
 )
+_DISCORD_FIRED_PATH = _settings_os.path.join(
+    _settings_os.path.dirname(_settings_os.path.abspath(__file__)),
+    "logs", "discord_fired_events.json",
+)
+# Serializes dispatcher ticks so concurrent UptimeRobot / manual / GH
+# Actions pings don't race each other into double-posting events.
+_DISPATCH_LOCK = _threading.Lock()
+
+
+def _load_fired_events():
+    """Return set of 'YYYY-MM-DD:event' keys we've already posted to
+    Discord. Checked LOCAL first, then GitHub mirror (survives Render
+    spin-down wipes). Memoized briefly to avoid hammering disk."""
+    try:
+        with open(_DISCORD_FIRED_PATH) as f:
+            data = json.load(f) or {}
+            return set(data.get("fired") or [])
+    except Exception:
+        pass
+    try:
+        import log_persist
+        if log_persist.is_configured():
+            text, _sha = log_persist.read_file("logs/discord_fired_events.json")
+            if text:
+                data = json.loads(text) or {}
+                return set(data.get("fired") or [])
+    except Exception:
+        pass
+    return set()
+
+
+def _mark_fired(key):
+    """Add `key` to the fired-events set, write LOCAL + GitHub mirror.
+    Idempotent — safe to call multiple times for the same key."""
+    fired = _load_fired_events()
+    if key in fired:
+        return
+    fired.add(key)
+    # Prune anything older than 7 days so the set doesn't grow forever.
+    today = datetime.now(CENTRAL).date()
+    keep = set()
+    for k in fired:
+        try:
+            d_str = k.split(":", 1)[0]
+            dt = datetime.fromisoformat(d_str).date()
+            if (today - dt).days <= 7:
+                keep.add(k)
+        except Exception:
+            keep.add(k)  # malformed → keep safely
+    try:
+        _settings_os.makedirs(_settings_os.path.dirname(_DISCORD_FIRED_PATH),
+                               exist_ok=True)
+        with open(_DISCORD_FIRED_PATH, "w") as f:
+            json.dump({"fired": sorted(keep)}, f)
+    except Exception:
+        pass
+    try:
+        import log_persist
+        if log_persist.is_configured():
+            log_persist.write_file("logs/discord_fired_events.json",
+                                    json.dumps({"fired": sorted(keep)}),
+                                    message="discord fired-event dedup update")
+    except Exception:
+        pass
+
+
+def _already_fired(key):
+    """Shortcut: True if `key` is in the fired-events set."""
+    return key in _load_fired_events()
 
 
 # In-memory cache for the Discord-posted log so /logged (which calls
@@ -15986,6 +16055,23 @@ def cron_dispatch():
         return Response(json.dumps({"ok": False, "error": "pillow_missing"}),
                         mimetype="application/json")
 
+    # Serialize concurrent dispatcher calls (UptimeRobot every 5 min +
+    # manual curls + any catchup). acquire(blocking=False) means a
+    # concurrent tick skips entirely instead of queuing — that caller
+    # just gets back a no-op response, and the already-running tick
+    # handles everything. This is the primary defense against duplicate
+    # Discord posts; _already_fired is the backup.
+    if not _DISPATCH_LOCK.acquire(blocking=False):
+        return Response(json.dumps({
+            "ok": True, "actions": [], "skipped": "concurrent_tick"
+        }), mimetype="application/json")
+    try:
+        return _cron_dispatch_inner(_db, settings, webhook)
+    finally:
+        _DISPATCH_LOCK.release()
+
+
+def _cron_dispatch_inner(_db, settings, webhook):
     now_ct = datetime.now(CENTRAL)
     today = now_ct.date().isoformat()
     actions = []
@@ -16041,9 +16127,10 @@ def cron_dispatch():
                 # Per-pick late result PNGs disabled — EOD slide below
                 # delivers the whole day's results in one summary.
                 pass
-                # Prior-day EOD if it never fired
+                # Prior-day EOD if it never fired (dedup via fired-events)
                 _p_eod = prior.get("eod") or {}
-                if (not _p_eod.get("sent")) and _ppicks:
+                _prior_eod_key = f"{prior['date']}:eod"
+                if (not _p_eod.get("sent")) and _ppicks and not _already_fired(_prior_eod_key):
                     _picks_by_slate = {}
                     for _ss, _meta in (prior.get("slates") or {}).items():
                         _s = int(_ss)
@@ -16053,6 +16140,7 @@ def cron_dispatch():
                     _dl = _prior_date_dt.strftime("%A, %B %d")
                     if _db.send_eod_summary(webhook, _picks_by_slate,
                                               date_label=_dl):
+                        _mark_fired(_prior_eod_key)
                         _p_eod["sent"] = True
                         prior["eod"] = _p_eod
                         _save_prior_dispatch_schedule(prior)
@@ -16085,17 +16173,25 @@ def cron_dispatch():
         changed = True
     agenda = sched.get("agenda") or {}
     agenda_at = _parse(agenda.get("post_at_iso"))
+    agenda_key = f"{today}:agenda"
     if (not agenda.get("sent")) and agenda_at and now_ct >= agenda_at:
-        date_label = now_ct.strftime("%A, %B %d")
-        eod_iso = (sched.get("eod") or {}).get("post_at_iso")
-        try:
-            if _db.send_agenda(webhook, slates, eod_iso, date_label):
-                agenda["sent"] = True
-                sched["agenda"] = agenda
-                actions.append("agenda")
-                changed = True
-        except Exception:
-            pass
+        if _already_fired(agenda_key):
+            agenda["sent"] = True
+            sched["agenda"] = agenda
+            changed = True
+            actions.append("agenda_dedup_skip")
+        else:
+            date_label = now_ct.strftime("%A, %B %d")
+            eod_iso = (sched.get("eod") or {}).get("post_at_iso")
+            try:
+                if _db.send_agenda(webhook, slates, eod_iso, date_label):
+                    _mark_fired(agenda_key)
+                    agenda["sent"] = True
+                    sched["agenda"] = agenda
+                    actions.append("agenda")
+                    changed = True
+            except Exception:
+                pass
 
     # 1-3. Slate posts. Fire once per slate per day — whether we
     # successfully post or not. If nothing clears Signal >= 4 in the
@@ -16105,25 +16201,48 @@ def cron_dispatch():
     for s in (1, 2, 3):
         meta = slates.get(str(s)) or {}
         post_at = _parse(meta.get("post_at_iso"))
+        slate_key = f"{today}:slate{s}"
         if (not meta.get("sent")) and post_at and now_ct >= post_at:
+            if _already_fired(slate_key):
+                # Posted on an earlier tick but local state lost it
+                # (eg Render spin-down). Mark locally sent and skip.
+                meta["sent"] = True
+                slates[str(s)] = meta
+                changed = True
+                actions.append(f"slate{s}_dedup_skip")
+                continue
             r = _send_slate_png(s)
             meta["sent"] = True
             meta["pick_ids"] = r.get("pick_ids", [])
             slates[str(s)] = meta
             changed = True
             if r.get("sent"):
+                _mark_fired(slate_key)
                 actions.append(f"slate{s}_picks")
             else:
                 reason = r.get("error") or (
                     "no_picks_on_board" if r.get("picks") == 0
                     else "nothing_qualified"
                 )
+                # Mark skipped slates fired too — don't retry something
+                # that returned nothing qualifying.
+                _mark_fired(slate_key)
                 actions.append(f"slate{s}_skipped:{reason}")
 
     # 4. EOD summary — 1 AM next day, fires once per calendar day. We
     # pull the saved pick_ids from each slate and grade via plays_log.
     eod = sched.get("eod") or {}
     eod_at = _parse(eod.get("post_at_iso"))
+    eod_key = f"{today}:eod"
+    if (not eod.get("sent")) and eod_at and now_ct >= eod_at:
+        if _already_fired(eod_key):
+            eod["sent"] = True
+            sched["eod"] = eod
+            changed = True
+            actions.append("eod_dedup_skip")
+            # Skip the heavy body below by returning early-ish — just
+            # pretend we already sent and move on.
+            eod_at = None  # fall through the if-block
     if (not eod.get("sent")) and eod_at and now_ct >= eod_at:
         try:
             import plays_log as _pl
@@ -16143,6 +16262,7 @@ def cron_dispatch():
                 picks_by_slate[int(s_str)] = [by_id[i] for i in ids if i in by_id]
             if _db.send_eod_summary(webhook, picks_by_slate,
                                      date_label=now_ct.strftime("%A, %B %d")):
+                _mark_fired(eod_key)
                 eod["sent"] = True
                 sched["eod"] = eod
                 actions.append("eod_summary")
