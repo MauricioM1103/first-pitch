@@ -16169,6 +16169,102 @@ def _compute_today_dispatch_schedule():
 
 
 
+@app.route("/debug/discord")
+def debug_discord():
+    """Probe the configured Discord webhook with a tiny test post.
+    Returns {ok, http_code, body, webhook_tail}. Use when slates say
+    sent=True but nothing lands in Discord — this will show if the
+    webhook has been rotated/deleted (401/404), rate-limited (429), or
+    is actually healthy (204)."""
+    import json as _json
+    from urllib.request import Request as _Req, urlopen as _uo
+    from urllib.error import HTTPError as _HE
+    settings = _load_settings()
+    url = (settings.get("daily_picks_webhook_url") or "").strip()
+    if not url:
+        return Response(_json.dumps({"ok": False, "error": "no_webhook_configured"}),
+                        mimetype="application/json")
+    tail = url[-24:] if len(url) > 24 else url
+    test_mode = request.args.get("test") not in ("", None, "0", "false")
+    if not test_mode:
+        return Response(_json.dumps({
+            "ok": True,
+            "webhook_configured": True,
+            "webhook_tail": "…" + tail,
+            "note": "Pass ?test=1 to send a one-line probe message to the webhook."
+        }, indent=2), mimetype="application/json")
+    body = _json.dumps({"content": "cheeks-model probe — ignore"}).encode()
+    req = _Req(url, data=body, method="POST", headers={
+        "Content-Type": "application/json",
+        "User-Agent":   "cheeks-model/1.0 (+https://cheeks-model.onrender.com)",
+    })
+    try:
+        with _uo(req, timeout=15) as r:
+            code = r.status
+            resp_body = r.read().decode("utf-8", errors="replace")[:500]
+        out = {"ok": True, "http_code": code, "body": resp_body,
+               "webhook_tail": "…" + tail}
+    except _HE as e:
+        try:
+            resp_body = e.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            resp_body = ""
+        out = {"ok": False, "http_code": e.code, "body": resp_body,
+               "webhook_tail": "…" + tail}
+    except Exception as e:
+        out = {"ok": False, "http_code": 0, "error": type(e).__name__ + ": " + str(e),
+               "webhook_tail": "…" + tail}
+    return Response(_json.dumps(out, indent=2), mimetype="application/json")
+
+
+@app.route("/cron/send-slate")
+def cron_send_slate():
+    """Force-send one slate PNG right now, bypassing the dispatcher's
+    sent-state. Pass ?s=1|2|3. Also resets that slate's local sent flag
+    so future dispatcher ticks don't short-circuit. Returns the raw
+    _send_slate_png result so success/failure is visible."""
+    import json as _json
+    try:
+        s = int(request.args.get("s") or "1")
+    except Exception:
+        s = 1
+    if s not in (1, 2, 3):
+        return Response(_json.dumps({"ok": False, "error": "s must be 1,2,3"}),
+                        mimetype="application/json", status=400)
+    r = _send_slate_png(s)
+    # If the manual send succeeded, mark local state as sent so the
+    # dispatcher doesn't try to post again on its next tick.
+    try:
+        if r.get("sent"):
+            import log_persist
+            try:
+                text, _sha = log_persist.read_file("logs/discord_schedule.json")
+                sched = _json.loads(text) if text else {}
+            except Exception:
+                sched = {}
+            today = datetime.now(CENTRAL).date().isoformat()
+            if sched.get("date") == today:
+                slates = sched.get("slates") or {}
+                meta = slates.get(str(s)) or {}
+                meta["sent"] = True
+                meta["pick_ids"] = r.get("pick_ids") or meta.get("pick_ids") or []
+                slates[str(s)] = meta
+                sched["slates"] = slates
+                try:
+                    log_persist.write_file("logs/discord_schedule.json",
+                                           _json.dumps(sched, indent=2))
+                except Exception:
+                    pass
+                try:
+                    _mark_fired(f"{today}:slate{s}")
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return Response(_json.dumps({"ok": True, "slate": s, "result": r}, indent=2),
+                    mimetype="application/json")
+
+
 @app.route("/cron/dispatch")
 def cron_dispatch():
     """Fire every ~15 min. Decides what's due today and fires each
@@ -16332,11 +16428,15 @@ def _cron_dispatch_inner(_db, settings, webhook):
             except Exception:
                 pass
 
-    # 1-3. Slate posts. Fire once per slate per day — whether we
-    # successfully post or not. If nothing clears Signal >= 4 in the
-    # slate's window, we skip (no PNG) but still mark the slate "sent"
-    # so we don't rebuild the board every 15 min for the rest of the
-    # day retrying something that will never qualify.
+    # 1-3. Slate posts.
+    # Rule: only mark sent=True when the Discord POST actually succeeded
+    # OR there was legitimately nothing to post (empty board / nothing
+    # qualified). An HTTP failure (webhook rotated, 401/404, rate limit,
+    # network hiccup) is tracked via a per-slate attempt counter and
+    # retried on subsequent ticks, up to _MAX_SLATE_ATTEMPTS. Previous
+    # behavior marked sent=True unconditionally, which silently buried
+    # Discord drops when the webhook or network failed.
+    _MAX_SLATE_ATTEMPTS = 6   # ~30 min across 5-min ticks before giving up
     for s in (1, 2, 3):
         meta = slates.get(str(s)) or {}
         post_at = _parse(meta.get("post_at_iso"))
@@ -16351,22 +16451,37 @@ def _cron_dispatch_inner(_db, settings, webhook):
                 actions.append(f"slate{s}_dedup_skip")
                 continue
             r = _send_slate_png(s)
-            meta["sent"] = True
+            # Always update pick_ids so the EOD summary can grade the
+            # intended slate even if the post failed and never retries.
             meta["pick_ids"] = r.get("pick_ids", [])
+            attempts = int(meta.get("attempts") or 0) + 1
+            meta["attempts"] = attempts
+            meta["last_result"] = {
+                "sent":   bool(r.get("sent")),
+                "error":  r.get("error"),
+                "picks":  r.get("picks"),
+            }
             slates[str(s)] = meta
             changed = True
             if r.get("sent"):
+                meta["sent"] = True
                 _mark_fired(slate_key)
                 actions.append(f"slate{s}_picks")
-            else:
-                reason = r.get("error") or (
-                    "no_picks_on_board" if r.get("picks") == 0
-                    else "nothing_qualified"
-                )
-                # Mark skipped slates fired too — don't retry something
-                # that returned nothing qualifying.
+            elif (r.get("picks") or 0) == 0:
+                # Board built but nothing qualified — legitimately
+                # nothing to post. Mark done so we don't retry forever.
+                meta["sent"] = True
                 _mark_fired(slate_key)
-                actions.append(f"slate{s}_skipped:{reason}")
+                actions.append(f"slate{s}_skipped:no_qualifying_picks")
+            elif attempts >= _MAX_SLATE_ATTEMPTS:
+                # Capped: webhook has been failing persistently. Give up
+                # for today so we don't retry forever, but DO NOT mark
+                # fired — the operator should check /debug/discord.
+                meta["sent"] = True
+                actions.append(f"slate{s}_gave_up_after_{attempts}:{r.get('error')}")
+            else:
+                # Transient failure — leave sent=False so next tick retries.
+                actions.append(f"slate{s}_retry_{attempts}:{r.get('error') or 'post_failed'}")
 
     # 4. EOD summary — 1 AM next day, fires once per calendar day. We
     # pull the saved pick_ids from each slate and grade via plays_log.
