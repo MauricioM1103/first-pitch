@@ -15838,6 +15838,12 @@ def _compute_today_dispatch_schedule():
     return {
         "version": 2,
         "date":    _d.isoformat(),
+        "agenda": {
+            # 12:15 AM CT today — one text message with the day's slate
+            # times + EOD time so viewers know what to expect.
+            "post_at_iso": _at(0, 15),
+            "sent":        False,
+        },
         "slates":  slates,
         "eod": {
             "post_at_iso": _at(eod_h, eod_m, next_day=eod_next),
@@ -15991,6 +15997,23 @@ def cron_dispatch():
 
     slates = sched.get("slates") or {}
     changed = False
+
+    # 0. Agenda text message — fires once per day at 12:15 AM CT or
+    # on first dispatch tick after that time. Lists today's slate +
+    # EOD post times.
+    agenda = sched.get("agenda") or {}
+    agenda_at = _parse(agenda.get("post_at_iso"))
+    if (not agenda.get("sent")) and agenda_at and now_ct >= agenda_at:
+        date_label = now_ct.strftime("%A, %B %d")
+        eod_iso = (sched.get("eod") or {}).get("post_at_iso")
+        try:
+            if _db.send_agenda(webhook, slates, eod_iso, date_label):
+                agenda["sent"] = True
+                sched["agenda"] = agenda
+                actions.append("agenda")
+                changed = True
+        except Exception:
+            pass
 
     # 1-3. Slate posts. Fire once per slate per day — whether we
     # successfully post or not. If nothing clears Signal >= 4 in the

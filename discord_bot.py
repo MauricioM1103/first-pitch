@@ -1364,32 +1364,40 @@ def _fmt_time_ct(dt):
     return dt.strftime("%I:%M %p CT").lstrip("0")
 
 
-def send_agenda(webhook_url, schedule, date_label):
-    """Post the day's schedule as a text message. Called by the
-    dispatcher at 12:15 AM CT so viewers know when picks will land."""
+def send_agenda(webhook_url, slates, eod_at_iso, date_label):
+    """Post the day's schedule as a text message at 12:15 AM CT so
+    viewers know when picks will land. v2 slate layout — 3 fixed CT
+    posts + EOD summary."""
     if not webhook_url:
         return 0
-    h1 = schedule.get("half1", {})
-    h2 = schedule.get("half2", {})
+
+    def _fmt_iso(iso):
+        if not iso:
+            return "—"
+        try:
+            dt = datetime.fromisoformat(iso)
+            return dt.strftime("%I:%M %p CT").lstrip("0")
+        except Exception:
+            return "—"
+
     lines = [
         f":calendar_spiral: **Today's schedule — {date_label}**",
         "",
-        f"**Split:** games starting before {schedule['split_hour']}:00 CT "
-        "go in the first half; the rest go in the second half.",
+        ":sun_with_face: **Morning slate** — posting at "
+        f"**{_fmt_iso((slates.get('1') or {}).get('post_at_iso'))}**  "
+        "(top 5, games starting before 12 PM CT)",
+        ":partly_sunny: **Afternoon slate** — posting at "
+        f"**{_fmt_iso((slates.get('2') or {}).get('post_at_iso'))}**  "
+        "(top 5, games 12 PM - 6 PM CT)",
+        ":city_sunset: **Prime Time slate** — posting at "
+        f"**{_fmt_iso((slates.get('3') or {}).get('post_at_iso'))}**  "
+        "(top 5, games 6 PM CT or later)",
+        ":bar_chart: **End-of-day summary** — ~"
+        f"**{_fmt_iso(eod_at_iso)}**  "
+        "(one slide with all picks + their W/L/P + units)",
         "",
-        f":sun_with_face: **First Half picks** — posting at "
-        f"**{_fmt_time_ct(h1.get('post_at'))}** "
-        + ("(no first-half games today)" if h1.get("post_at") is None else "(top 10)"),
-        f":bar_chart: First Half results — ~"
-        f"**{_fmt_time_ct(h1.get('results_at'))}** "
-        "(after the last game ends)",
-        "",
-        f":city_sunset: **Second Half picks** — posting at "
-        f"**{_fmt_time_ct(h2.get('post_at'))}** "
-        + ("(no second-half games today)" if h2.get("post_at") is None else "(top 10)"),
-        f":bar_chart: Second Half results — ~"
-        f"**{_fmt_time_ct(h2.get('results_at'))}** "
-        "(after the last game ends)",
+        "Each slate is locked once posted. Hard DO NOT BET reversals "
+        "(signal collapse or scratch) will post as single-pick alerts.",
         "",
         "Dashboard: https://cheeks-model.onrender.com",
     ]
