@@ -15392,17 +15392,25 @@ def _normalize_date(raw):
 def logged_regrade():
     """Force a re-grade pass for all logged dates (or one date via ?date=).
     Bypasses the normal 'skip if all settled' short-circuit so corrected
-    graders (new markets, bug fixes) and freshly-arrived scores both apply."""
+    graders (new markets, bug fixes) and freshly-arrived scores both apply.
+
+    Pass ?rescore=1 to ALSO drop any prior W/L/P and re-evaluate every
+    pick from scratch — needed when the matching/scoring logic changes
+    (not just when a new score arrives). Default stays conservative so
+    routine refreshes don't flip settled picks."""
     import plays_log, sports as _sports
     from flask import redirect
     date_str = request.args.get("date")
+    rescore  = request.args.get("rescore") in ("1", "true", "yes")
     sport_key_by_slug = {s["slug"]: s.get("odds_api_key") for s in _sports.SPORTS}
     try:
         if date_str:
-            plays_log.grade_date(date_str, sport_key_by_slug, force=True)
+            plays_log.grade_date(date_str, sport_key_by_slug,
+                                  force=True, rescore=rescore)
         else:
             for ds in plays_log.all_logged_dates(limit=14):
-                plays_log.grade_date(ds, sport_key_by_slug, force=True)
+                plays_log.grade_date(ds, sport_key_by_slug,
+                                      force=True, rescore=rescore)
     except Exception:
         pass
     return redirect("/logged", code=302)

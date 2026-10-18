@@ -1005,13 +1005,16 @@ _TEAM_ALIAS = {
 }
 
 
-def _event_date_close_to_pick(ev, pick, hours_tolerance=36):
-    """True iff the event's commence_time is within `hours_tolerance` of the
-    pick's start_time. Guards against matching a pick to the SAME TEAMS'
-    different game — e.g. MLB divisional series where the same two teams
-    play 3+ games in a week, or a pick for next week's game matching this
-    week's result. Returns True if either side has no timestamp (fall
-    through to legacy name-only match)."""
+def _event_date_close_to_pick(ev, pick, hours_tolerance=12):
+    """True iff the event's commence_time is within `hours_tolerance` of
+    the pick's start_time. Guards against matching a pick to the SAME
+    TEAMS' different game — e.g. MLB divisional series where the same
+    two teams play 3+ games in a week (Mon/Tue/Wed), each ~24h apart.
+    With a 36h window those back-to-back-day games used to collide
+    and today's not-yet-played pick showed yesterday's W/L. 12h is
+    tight enough to reject day-apart games while still allowing
+    doubleheaders (both games <= 6h apart). Returns True if either
+    side has no timestamp (fall through to legacy name-only match)."""
     pst = pick.get("start_time")
     est = ev.get("commence_time")
     if not pst or not est:
