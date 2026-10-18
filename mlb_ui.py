@@ -13712,6 +13712,51 @@ def _ai_render_markdown(text):
     return "\n".join(out)
 
 
+def _safe_elo_lookup(elo_dict, name, extra_normalizer=None):
+    """Robust Elo lookup that handles the three big mismatch sources:
+      - exact name (what the dict keys are usually formatted as)
+      - case / whitespace variants
+      - sport-specific normalization (e.g., full-name → abbr for NFL)
+    Returns a float Elo or None if truly unavailable. Fixes the long-
+    standing bug where the AI prompt showed 'Elo: 1500' as a placeholder
+    whenever the team name didn't exactly match the Elo dict's key."""
+    if not elo_dict or not name:
+        return None
+    # 1. exact
+    v = elo_dict.get(name)
+    if v is not None:
+        return float(v)
+    # 2. case-insensitive
+    lower_map = {k.lower(): k for k in elo_dict.keys()}
+    hit = lower_map.get(name.lower())
+    if hit is not None:
+        return float(elo_dict[hit])
+    # 3. substring/last-token match (handles "Chiefs" vs "Kansas City Chiefs")
+    nlow = name.lower()
+    for k, v in elo_dict.items():
+        klow = k.lower()
+        if klow.endswith(nlow) or klow.startswith(nlow) or (nlow.split()[-1] in klow.split()):
+            return float(v)
+    # 4. sport-specific normalizer (NFL abbr, etc.)
+    if extra_normalizer:
+        try:
+            n2 = extra_normalizer(name)
+            if n2 and n2 in elo_dict:
+                return float(elo_dict[n2])
+        except Exception:
+            pass
+    return None
+
+
+def _fmt_elo(elo_val, label="Elo"):
+    """Format an Elo value for the AI prompt. 'Elo: 1543' or
+    'Elo: unavailable' instead of showing a placeholder 1500 that
+    the AI will think is a real rating."""
+    if elo_val is None:
+        return f"{label}: unavailable"
+    return f"{label}: {int(round(elo_val))}"
+
+
 def _ai_analyze_matchup(sport_slug, game_ctx):
     """Call Claude for a sport-aware game analysis. Returns {html, model, generated_at}."""
     import analyst as analyst_mod
@@ -13743,11 +13788,11 @@ def _ai_analyze_matchup(sport_slug, game_ctx):
             model_slug = sport_slug if sport_slug in {"epl","laliga","ligamx"} else "epl"
             elo = soccer_model.get_final_elo(model_slug) or {}
             h_name = game_ctx.get("home_name",""); a_name = game_ctx.get("away_name","")
-            # Smaller sim for the prompt context — the full MC page already
-            # offers 15k; the AI prompt doesn't need that many trials.
             sim = soccer_model.simulate_match(h_name, a_name, model_slug, n=2000)
+            h_elo = _safe_elo_lookup(elo, h_name)
+            a_elo = _safe_elo_lookup(elo, a_name)
             ctx_lines.append(f"Soccer matchup: {a_name} at {h_name} · kickoff {game_ctx.get('start_time','?')}")
-            ctx_lines.append(f"- Elo: home {round(elo.get(h_name,1500),1)}, away {round(elo.get(a_name,1500),1)}")
+            ctx_lines.append(f"- {_fmt_elo(h_elo, 'home Elo')}, {_fmt_elo(a_elo, 'away Elo')}")
             ctx_lines.append(f"- Dixon-Coles MC: home {sim['home_win_pct']:.1f}% / draw {sim['draw_pct']:.1f}% / away {sim['away_win_pct']:.1f}%")
             ctx_lines.append(f"- Projected goals: {sim['avg_home_goals']:.2f} - {sim['avg_away_goals']:.2f} (BTTS {sim['btts_yes_pct']:.1f}%)")
         except Exception as e:
@@ -13759,25 +13804,30 @@ def _ai_analyze_matchup(sport_slug, game_ctx):
             elo = state.get("final_elo", {}) if state else {}
             qb_elo = state.get("final_qb_elo", {}) if state else {}
             h_name = game_ctx.get("home_name",""); a_name = game_ctx.get("away_name","")
-            h = nfl_model.abbr_from_name(h_name) or h_name
-            a = nfl_model.abbr_from_name(a_name) or a_name
+            h_elo = _safe_elo_lookup(elo, h_name, nfl_model.abbr_from_name)
+            a_elo = _safe_elo_lookup(elo, a_name, nfl_model.abbr_from_name)
             ctx_lines.append(f"NFL matchup: {a_name} at {h_name} · kickoff {game_ctx.get('start_time','?')}")
-            ctx_lines.append(f"- Team Elo: home {round(elo.get(h,1500),1)}, away {round(elo.get(a,1500),1)}")
+            ctx_lines.append(f"- {_fmt_elo(h_elo, 'home team Elo')}, {_fmt_elo(a_elo, 'away team Elo')}")
             if qb_elo:
-                ctx_lines.append(f"- QB Elo: home {round(qb_elo.get(h,1500),1)}, away {round(qb_elo.get(a,1500),1)}")
+                h_qb = _safe_elo_lookup(qb_elo, h_name, nfl_model.abbr_from_name)
+                a_qb = _safe_elo_lookup(qb_elo, a_name, nfl_model.abbr_from_name)
+                ctx_lines.append(f"- {_fmt_elo(h_qb, 'home QB Elo')}, {_fmt_elo(a_qb, 'away QB Elo')}")
         except Exception:
             ctx_lines.append(f"NFL matchup: {game_ctx.get('away_name','?')} at {game_ctx.get('home_name','?')}")
     elif sport_slug == "ncaaf":
         try:
             import cfb_model
-            elo = cfb_model.get_or_fit_team_elo()
+            elo = cfb_model.get_or_fit_team_elo() or {}
             h_name = game_ctx.get("home_name",""); a_name = game_ctx.get("away_name","")
             proj_h, proj_a = cfb_model.project_points(h_name, a_name)
             ctx_lines.append(f"NCAAF matchup: {a_name} at {h_name} · kickoff {game_ctx.get('start_time','?')}")
-            ctx_lines.append(f"- Team Elo: home {round(elo.get(h_name,1500),1)}, away {round(elo.get(a_name,1500),1)}")
+            if cfb_model.is_fitted() and elo:
+                h_elo = _safe_elo_lookup(elo, h_name)
+                a_elo = _safe_elo_lookup(elo, a_name)
+                ctx_lines.append(f"- {_fmt_elo(h_elo, 'home Elo')}, {_fmt_elo(a_elo, 'away Elo')}")
+            else:
+                ctx_lines.append("- Team Elo: unavailable (CFBD_API_KEY not set; model falls back to spread/total only)")
             ctx_lines.append(f"- Projected points: {proj_h:.1f} - {proj_a:.1f}")
-            if not cfb_model.is_fitted():
-                ctx_lines.append("- NOTE: CFBD_API_KEY not set; Elo defaults to 1500 for all teams.")
         except Exception:
             ctx_lines.append(f"NCAAF matchup: {game_ctx.get('away_name','?')} at {game_ctx.get('home_name','?')}")
     elif sport_slug == "nhl":

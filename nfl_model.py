@@ -91,8 +91,29 @@ _PREFERRED_ABBR = {
 
 
 def abbr_from_name(name):
-    """Return the preferred team abbreviation for a full name, or None."""
-    return _PREFERRED_ABBR.get(name)
+    """Return the preferred team abbreviation. Accepts the full name
+    ('Kansas City Chiefs'), a nickname ('Chiefs'), the abbr itself
+    ('KC'), case variants, or None if nothing matches."""
+    if not name:
+        return None
+    # exact full-name match
+    v = _PREFERRED_ABBR.get(name)
+    if v:
+        return v
+    # case-insensitive full-name
+    for k, abbr in _PREFERRED_ABBR.items():
+        if k.lower() == name.lower():
+            return abbr
+    # already an abbreviation
+    name_u = name.upper().strip()
+    if name_u in _PREFERRED_ABBR.values():
+        return name_u
+    # nickname-only (last word): 'Chiefs' -> 'KC', 'Bills' -> 'BUF'
+    nick = name.lower().split()[-1] if name.strip() else ""
+    for full, abbr in _PREFERRED_ABBR.items():
+        if full.lower().split()[-1] == nick:
+            return abbr
+    return None
 
 
 def _fetch_games_csv():
