@@ -46,9 +46,36 @@ _BASE = "https://api.elections.kalshi.com/trade-api/v2"
 _UA   = "cheeks-model/1.0 (+https://cheeks-model.onrender.com)"
 _TIMEOUT_S = 10
 
+# Fixed anchor for the Kalshi record. Everything settled before this
+# date is excluded from the /logged tile and settlement table. Change
+# this if you want to re-anchor the record (e.g. after a bankroll reset).
+RECORD_START_DATE = "2026-08-18"
+
 # In-memory cache so we don't re-hit Kalshi on every /logged render.
 _CACHE = {}
 _CACHE_TTL_S = 10 * 60   # 10 min — portfolio settles slowly
+
+
+def _record_start_ts():
+    """Unix timestamp (seconds) for the record anchor."""
+    try:
+        return int(datetime.strptime(RECORD_START_DATE, "%Y-%m-%d").timestamp())
+    except Exception:
+        return 0
+
+
+def _settled_after_anchor(settlement):
+    """True if the settlement row's `settled_time` is on/after the record
+    anchor. Returns True (included) when the field is missing/unparseable
+    so we don't silently drop data."""
+    t = (settlement or {}).get("settled_time") or ""
+    if not t:
+        return True
+    try:
+        # settled_time example: "2026-10-18T06:49:06.986398Z"
+        return t[:10] >= RECORD_START_DATE
+    except Exception:
+        return True
 
 
 # ---------------- credential loading ----------------
@@ -254,17 +281,25 @@ def _settlement_cost_cents(settlement):
             + _dollars_to_cents(settlement.get("fee_cost")))
 
 
-def summarize_recent(days=30):
-    """Compute W-L-P + net $ over the last `days` days of settlements."""
+def summarize_recent(days=None):
+    """Compute W-L-P + net $ since the record anchor (RECORD_START_DATE).
+
+    `days` is accepted for backward compat but ignored — the anchor is
+    the source of truth so entries don't fall off a rolling window.
+    """
     if not is_configured():
         return None
-    cutoff = int((datetime.utcnow() - timedelta(days=days)).timestamp())
-    settlements = get_settlements(limit=500, min_ts=cutoff)
+    cutoff = _record_start_ts()
+    # Pull generously (365 days) so pagination doesn't cap before the
+    # anchor is reached, then filter precisely by settled_time.
+    settlements = get_settlements(limit=1000, min_ts=cutoff) or []
+    settlements = [s for s in settlements if _settled_after_anchor(s)]
     if not settlements:
         return {"wins": 0, "losses": 0, "pushes": 0, "settled": 0,
                 "pending": 0, "net_dollars": 0.0, "revenue_cents": 0,
                 "n_trades": 0, "win_pct": 0.0, "roi_pct": 0.0,
-                "cost_dollars": 0.0}
+                "cost_dollars": 0.0,
+                "record_start": RECORD_START_DATE}
 
     w = l = pu = 0
     net_cents = 0
@@ -296,16 +331,22 @@ def summarize_recent(days=30):
         "win_pct":       hit_pct,
         "roi_pct":       roi_pct,
         "cost_dollars":  round(gross_cost_cents / 100.0, 2),
+        "record_start":  RECORD_START_DATE,
     }
 
 
-def recent_settlements_table(days=14, limit=50):
-    """Rows for the /logged settlements table. Net $ is explicit P&L
-    (revenue - cost - fees). `raw_revenue_dollars` kept for cross-check."""
+def recent_settlements_table(days=None, limit=50):
+    """Rows for the /logged settlements table since RECORD_START_DATE.
+    Net $ is explicit P&L (revenue - cost - fees). `raw_revenue_dollars`
+    kept for cross-check.
+
+    `days` is accepted for backward compat but ignored — the anchor is
+    the source of truth."""
     if not is_configured():
         return []
-    cutoff = int((datetime.utcnow() - timedelta(days=days)).timestamp())
-    settlements = get_settlements(limit=limit, min_ts=cutoff)
+    cutoff = _record_start_ts()
+    settlements = get_settlements(limit=max(limit, 500), min_ts=cutoff) or []
+    settlements = [s for s in settlements if _settled_after_anchor(s)]
     out = []
     for s in settlements:
         pnl = _pnl_for_settlement(s)
@@ -326,6 +367,8 @@ def recent_settlements_table(days=14, limit=50):
             "settled_time":  s.get("settled_time") or "",
         })
     out.sort(key=lambda r: r.get("settled_time") or "", reverse=True)
+    if limit and len(out) > limit:
+        out = out[:limit]
     return out
 
 

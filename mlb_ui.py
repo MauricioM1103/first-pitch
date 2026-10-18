@@ -14847,14 +14847,15 @@ main.logged-page { max-width: 1040px; }
   <section class="records-section" style="border:1px solid #06b6d4;border-radius:12px;padding:14px;background:color-mix(in oklab,#06b6d4 5%,transparent)">
     <h2>Kalshi Account <span style="color:#06b6d4;font-size:13px">real $ from your Kalshi portfolio API</span></h2>
     <div class="sub">
-      Pulled directly from Kalshi's /portfolio/settlements endpoint over
-      the last 90 days. Numbers are actual dollars from your Kalshi
-      balance, not units. Independent from the model's picks — it's
-      every settlement on your account, whatever ticker.
+      Pulled directly from Kalshi&#39;s /portfolio/settlements endpoint
+      since <strong>{{ kalshi_summary.record_start }}</strong>. Numbers are
+      actual dollars from your Kalshi balance, not units. Independent
+      from the model&#39;s picks — it&#39;s every settlement on your account,
+      whatever ticker.
     </div>
     <div class="records-grid">
       <div class="rec-tile {{ 'good' if kalshi_summary.net_dollars > 0 else ('bad' if kalshi_summary.net_dollars < 0 else '') }}" style="border-color:#06b6d4">
-        <div class="lbl">Last 90 days</div>
+        <div class="lbl">Since {{ kalshi_summary.record_start }}</div>
         {% if kalshi_summary.settled %}
         <div class="wl">{{ kalshi_summary.wins }}-{{ kalshi_summary.losses }}{% if kalshi_summary.pushes %}-{{ kalshi_summary.pushes }}{% endif %}<span class="pct">{{ '%.1f' % kalshi_summary.win_pct }}%</span></div>
         <span class="units">${{ '%+.2f' % kalshi_summary.net_dollars }} ({{ '%+.1f' % kalshi_summary.roi_pct }}% ROI)</span>
@@ -14866,11 +14867,12 @@ main.logged-page { max-width: 1040px; }
       </div>
     </div>
     <div style="color:var(--muted-2);font-size:11.5px;margin-top:8px">
-      P&amp;L = (settlement payout) &minus; (cost basis from your filled orders).
-      Computed from Kalshi&#39;s raw <code>yes_count</code> / <code>no_count</code> /
-      <code>market_result</code> plus the <code>price</code> on each fill
-      (not their <code>revenue</code> field, which is ambiguously documented).
-      Cross-check column in the table below shows Kalshi&#39;s raw revenue for comparison.
+      P&amp;L = <code>revenue</code> &minus; <code>yes_total_cost_dollars</code>
+      &minus; <code>no_total_cost_dollars</code> &minus; <code>fee_cost</code>,
+      each read directly off Kalshi&#39;s settlement row. The raw <code>revenue</code>
+      field alone is gross payout at settlement, not net P&amp;L — the
+      cross-check column in the table below shows that raw gross for
+      comparison.
     </div>
     {% if kalshi_recent %}
     <details style="margin-top:12px">
@@ -16582,8 +16584,10 @@ def logged_plays():
     try:
         import kalshi_portfolio as _kp
         if _kp.is_configured():
-            kalshi_summary = _kp.summarize_recent(days=90)
-            kalshi_recent  = _kp.recent_settlements_table(days=14, limit=20)
+            # days args ignored; the module uses RECORD_START_DATE
+            # (currently 2026-08-18) as the fixed anchor.
+            kalshi_summary = _kp.summarize_recent()
+            kalshi_recent  = _kp.recent_settlements_table(limit=20)
         else:
             kalshi_summary = None
             kalshi_recent  = []
