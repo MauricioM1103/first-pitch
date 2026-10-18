@@ -277,11 +277,20 @@ def _render_pick_card(canvas, draw, pick, y):
     x1 = _W - pad
 
     is_dnb = bool(pick.get("do_not_bet"))
-    border = _DNB if is_dnb else _RULE
+    is_whale = bool(pick.get("whale"))
+    if is_dnb:
+        border = _DNB
+        border_width = 2
+    elif is_whale:
+        border = (56, 189, 248)  # cyan — WHALE pick stands out
+        border_width = 3
+    else:
+        border = _RULE
+        border_width = 1
     try:
         draw.rounded_rectangle([x0, y, x1, y + card_h], radius=14,
                                fill=_CARD, outline=border,
-                               width=2 if is_dnb else 1)
+                               width=border_width)
     except Exception:
         draw.rectangle([x0, y, x1, y + card_h], fill=_CARD, outline=border)
 
@@ -290,9 +299,14 @@ def _render_pick_card(canvas, draw, pick, y):
     f_chip  = _font(18, bold=True)
     f_mono  = _font(20)
 
-    # Row 1: LOCK + star + pick text + status chip (y+14)
+    # Row 1: WHALE + LOCK + star + pick text + status chip (y+14)
     y_row = y + 14
     tx = x0 + 20
+    is_whale = bool(pick.get("whale"))
+    if is_whale:
+        # Whale emoji + badge — bankroll-maximum tier, stands out most.
+        draw.text((tx, y_row - 2), "WHALE", font=f_chip, fill=(56, 189, 248))
+        tx += 82
     if pick.get("signal_score") == 5:
         draw.text((tx, y_row + 4), "LOCK", font=f_chip, fill=_LOCK)
         tx += 72

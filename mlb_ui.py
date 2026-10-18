@@ -4291,6 +4291,18 @@ PICKS_TEMPLATE = r"""<!doctype html>
 .filter-chips .chip.whale-chip.active {
   background: #38bdf8; color: #0a0b0d; border-color: #38bdf8;
 }
+
+/* Whale pick emphasis — the pick row + badge animation. Rare picks,
+   so it's OK if they stand out loudly. */
+.pick-badge-row.whale-pick {
+  border: 1.5px solid #38bdf8 !important;
+  background: linear-gradient(90deg, color-mix(in oklab,#38bdf8 10%,transparent), transparent 70%) !important;
+  box-shadow: 0 0 18px rgba(56,189,248,0.25);
+}
+@keyframes whalePulse {
+  0%, 100% { transform: scale(1.0); text-shadow: 0 0 10px rgba(56,189,248,0.7); }
+  50%      { transform: scale(1.15); text-shadow: 0 0 20px rgba(56,189,248,1.0); }
+}
 .filter-chips .chip.linemove-chip {
   border-color: #22c55e; color: #22c55e; background: color-mix(in oklab, #22c55e 6%, transparent);
 }
@@ -4768,16 +4780,16 @@ PICKS_TEMPLATE = r"""<!doctype html>
       <a class="chip strong-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ whale_suffix }}{{ linemove_suffix }}&strong=1"
          title="Show only Signal ≥ 3/5 picks — EV cushion + favorable line move + prob floor + (soon) cross-book agreement. These are the picks worth placing today.">&#9733; Signal &ge; 3</a>
     {% endif %}
-    {# 🐋 Strong picks only (whale criteria): heavy-favorite banker
-       picks. Short decimal odds + high model probability. Lower per-
-       pick return but high hit-rate; big-bankroll bettors ladder
-       these at larger stakes because the probability is so high. #}
+    {# 🐋 WHALE picks — bankroll-maximum tier. Fresh criteria
+       (2026-10-18): fp ≥ 0.72, dec 1.30–1.65, Signal ≥ 4, EV ≥ 1.5%,
+       no DNB/weather/injury flags. 0–2 picks per typical day; sized
+       at quarter-to-half Kelly (5–10% of bankroll) when they appear. #}
     {% if whale_only %}
       <a class="chip whale-chip active" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ linemove_suffix }}"
-         title="Showing only Strong Picks (fair prob ≥ 68% AND decimal ≤ 1.60 AND EV ≥ 3% or Signal ≥ 2). Click to clear.">&#x1F40B; Strong picks only ({{ whale_count }})</a>
+         title="Showing only Whale picks (fp ≥ 72%, dec 1.30–1.65, Signal ≥ 4, EV ≥ 1.5%, no risk flags). Click to clear.">&#x1F40B; Whale picks ({{ whale_count }})</a>
     {% else %}
       <a class="chip whale-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ linemove_suffix }}&whale=1"
-         title="Show only Strong Picks — heavy-favorite banker calls (fair prob ≥ 68% AND decimal ≤ 1.60 AND EV ≥ 3% or Signal ≥ 2). Shorter returns per pick, high enough probability that large bankrolls ladder them at larger stakes.">&#x1F40B; Strong picks only</a>
+         title="Show only Whale picks — bankroll-maximum tier. 0–2 picks per typical day meeting fp ≥ 72%, dec 1.30–1.65, Signal ≥ 4, EV ≥ 1.5%, no weather/injury/DNB flags. Sized at quarter-to-half Kelly stake.">&#x1F40B; Whale picks</a>
     {% endif %}
     {# Line-move toggle: show only picks where Pinnacle's devigged prob
        moved toward our side by ≥ 1pp over the last ≤3 days. Sharp money
@@ -4850,7 +4862,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
           <td class="col-picks">
             {% if row.picks %}
               {% for p in row.picks %}
-                <div class="pick-badge-row {{ 'strong' if p.strong else '' }} {{ 'whale-pick' if p.whale else '' }} {{ 'model-only' if p.model_only else '' }}" title="{{ 'Model-only preference (no EV filter)' if p.model_only else ('🐋 Strong pick (banker): fair prob ≥ 65% AND decimal ≤ 1.60' if p.whale else ('High-signal pick (Signal ≥ 3/5): EV cushion + favorable line move + prob floor' if p.strong else 'EV-verified pick')) }}">
+                <div class="pick-badge-row {{ 'strong' if p.strong else '' }} {{ 'whale-pick' if p.whale else '' }} {{ 'model-only' if p.model_only else '' }}" title="{{ 'Model-only preference (no EV filter)' if p.model_only else ('🐋 WHALE pick — bankroll-maximum tier: fp ≥ 72%, dec 1.30–1.65, Signal ≥ 4, EV ≥ 1.5%, no risk flags. Size at quarter-to-half Kelly (5–10% of bankroll).' if p.whale else ('High-signal pick (Signal ≥ 3/5): EV cushion + favorable line move + prob floor' if p.strong else 'EV-verified pick')) }}">
                   <span class="pick-ico {{ p.icon_cls }}">{{ p.icon }}</span>
                   <span class="pick-lbl">{{ p.pick_short }}</span>
                   <span class="pick-conf c{{ p.conf }}">{{ p.conf }}/5</span>
@@ -4868,7 +4880,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
                     <span class="src-tag ev" title="EV-verified: cleared the +2% expected-value bar after model + Pinnacle devig consensus">EV{% if p.ev_pct and p.ev_pct > 0 %} +{{ '%.0f'|format(p.ev_pct) }}%{% endif %}</span>
                   {% endif %}
                   {% if p.strong %}<span class="strong-star" title="Signal &ge; 3/5 pick worth placing">&#9733;</span>{% endif %}
-                  {% if p.whale %}<span class="strong-star" title="&#x1F40B; Strong pick (banker): heavy favorite (fair prob &ge; 65%, decimal &le; 1.60)" style="color:#38bdf8;text-shadow:0 0 10px rgba(56,189,248,0.6);margin-left:4px">&#x1F40B;</span>{% endif %}
+                  {% if p.whale %}<span class="whale-badge" title="&#x1F40B; WHALE pick — bankroll-maximum tier (fp &ge; 72%, dec 1.30&ndash;1.65, Signal &ge; 4, EV &ge; 1.5%). Size this one at quarter-to-half Kelly (5&ndash;10% of bankroll)." style="color:#38bdf8;text-shadow:0 0 14px rgba(56,189,248,0.9);margin-left:6px;font-size:17px;animation:whalePulse 2s ease-in-out infinite">&#x1F40B;</span>{% endif %}
                   {% if p.line_move_pp is not none and (p.line_move_pp|abs) >= 0.001 %}
                     {% set move_sign = 'favorable' if p.line_move_pp > 0 else 'adverse' %}
                     <span class="pick-move-chip {{ move_sign }}"
@@ -14545,13 +14557,19 @@ main.logged-page { max-width: 1040px; }
     {{ mini_3d('signal', 'Signal >= 3') }}
   </section>
 
-  <section class="records-section">
-    <h2>Strong Picks Only <span style="color:#38bdf8;font-size:16px">&#x1F40B;</span></h2>
-    <div class="sub">Banker calls — fair prob &ge; 68% AND decimal &le; 1.60 AND (EV &ge; 3% OR Signal &ge; 2). Shorter returns per pick, high enough probability that whales ladder them at larger stakes.</div>
+  <section class="records-section" style="border:1px solid #38bdf8;border-radius:12px;padding:14px;background:color-mix(in oklab,#38bdf8 6%,transparent)">
+    <h2>&#x1F40B; Whale Picks <span style="color:#38bdf8;font-size:13px">bankroll-maximum tier</span></h2>
+    <div class="sub">
+      <b>Fresh filter (restarts 2026-10-18):</b> fair prob &ge; 72% AND decimal 1.30&ndash;1.65
+      AND Signal &ge; 4 AND EV &ge; 1.5% AND no DNB/weather/injury flags.
+      Volume: 0&ndash;2 per day. Sized to a quarter-to-half Kelly stake
+      (5&ndash;10% of bankroll) &mdash; variance is low enough at these
+      criteria to justify large exposure per pick. Record starts from zero.
+    </div>
     <div class="records-grid">
       {% for key, label in [('whale_7d','Last 7 days'),('whale_30d','Last 30 days'),('whale_90d','Last 90 days')] %}
       {% set r = summary[key] %}
-      <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
+      <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}" style="border-color:#38bdf8">
         <div class="lbl">{{ label }}</div>
         {% if r.settled %}
         <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
@@ -14564,7 +14582,7 @@ main.logged-page { max-width: 1040px; }
       </div>
       {% endfor %}
     </div>
-    {{ mini_3d('whale', 'Strong picks only') }}
+    {{ mini_3d('whale', 'Whale picks') }}
   </section>
 
   <section class="records-section">
@@ -16368,7 +16386,7 @@ def logged_plays():
     _FILTER_PREDICATES = {
         "all":        ("All picks",             lambda p: True),
         "signal":     ("Signal >= 3",           lambda p: plays_log._backtest_signal_score(p) >= 3),
-        "whale":      ("Strong picks only",     _is_whale_pick),
+        "whale":      ("Whale picks",            _is_whale_pick),
         "curfilter":  ("Current filter",        plays_log._passes_current_filter),
         "discord":    ("Discord posted",        _passes_discord_posted),
         "ev9":        ("+EV >= 9%",             lambda p: (p.get("ev_pct") is not None

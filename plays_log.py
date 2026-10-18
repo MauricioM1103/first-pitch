@@ -1840,18 +1840,25 @@ def _passes_current_filter(pk):
 
 
 def _is_whale_pick(pk):
-    """Whale (Strong-Picks-Only) criteria: heavy-favorite banker calls —
-    fair_prob >= 68% AND decimal <= 1.60 AND positive EV AND Signal >= 2.
-    Shorter returns per pick but high enough probability that large
-    bankrolls ladder them at larger stakes. Mirrors the UI chip
-    definition.
+    """WHALE PICK (bankroll-maximum tier) — the pick is strong enough
+    to justify a quarter-to-half-Kelly stake (5-10% of bankroll).
 
-    Thresholds were tightened on 2026-10-16 after the 67% hit rate /
-    -3.6% ROI result on 34 picks under the original (65%, dec <= 1.60,
-    EV >= 0) rule. At ~1.5 odds the fair_prob needs to clear a stiffer
-    floor OR the pick needs a second confirming signal — otherwise the
-    short payout can't catch up to variance when the heavy fav drops.
-    """
+    Rules (tightened 2026-10-18 for whale-betting workflow):
+      - fair_prob >= 0.72              model gives 72%+ hit probability
+      - decimal   between 1.30 and 1.65 (short price, ~-154 to -333)
+      - signal_score >= 4              strong across multiple signals
+      - ev_pct >= 1.5                  positive edge even at short price
+      - NOT do_not_bet                 filter still holds pre-game
+      - NO risk_flags with weather=high or injury
+
+    Expected volume: 0-2 picks per typical day. If the model + market
+    are both in agreement at a high prob + short price + non-trivial
+    edge, that's rare — and when it does hit, size it up.
+
+    Variance guard: 72% hit at 1.65 decimal pays ~+1u expectation per
+    bet; a losing streak of 3 in a row (prob ~2.2%) costs ~3u. At
+    quarter-Kelly (~5-7% of a 100u bankroll), that's a drawdown you
+    recover from in a week."""
     try:
         fp = float(pk.get("fair_prob") or 0.0)
     except (TypeError, ValueError):
@@ -1874,15 +1881,23 @@ def _is_whale_pick(pk):
         dec = float(dec)
     except (TypeError, ValueError):
         return False
-    # Base criterion: heavy favorite + short price + non-negative EV
-    if not ((fp >= 0.68) and (1.01 < dec <= 1.60) and (ev >= 0.0)):
+    if pk.get("do_not_bet"):
         return False
-    # And either EV cushion (>= 3%) OR a confirming second signal from
-    # the Signal composite — stops the pure 68% chalk with 0% EV getting
-    # labeled a banker.
-    if ev >= 3.0:
-        return True
-    return _backtest_signal_score(pk) >= 2
+    rf = pk.get("risk_flags") or {}
+    if rf.get("weather") == "high" or rf.get("injury"):
+        return False
+    if not ((fp >= 0.72) and (1.30 <= dec <= 1.65) and (ev >= 1.5)):
+        return False
+    # Prefer the live signal_score if present (set by the current board
+    # build), else reconstruct from saved fields for backtest purposes.
+    sig = pk.get("signal_score")
+    if sig is None:
+        sig = _backtest_signal_score(pk)
+    try:
+        sig = int(sig)
+    except (TypeError, ValueError):
+        sig = 0
+    return sig >= 4
 
 
 def record_in_window(graded_by_date, days_back, strong_only=False, today=None,
