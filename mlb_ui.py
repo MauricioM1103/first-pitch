@@ -16000,7 +16000,16 @@ def cron_dispatch():
 
     # 0. Agenda text message — fires once per day at 12:15 AM CT or
     # on first dispatch tick after that time. Lists today's slate +
-    # EOD post times.
+    # EOD post times. Pre-v2.1 state has no agenda field — auto-add
+    # it so the first tick after upgrade still posts today's agenda.
+    if "agenda" not in sched:
+        from datetime import time as _time
+        d = now_ct.date()
+        sched["agenda"] = {
+            "post_at_iso": datetime.combine(d, _time(0, 15), CENTRAL).isoformat(),
+            "sent":        False,
+        }
+        changed = True
     agenda = sched.get("agenda") or {}
     agenda_at = _parse(agenda.get("post_at_iso"))
     if (not agenda.get("sent")) and agenda_at and now_ct >= agenda_at:
