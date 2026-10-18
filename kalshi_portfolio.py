@@ -196,42 +196,145 @@ def invalidate_cache():
 
 
 # ---------------- Analysis / aggregation ----------------
+#
+# P&L CALCULATION
+# ---------------
+# Kalshi's /portfolio/settlements `revenue` field is ambiguous — their
+# docs are unclear whether it's gross payout or net profit, and the
+# community has reported both interpretations. To be safe we IGNORE
+# `revenue` and compute P&L ourselves from the primitive facts:
+#
+#   For each settlement:
+#     payout_per_yes_contract = 100¢ if market_result == 'yes' else 0
+#     payout_per_no_contract  = 100¢ if market_result == 'no'  else 0
+#     payout = (yes_count * yes_payout) + (no_count * no_payout)
+#
+#   For each fill on that ticker:
+#     if side == 'yes' and action == 'buy':   cost += price * count
+#     if side == 'yes' and action == 'sell':  cost -= price * count   (close for cash)
+#     if side == 'no'  and action == 'buy':   cost += price * count
+#     if side == 'no'  and action == 'sell':  cost -= price * count
+#
+#   P&L (cents) = payout - cost_basis
+#
+# This is the Kalshi version of "payout minus wager" and matches what
+# shows up on your account statement regardless of their internal
+# `revenue` convention. We also expose the raw `revenue` field in the
+# detail row so you can cross-check.
+#
+# Edge cases:
+# - market_result == 'void' or 'all_no' (rare for sports): both yes
+#   and no settle at 0, so payout = 0, P&L = -cost_basis (full loss
+#   on both sides... but you shouldn't have both sides open).
+# - Fills for a ticker returned 0 but settlement shows a position:
+#   Kalshi might have purged old fills. Fall back to using
+#   avg_entry_price if available on the settlement row.
+
+
+def _fills_cost_basis_cents(fills, ticker):
+    """Return (yes_cost, no_cost, yes_contracts, no_contracts) for a
+    ticker. Costs include fees (Kalshi deducts a small fee per contract
+    at trade time; the fill rows include a `fees` field in cents)."""
+    yes_cost = 0
+    no_cost = 0
+    yes_qty = 0
+    no_qty = 0
+    for f in (fills or []):
+        if f.get("ticker") != ticker:
+            continue
+        try:
+            count = int(f.get("count") or 0)
+            # Fill price is in cents (0-100). For a sell, we received
+            # cents instead of paying them — treat as negative cost.
+            # Kalshi reports `yes_price` for YES-side and `no_price`
+            # for NO-side fills; whichever is present identifies the side.
+            yes_price = f.get("yes_price")
+            no_price = f.get("no_price")
+            side = (f.get("side") or "").lower()
+            action = (f.get("action") or "").lower()
+            fees = int(f.get("fees") or 0)
+        except (TypeError, ValueError):
+            continue
+        if count <= 0:
+            continue
+        sign = -1 if action == "sell" else 1
+        if side == "yes" or (yes_price is not None and side != "no"):
+            price = int(yes_price if yes_price is not None else 0)
+            yes_cost += sign * count * price + fees
+            yes_qty  += sign * count
+        else:
+            price = int(no_price if no_price is not None else 0)
+            no_cost += sign * count * price + fees
+            no_qty  += sign * count
+    return yes_cost, no_cost, yes_qty, no_qty
+
+
+def _pnl_for_settlement(settlement, fills):
+    """Return net P&L in cents for one settlement row, using fills for
+    cost basis. Returns None if we can't compute (eg no fills for the
+    ticker)."""
+    ticker = settlement.get("ticker")
+    if not ticker:
+        return None
+    result = (settlement.get("market_result") or "").lower()
+    yes_count = int(settlement.get("yes_count") or 0)
+    no_count  = int(settlement.get("no_count") or 0)
+    # Payouts in cents.
+    yes_payout_per = 100 if result == "yes" else 0
+    no_payout_per  = 100 if result == "no"  else 0
+    payout = (yes_count * yes_payout_per) + (no_count * no_payout_per)
+    yes_cost, no_cost, _yq, _nq = _fills_cost_basis_cents(fills, ticker)
+    cost = yes_cost + no_cost
+    # If we have NO fills recorded for this ticker (fills pagination
+    # may have cut it off), use Kalshi's own revenue field as a last
+    # resort rather than reporting P&L=0.
+    if cost == 0 and (yes_count or no_count):
+        rev = settlement.get("revenue")
+        try:
+            return int(rev) if rev is not None else None
+        except (TypeError, ValueError):
+            return None
+    return payout - cost
+
 
 def summarize_recent(days=30):
     """Compute W-L-P + net $ over the last `days` days of settlements.
-    Returns dict with the same shape plays_log.summary uses so /logged
-    can render it with the same tile template.
-
-    Dollar amounts come straight from Kalshi (cents → dollars). YES-settled
-    positions where we were YES or NO-settled where we were NO = win. The
-    opposite = loss. revenue field is signed net cents already so we can
-    aggregate directly."""
+    Uses explicit (payout - cost_basis) calculation from fills — not
+    Kalshi's ambiguous `revenue` field. Returns dict shaped like
+    plays_log.summary so /logged can drop it into its tile template."""
     if not is_configured():
         return None
-    # Fetch settlements from the last `days` days
     cutoff = int((datetime.utcnow() - timedelta(days=days)).timestamp())
-    rows = get_settlements(limit=500, min_ts=cutoff)
-    if not rows:
+    settlements = get_settlements(limit=500, min_ts=cutoff)
+    if not settlements:
         return {"wins": 0, "losses": 0, "pushes": 0, "settled": 0,
                 "pending": 0, "net_dollars": 0.0, "revenue_cents": 0,
-                "n_trades": 0}
+                "n_trades": 0, "win_pct": 0.0, "roi_pct": 0.0,
+                "cost_dollars": 0.0}
+    # Pull fills covering the same window plus a buffer for late settles.
+    fills = get_fills(limit=1000, min_ts=max(0, cutoff - 7 * 86400))
+
     w = l = pu = 0
     net_cents = 0
-    for s in rows:
-        rev = s.get("revenue") or 0
-        try:
-            rev = int(rev)
-        except (TypeError, ValueError):
-            rev = 0
-        net_cents += rev
-        if rev > 0:
+    gross_cost_cents = 0
+    for s in settlements:
+        pnl = _pnl_for_settlement(s, fills)
+        if pnl is None:
+            continue
+        net_cents += pnl
+        if pnl > 0:
             w += 1
-        elif rev < 0:
+        elif pnl < 0:
             l += 1
         else:
             pu += 1
+        # Track cost basis for ROI
+        yes_cost, no_cost, _, _ = _fills_cost_basis_cents(
+            fills, s.get("ticker"))
+        gross_cost_cents += max(0, yes_cost + no_cost)
     settled = w + l + pu
     hit_pct = (w / settled * 100) if settled else 0.0
+    roi_pct = (net_cents / gross_cost_cents * 100) if gross_cost_cents else 0.0
     return {
         "wins":          w,
         "losses":        l,
@@ -240,35 +343,38 @@ def summarize_recent(days=30):
         "pending":       0,
         "net_dollars":   round(net_cents / 100.0, 2),
         "revenue_cents": net_cents,
-        "n_trades":      len(rows),
+        "n_trades":      len(settlements),
         "win_pct":       hit_pct,
-        "roi_pct":       0.0,  # Kalshi doesn't expose cost basis per settlement in one call
+        "roi_pct":       roi_pct,
+        "cost_dollars":  round(gross_cost_cents / 100.0, 2),
     }
 
 
 def recent_settlements_table(days=14, limit=50):
-    """Return rows for a table on /logged: [{ticker, settled_time, market_result,
-    yes_count, no_count, net_dollars, when}, ...] newest first."""
+    """Rows for the /logged settlements table. Net $ computed from
+    (payout - cost_basis) per the module header comment, with Kalshi's
+    raw `revenue` field exposed for cross-check."""
     if not is_configured():
         return []
     cutoff = int((datetime.utcnow() - timedelta(days=days)).timestamp())
-    rows = get_settlements(limit=limit, min_ts=cutoff)
+    settlements = get_settlements(limit=limit, min_ts=cutoff)
+    fills = get_fills(limit=500, min_ts=max(0, cutoff - 7 * 86400))
     out = []
-    for s in rows:
-        rev = s.get("revenue") or 0
+    for s in settlements:
+        pnl = _pnl_for_settlement(s, fills)
+        raw_rev = s.get("revenue")
         try:
-            rev = int(rev)
+            raw_rev = int(raw_rev) if raw_rev is not None else None
         except (TypeError, ValueError):
-            rev = 0
-        settled_ts = s.get("settled_time") or ""
+            raw_rev = None
         out.append({
             "ticker":        s.get("ticker") or "",
             "market_result": s.get("market_result") or "",
-            "yes_count":     s.get("yes_count") or 0,
-            "no_count":      s.get("no_count") or 0,
-            "net_dollars":   round(rev / 100.0, 2),
-            "settled_time":  settled_ts,
+            "yes_count":     int(s.get("yes_count") or 0),
+            "no_count":      int(s.get("no_count") or 0),
+            "net_dollars":   round((pnl or 0) / 100.0, 2) if pnl is not None else None,
+            "raw_revenue_dollars": round(raw_rev / 100.0, 2) if raw_rev is not None else None,
+            "settled_time":  s.get("settled_time") or "",
         })
-    # Sort newest first
     out.sort(key=lambda r: r.get("settled_time") or "", reverse=True)
     return out

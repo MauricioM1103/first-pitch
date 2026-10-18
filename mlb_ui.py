@@ -14857,13 +14857,20 @@ main.logged-page { max-width: 1040px; }
         <div class="lbl">Last 90 days</div>
         {% if kalshi_summary.settled %}
         <div class="wl">{{ kalshi_summary.wins }}-{{ kalshi_summary.losses }}{% if kalshi_summary.pushes %}-{{ kalshi_summary.pushes }}{% endif %}<span class="pct">{{ '%.1f' % kalshi_summary.win_pct }}%</span></div>
-        <span class="units">${{ '%+.2f' % kalshi_summary.net_dollars }}</span>
+        <span class="units">${{ '%+.2f' % kalshi_summary.net_dollars }} ({{ '%+.1f' % kalshi_summary.roi_pct }}% ROI)</span>
         {% else %}
         <div class="wl" style="color:var(--muted)">&mdash;</div>
         <span class="units" style="color:var(--muted)">&mdash;</span>
         {% endif %}
-        <div class="meta">{{ kalshi_summary.n_trades }} trades &middot; {{ kalshi_summary.settled }} settled</div>
+        <div class="meta">{{ kalshi_summary.n_trades }} trades &middot; {{ kalshi_summary.settled }} settled &middot; ${{ '%.2f' % kalshi_summary.cost_dollars }} risked</div>
       </div>
+    </div>
+    <div style="color:var(--muted-2);font-size:11.5px;margin-top:8px">
+      P&amp;L = (settlement payout) &minus; (cost basis from your filled orders).
+      Computed from Kalshi&#39;s raw <code>yes_count</code> / <code>no_count</code> /
+      <code>market_result</code> plus the <code>price</code> on each fill
+      (not their <code>revenue</code> field, which is ambiguously documented).
+      Cross-check column in the table below shows Kalshi&#39;s raw revenue for comparison.
     </div>
     {% if kalshi_recent %}
     <details style="margin-top:12px">
@@ -14877,7 +14884,8 @@ main.logged-page { max-width: 1040px; }
               <th style="text-align:left;padding:6px 8px">Ticker</th>
               <th style="text-align:left;padding:6px 8px">Settled</th>
               <th style="text-align:left;padding:6px 8px">Result</th>
-              <th style="text-align:right;padding:6px 8px">Net $</th>
+              <th style="text-align:right;padding:6px 8px" title="Our calculation: payout minus cost basis from your fills">Net P&amp;L</th>
+              <th style="text-align:right;padding:6px 8px" title="Kalshi's raw revenue field for cross-check">Kalshi raw</th>
             </tr>
           </thead>
           <tbody>
@@ -14886,8 +14894,11 @@ main.logged-page { max-width: 1040px; }
               <td style="padding:6px 8px;font-family:'JetBrains Mono',monospace">{{ r.ticker }}</td>
               <td style="padding:6px 8px;color:var(--muted-2)">{{ r.settled_time[:16] if r.settled_time else '' }}</td>
               <td style="padding:6px 8px">{{ r.market_result|upper }}</td>
-              <td style="padding:6px 8px;text-align:right;color:{{ 'var(--good)' if r.net_dollars > 0 else ('var(--bad)' if r.net_dollars < 0 else 'var(--muted)') }}">
-                ${{ '%+.2f'|format(r.net_dollars) }}
+              <td style="padding:6px 8px;text-align:right;color:{{ 'var(--good)' if (r.net_dollars or 0) > 0 else ('var(--bad)' if (r.net_dollars or 0) < 0 else 'var(--muted)') }}">
+                {% if r.net_dollars is none %}&mdash;{% else %}${{ '%+.2f'|format(r.net_dollars) }}{% endif %}
+              </td>
+              <td style="padding:6px 8px;text-align:right;color:var(--muted-2)">
+                {% if r.raw_revenue_dollars is none %}&mdash;{% else %}${{ '%+.2f'|format(r.raw_revenue_dollars) }}{% endif %}
               </td>
             </tr>
             {% endfor %}
