@@ -1177,11 +1177,26 @@ def grade_pick(pick, event):
     """Return 'W' | 'L' | 'P' | 'pending' for the pick given the result event."""
     if not event:
         return "pending"
+    # Belt-and-suspenders: find_result_event already filters to
+    # completed events, but any future caller that bypasses it would
+    # otherwise grade full-game markets off a live scoreline. If the
+    # event itself isn't marked completed, bail out — unless it's a
+    # sub-period market (1H / F5 / NRFI / YRFI / 1P) which legitimately
+    # settles before the final whistle.
+    market = pick.get("market", "") or ""
+    _market_lc = market.lower()
+    _is_subperiod = (
+        "1h" in _market_lc or "first half" in _market_lc
+        or "f5" in _market_lc or "first 5" in _market_lc
+        or "nrfi" in _market_lc or "yrfi" in _market_lc
+        or "1p" in _market_lc or "p1" in _market_lc
+    )
+    if not event.get("completed") and not _is_subperiod:
+        return "pending"
     home, away = _extract_scores(event)
     if home is None or away is None:
         return "pending"
 
-    market = pick.get("market", "") or ""
     text = pick.get("pick", "") or ""
     home_name = _norm(pick.get("home_team"))
     away_name = _norm(pick.get("away_team"))

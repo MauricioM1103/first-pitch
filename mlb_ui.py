@@ -15397,7 +15397,11 @@ def logged_regrade():
     Pass ?rescore=1 to ALSO drop any prior W/L/P and re-evaluate every
     pick from scratch — needed when the matching/scoring logic changes
     (not just when a new score arrives). Default stays conservative so
-    routine refreshes don't flip settled picks."""
+    routine refreshes don't flip settled picks.
+
+    All-dates mode walks 7 days back (not 14) so the pass fits inside
+    the gunicorn worker budget on free tier. For deeper history,
+    rescore date-by-date via ?date=YYYY-MM-DD."""
     import plays_log, sports as _sports
     from flask import redirect
     date_str = request.args.get("date")
@@ -15408,9 +15412,15 @@ def logged_regrade():
             plays_log.grade_date(date_str, sport_key_by_slug,
                                   force=True, rescore=rescore)
         else:
-            for ds in plays_log.all_logged_dates(limit=14):
+            for ds in plays_log.all_logged_dates(limit=7):
                 plays_log.grade_date(ds, sport_key_by_slug,
                                       force=True, rescore=rescore)
+        # Bust the 60s grade_all cache so the very next /logged render
+        # reflects the fresh grades instead of a stale snapshot.
+        try:
+            plays_log.invalidate_grade_all_cache()
+        except Exception:
+            pass
     except Exception:
         pass
     return redirect("/logged", code=302)
