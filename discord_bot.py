@@ -364,26 +364,19 @@ def _render_pick_card(canvas, draw, pick, y):
                    f"{arrow} {lm * 100:+.1f}pp", f_small,
                    fill=(_GOOD if lm > 0 else _BAD))
 
-    # Row 4: kickoff time LEFT, suggested stake MIDDLE, odds RIGHT
+    # Row 4: kickoff time LEFT, odds RIGHT (stake suggestion removed
+    # per user request — unit sizing stays as a /settings concept
+    # rather than on every card).
     y_bottom = y + 138
     time_text = _format_pick_time(pick)
     _draw_text(draw, (x0 + 20, y_bottom), time_text, f_mono, fill=_MUTED)
     dec   = pick.get("decimal")
     book  = pick.get("book") or ""
-    units = pick.get("suggested_units")
     if dec:
         try:
             price_txt = f"@ {float(dec):.2f}  {book}"
             _draw_text(draw, (x1 - 20, y_bottom), price_txt,
                        f_mono, fill=_INK, anchor="rt")
-        except (TypeError, ValueError):
-            pass
-    if units:
-        try:
-            stake_txt = f"Stake {float(units):g}u"
-            # Right-ish of center so it doesn't collide with time/odds
-            _draw_text(draw, (x1 - 240, y_bottom), stake_txt,
-                       f_mono, fill=_STAR, anchor="rt")
         except (TypeError, ValueError):
             pass
 

@@ -14275,14 +14275,17 @@ main.logged-page { max-width: 1040px; }
 <body>
 {{ sport_strip|safe }}
 <main class="wrap logged-page">
-  {# ---------- Macro: render last-3-days mini-list for a filter ---------- #}
+  {# ---------- Macro: render last-3-days mini-list for a filter ----------
+       Collapsed by default. Click the summary to expand. #}
   {% macro mini_3d(filter_key, label_short) %}
     {% set by_date = recent_by_filter.get(filter_key) or {} %}
     {% if by_date %}
-      <div class="mini-recent" style="margin-top:14px">
-        <div class="section-label" style="margin-bottom:6px;color:var(--muted-2);font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:0.14em;text-transform:uppercase">
-          Last 3 days {% if label_short %}&middot; {{ label_short }}{% endif %}
-        </div>
+      {% set total_picks = by_date.values()|map('length')|sum %}
+      <details class="mini-recent" style="margin-top:14px">
+        <summary style="cursor:pointer;color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:0.14em;text-transform:uppercase;padding:6px 0">
+          &#9656; Last 3 days {% if label_short %}&middot; {{ label_short }}{% endif %} &middot; {{ total_picks }} pick{{ 's' if total_picks != 1 else '' }}
+        </summary>
+        <div style="margin-top:10px">
         {% for ds in by_date.keys()|sort(reverse=True) %}
           {% set picks = by_date[ds] %}
           <div class="date-group" style="margin-bottom:12px">
@@ -14304,7 +14307,8 @@ main.logged-page { max-width: 1040px; }
             {% endfor %}
           </div>
         {% endfor %}
-      </div>
+        </div>
+      </details>
     {% endif %}
   {% endmacro %}
 
@@ -14647,17 +14651,21 @@ main.logged-page { max-width: 1040px; }
   </section>
   {% endif %}
 
-  {% if summary.ai_30d.settled or summary.ai_30d.pending %}
+  {# Discord Posted record — picks that were actually sent to the
+     Discord channel's daily slates. Shows how the top-5 selection
+     is performing vs. the broader current filter above. #}
+  {% if discord_summary %}
   <section class="records-section">
-    <h2>AI Analysis Picks <span style="color:#38bdf8;font-size:13px">Claude's calls on /ai-analysis</span></h2>
+    <h2>Discord Posted <span style="color:#7289da;font-size:13px">top-5 picks sent to Discord each slate</span></h2>
     <div class="sub">
-      Picks logged when Claude emits a BET verdict on the AI Analysis page
-      (not Pass). Grades on the same W/L path as the main picks board so
-      the LLM's actual track record is visible, not just its prose.
+      Only the picks that made it out of the Discord dispatcher's top-5
+      per slate. Compare these numbers to Current Filter above — if
+      Discord is beating the broader filter, the top-5 selection is
+      adding real value on top of the Signal 3.5 bar.
     </div>
     <div class="records-grid">
-      {% for key, label in [('ai_7d','Last 7 days'),('ai_30d','Last 30 days'),('ai_90d','Last 90 days')] %}
-      {% set r = summary[key] %}
+      {% for key, label in [('discord_7d','Last 7 days'),('discord_30d','Last 30 days'),('discord_90d','Last 90 days')] %}
+      {% set r = discord_summary[key] %}
       <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
         <div class="lbl">{{ label }}</div>
         {% if r.settled %}
@@ -14671,33 +14679,7 @@ main.logged-page { max-width: 1040px; }
       </div>
       {% endfor %}
     </div>
-    {{ mini_3d('ai', 'AI Analysis') }}
-  </section>
-  {% endif %}
-
-  {% if summary.fh_30d.settled or summary.fh_30d.pending %}
-  <section class="records-section">
-    <h2>1H Goals Picks <span style="color:#f59e0b;font-size:13px">Sways-style lit top-quartile</span></h2>
-    <div class="sub">
-      Lit 1H O1.5 picks from the <a href="/first-half" style="color:#f59e0b">1H Goals</a> board — soccer fixtures our Dixon-Coles + Pinnacle devig blend puts in the top quartile of their day. Grades via the 1H Total linescore path.
-    </div>
-    <div class="records-grid">
-      {% for key, label in [('fh_7d','Last 7 days'),('fh_30d','Last 30 days'),('fh_90d','Last 90 days')] %}
-      {% set r = summary[key] %}
-      <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
-        <div class="lbl">{{ label }}</div>
-        {% if r.settled %}
-        <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
-        <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
-        {% else %}
-        <div class="wl" style="color:var(--muted)">&mdash;</div>
-        <span class="units" style="color:var(--muted)">&mdash;</span>
-        {% endif %}
-        <div class="meta">{{ r.settled }} settled{% if r.pending %} &middot; {{ r.pending }} pending{% endif %}</div>
-      </div>
-      {% endfor %}
-    </div>
-    {{ mini_3d('1h_goals', '1H Goals') }}
+    {{ mini_3d('discord', 'Discord posted') }}
   </section>
   {% endif %}
 
@@ -14728,44 +14710,9 @@ main.logged-page { max-width: 1040px; }
     {{ mini_3d('ev9', '+EV >= 9%') }}
   </section>
 
-  <section class="records-section">
-    <h2>Your DraftKings History
-      {% if summary.dk_90d.settled %}
-      <span style="color:var(--muted);font-size:13px">imported from CSV</span>
-      {% else %}
-      <span style="color:var(--muted);font-size:13px">not imported yet</span>
-      {% endif %}
-    </h2>
-    <div class="sub">
-      Your actual DraftKings bet history, graded at the price you took. Keep both
-      records (our model vs. your real book plays) side by side to see which is
-      beating the market.
-      <a href="/logged/dk/upload" style="color:var(--accent);text-decoration:underline;margin-left:6px">Upload CSV &rsaquo;</a>
-    </div>
-    {% if summary.dk_90d.settled or summary.dk_90d.pending %}
-    <div class="records-grid">
-      {% for key, label in [('dk_7d','Last 7 days'),('dk_30d','Last 30 days'),('dk_90d','Last 90 days')] %}
-      {% set r = summary[key] %}
-      <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
-        <div class="lbl">{{ label }}</div>
-        {% if r.settled %}
-        <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
-        <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
-        {% else %}
-        <div class="wl" style="color:var(--muted)">&mdash;</div>
-        <span class="units" style="color:var(--muted)">&mdash;</span>
-        {% endif %}
-        <div class="meta">{{ r.settled }} settled{% if r.pending %} &middot; {{ r.pending }} pending{% endif %}</div>
-      </div>
-      {% endfor %}
-    </div>
-    {{ mini_3d('dk', 'DK history') }}
-    {% else %}
-    <div style="color:var(--muted-2);font-size:12.5px;font-style:italic;padding:12px 2px">
-      Upload a DK bet-history CSV once and we'll grade it alongside our picks on every /logged visit.
-    </div>
-    {% endif %}
-  </section>
+  {# DraftKings history section removed — source-specific record not
+     kept as a whole-picture filter. CSV upload page still works, but
+     the dedicated record tile is gone. #}
 
   {% if active_adj and active_adj.any %}
   <div class="active-adj">
@@ -15507,10 +15454,8 @@ def _maybe_notify_changes(star_picks):
             dnb_alerts = _db.diff_posted_hard_dnb(star_picks, posted_by_slate)
             if dnb_alerts:
                 _db.send_change_alert(webhook, entrants=[], dnb_alerts=dnb_alerts)
-            if posted_pairs:
-                graded = _db.diff_newly_graded(star_picks, posted_pairs)
-                if graded:
-                    _db.send_result_alerts(webhook, graded)
+            # Per-pick result PNGs disabled — results consolidated into
+            # the once-per-day EOD summary slide.
     except Exception:
         pass
 
@@ -15582,15 +15527,6 @@ def _send_slate_png(slate):
                 flat.append(p)
     if not flat:
         return {"sent": 0, "picks": 0, "slate": slate, "pick_ids": []}
-    # Attach fractional-Kelly stake per pick so the Discord card shows
-    # a "Stake 0.5u" line next to the odds.
-    try:
-        bankroll = float(settings.get("bankroll") or 1000)
-        kelly    = float(settings.get("kelly_fraction") or 0.25)
-        for p in flat:
-            p["suggested_units"] = _suggested_units(p, bankroll, kelly)
-    except Exception:
-        pass
     date_label = datetime.now(CENTRAL).strftime("%A, %B %d")
     r = _db.send_slate_picks(webhook, flat, date_label=date_label, slate=slate)
     if r.get("sent") and r.get("pick_ids"):
@@ -16023,12 +15959,9 @@ def cron_dispatch():
                               3: "Prime Time"}.get(_s, f"Slate {_s}")
                     for _pid in (_meta.get("pick_ids") or []):
                         _ppairs.append((_pid, _label))
-                if _ppairs:
-                    _late = _db.diff_newly_graded(_ppicks, _ppairs)
-                    if _late:
-                        _n = _db.send_result_alerts(webhook, _late)
-                        if _n:
-                            actions.append(f"prior_results:{_n}")
+                # Per-pick late result PNGs disabled — EOD slide below
+                # delivers the whole day's results in one summary.
+                pass
                 # Prior-day EOD if it never fired
                 _p_eod = prior.get("eod") or {}
                 if (not _p_eod.get("sent")) and _ppicks:
@@ -16166,20 +16099,17 @@ def cron_dispatch():
     GRADE_INTERVAL = 10 * 60  # 10 min between ESPN backfill calls
     DNB_INTERVAL   = 15 * 60  # 15 min between board rebuilds for DNB
 
-    if posted_pairs and _throttle_due(_grade_throttle_path, GRADE_INTERVAL):
+    # Per-pick result PNGs are intentionally disabled — results now
+    # come through once per day in the EOD summary slide only. We
+    # still keep grade_pending_backfill on throttle so the EOD
+    # aggregation has fresh grades to work with.
+    if _throttle_due(_grade_throttle_path, GRADE_INTERVAL):
         try:
             import plays_log as _pl
             try:
                 _pl.grade_pending_backfill(days_back=1, grace_hours=1)
             except Exception:
                 pass
-            graded_by_date = _pl.grade_all(limit_dates=2) or {}
-            today_picks = (graded_by_date.get(today) or [])
-            graded = _db.diff_newly_graded(today_picks, posted_pairs)
-            if graded:
-                n = _db.send_result_alerts(webhook, graded)
-                if n:
-                    actions.append(f"results:{n}")
             _mark_throttle(_grade_throttle_path)
         except Exception:
             pass
@@ -16324,6 +16254,64 @@ def logged_plays():
     except Exception:
         shrinkage_recs = []
 
+    # Discord-posted record summary — mirror of plays_log.summary's
+    # curfilter_7d/30d/90d, filtered to pick ids that were actually
+    # sent to the Discord channel's daily slates.
+    def _dsummary():
+        from datetime import timedelta as _td
+        windows = {"discord_7d": 7, "discord_30d": 30, "discord_90d": 90}
+        out = {}
+        today_d = datetime.now(CENTRAL).date()
+        posted = _load_discord_posted_log()
+        for key, days in windows.items():
+            w = l = pu = pend = 0
+            units = 0.0
+            risked = 0.0
+            cutoff = today_d - _td(days=days)
+            for ds, pids in posted.items():
+                try:
+                    d_dt = datetime.fromisoformat(ds).date()
+                except Exception:
+                    continue
+                if d_dt < cutoff or d_dt > today_d:
+                    continue
+                picks_for_date = {p.get("id"): p for p in (graded_by_date.get(ds) or []) if p.get("id")}
+                for pid in pids:
+                    p = picks_for_date.get(pid)
+                    if not p:
+                        pend += 1
+                        continue
+                    r = p.get("result")
+                    if r == "W":
+                        w += 1
+                    elif r == "L":
+                        l += 1
+                    elif r == "P":
+                        pu += 1
+                    else:
+                        pend += 1
+                        continue
+                    try:
+                        units += float(p.get("profit_u") or 0.0)
+                    except (TypeError, ValueError):
+                        pass
+                    # 1 unit risked per pick is the convention plays_log uses
+                    risked += 1.0
+            settled = w + l + pu
+            win_pct = (w / (w + l) * 100) if (w + l) else 0
+            roi_pct = (units / risked * 100) if risked else 0
+            out[key] = {
+                "wins": w, "losses": l, "pushes": pu,
+                "settled": settled, "pending": pend,
+                "units": units, "risked": risked,
+                "win_pct": win_pct, "roi_pct": roi_pct,
+            }
+        return out
+    try:
+        discord_summary = _dsummary()
+    except Exception:
+        discord_summary = {}
+
     # Per-filter 3-day pick lists — a focused mini-list rendered under
     # each record-tiles section. Replaces the old 'all picks by date'
     # mega-list. Each filter has its own predicate; the mini-list pulls
@@ -16341,6 +16329,10 @@ def logged_plays():
             if _p.get("_date") != _ds:
                 _p["_date"] = _ds
 
+    # Pruned to the whole-picture filters: all, signal, strong,
+    # current filter, Discord posted, +EV. Removed source-specific
+    # tags (1H Goals, AI Analysis, DK history) that only cover their
+    # own narrow pipeline and don't aggregate as a complete record.
     _FILTER_PREDICATES = {
         "all":        ("All picks",             lambda p: True),
         "signal":     ("Signal >= 3",           lambda p: plays_log._backtest_signal_score(p) >= 3),
@@ -16349,9 +16341,6 @@ def logged_plays():
         "discord":    ("Discord posted",        _passes_discord_posted),
         "ev9":        ("+EV >= 9%",             lambda p: (p.get("ev_pct") is not None
                                                            and (p.get("ev_pct") or 0) >= 9)),
-        "1h_goals":   ("1H Goals",              lambda p: p.get("source") == "1h_goals"),
-        "ai":         ("AI Analysis",           lambda p: p.get("source") == "ai_analysis"),
-        "dk":         ("DK history",            lambda p: p.get("source") == "book_dk"),
     }
 
     def _last_3d_picks(predicate):
@@ -16558,6 +16547,7 @@ def logged_plays():
         odds_usage=odds_usage,
         poly_summary=poly_summary,
         shrinkage_recs=shrinkage_recs,
+        discord_summary=discord_summary,
     )
 
 
