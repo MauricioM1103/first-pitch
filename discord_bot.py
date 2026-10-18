@@ -564,13 +564,31 @@ def _safe_float(v):
         return 0.0
 
 
+def _risk_penalty(pick):
+    """Return a soft penalty (added to the negative-signal sort key)
+    to downrank picks with weather or injury risk flags. Doesn't
+    exclude — just pushes them below equivalent-strength clean picks
+    so they lose the top-5 battle to safer alternatives."""
+    rf = pick.get("risk_flags") or {}
+    penalty = 0.0
+    w = rf.get("weather")
+    if w == "high":
+        penalty += 1.0   # equivalent to -1 Signal point
+    elif w == "moderate":
+        penalty += 0.4
+    if rf.get("injury"):
+        penalty += 0.6
+    return penalty
+
+
 def _rank_picks(picks):
     """Sort live (not do_not_bet) picks strongest-first for top-N.
-    Tiebreakers: Signal desc → line_move_pp desc (CLV favoring our
-    side ranks higher) → EV desc → earliest start first."""
+    Tiebreakers: effective Signal (Signal - risk penalty) desc →
+    line_move_pp desc (CLV favoring our side ranks higher) → EV desc →
+    earliest start first."""
     live = [p for p in picks if not p.get("do_not_bet")]
     live.sort(key=lambda p: (
-        -(int(p.get("signal_score") or 0)),
+        -(int(p.get("signal_score") or 0)) + _risk_penalty(p),
         -_safe_float(p.get("line_move_pp")),
         -_safe_float(p.get("ev_pct")),
         p.get("start_time") or "",
@@ -762,11 +780,16 @@ def send_slate_picks(webhook_url, picks, date_label="", slate=1):
     }[slate]
     preamble = (
         f"{emoji} **{slate_name} picks — {label}**\n\n"
-        f"Top {len(top)} Signal 4+ picks for {window_desc} "
+        f"Top {len(top)} Signal 3.5+ picks for {window_desc} "
         f"(earliest kickoff ~{earliest}). "
         "This list is **locked for the day** — only hard DO NOT BET "
         "reversals or final results will post here until the next slate."
     )
+    # If a prior slate posted earlier today and some of its picks have
+    # already graded, surface the running record as context.
+    prior_recap = _prior_slate_recap(slate)
+    if prior_recap:
+        preamble += f"\n\n{prior_recap}"
     post_text(webhook_url, preamble)
 
     png = render_picks_png_tall(
@@ -1025,9 +1048,27 @@ def diff_newly_graded(picks_source, posted_pairs):
     return out
 
 
+def _format_scoreline(pick):
+    """Return '{away} {sa}-{sh} {home}' if the pick has final-score
+    row attributes populated by the grader. '' if not."""
+    try:
+        sa = pick.get("row_score_away")
+        sh = pick.get("row_score_home")
+        if sa is None or sh is None:
+            return ""
+        away = pick.get("away_team") or pick.get("game_away") or ""
+        home = pick.get("home_team") or pick.get("game_home") or ""
+        if not away or not home:
+            return f"{int(sa)}-{int(sh)}"
+        return f"{away} {int(sa)}-{int(sh)} {home}"
+    except Exception:
+        return ""
+
+
 def send_result_alerts(webhook_url, graded_pairs):
     """One PNG per newly-graded pick with its W/L/P chip and a caption
-    naming the half + units. No rate limit — each pick fires once."""
+    naming the slate + units + final scoreline. No rate limit — each
+    pick fires exactly once."""
     if not webhook_url or not graded_pairs:
         return 0
     sent = 0
@@ -1043,16 +1084,82 @@ def send_result_alerts(webhook_url, graded_pairs):
             units_txt = f"  ·  {units:+.2f}u"
         except (TypeError, ValueError):
             units_txt = ""
+        score = _format_scoreline(pick)
+        score_line = f"  ·  Final: {score}" if score else ""
         png = render_picks_png_tall(
             [pick],
             title=f"{word} — {half_label}",
-            subtitle=f"{pick.get('pick') or ''}{units_txt}  ·  {stamp}",
+            subtitle=(f"{pick.get('pick') or ''}{units_txt}"
+                      f"{score_line}  ·  {stamp}"),
         )
         if png:
-            msg = f"{emoji} **{half_label} pick** — **{word}**{units_txt}"
+            msg = (f"{emoji} **{half_label} pick** — **{word}**"
+                   f"{units_txt}{(' | ' + score) if score else ''}")
             if send_discord_image(webhook_url, png, f"result_{r}.png", msg):
                 sent += 1
     return sent
+
+
+def _prior_slate_recap(current_slate):
+    """When slate N is about to post, read the dispatch schedule to
+    pull slate (N-1) and (N-2)'s posted pick ids, look them up in the
+    day's graded picks via plays_log, and produce a one-line record
+    recap ('Slate 1 so far: 2-1-0, +0.8u') for the preamble. Returns
+    '' if no prior slate posted today or we can't read plays_log."""
+    try:
+        import plays_log as _pl
+        base_dir = _BASE_DIR
+        with open(os.path.join(base_dir, "logs", "discord_schedule.json")) as f:
+            sched = json.load(f) or {}
+    except Exception:
+        return ""
+    slates = sched.get("slates") or {}
+    # Collect prior slates' pick_ids
+    prior = []
+    for s in range(1, current_slate):
+        meta = slates.get(str(s)) or {}
+        if meta.get("sent") and meta.get("pick_ids"):
+            prior.append((s, meta["pick_ids"]))
+    if not prior:
+        return ""
+    try:
+        graded_by_date = _pl.grade_all(limit_dates=2) or {}
+    except Exception:
+        return ""
+    today_ct = _today_ct_str()
+    today_picks = graded_by_date.get(today_ct) or []
+    by_id = {p.get("id"): p for p in today_picks if p.get("id")}
+    lines = []
+    for s, ids in prior:
+        w = l = pu = pend = 0
+        u = 0.0
+        for pid in ids:
+            p = by_id.get(pid)
+            if not p:
+                pend += 1
+                continue
+            r = p.get("result")
+            if r == "W":
+                w += 1
+            elif r == "L":
+                l += 1
+            elif r == "P":
+                pu += 1
+            else:
+                pend += 1
+            try:
+                u += float(p.get("profit_u") or 0.0)
+            except (TypeError, ValueError):
+                pass
+        name = _SLATE_LABELS.get(s, f"Slate {s}")
+        settled = w + l + pu
+        bits = [f"{name} so far: **{w}-{l}-{pu}**"]
+        if settled:
+            bits.append(f"{u:+.2f}u")
+        if pend:
+            bits.append(f"{pend} pending")
+        lines.append("  ·  ".join(bits))
+    return ":bar_chart: " + " | ".join(lines)
 
 
 def diff_posted_dnb(star_picks, posted_half1, posted_half2):

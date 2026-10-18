@@ -8,10 +8,11 @@ name: Discord picks dispatch
 
 on:
   schedule:
-    # GitHub Actions min interval is 5 min; it also often delays free-
-    # tier runs by several minutes under load. 15 min is plenty for
-    # catching the agenda / half posts / results windows.
-    - cron: "*/15 * * * *"
+    # UptimeRobot drives /cron/dispatch every 5 min as the primary
+    # trigger. GitHub Actions runs once per hour as a backup in case
+    # UptimeRobot has an outage. Dispatcher is idempotent, so the
+    # occasional overlap is harmless.
+    - cron: "17 * * * *"
   # Manual trigger button from the Actions tab, for one-off testing.
   workflow_dispatch: {}
 
