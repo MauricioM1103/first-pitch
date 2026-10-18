@@ -16959,83 +16959,25 @@ def debug_kalshi():
         "ticker" if "ticker" in fills_keys
         else ("market_ticker" if "market_ticker" in fills_keys else None))
 
-    # Build per-settlement comparison rows.
+    # Build per-settlement comparison rows using the real Kalshi schema:
+    #   revenue (int cents) = gross payout at settlement
+    #   yes_total_cost_dollars (str $)   = cost basis of YES side
+    #   no_total_cost_dollars  (str $)   = cost basis of NO side
+    #   fee_cost (str $)                 = total fees paid
+    # Net P&L = revenue - sum(cost dollars * 100) - fee_cost * 100
     rows = []
     agg_our_cents  = 0
     agg_raw_cents  = 0
     agg_cost_cents = 0
-    agg_payout_cents = 0
+    agg_fee_cents  = 0
     for s in settlements:
         tkr = (s.get("ticker") or s.get("market_ticker") or "")
         result = (s.get("market_result") or "").lower()
-        yes_count = int(s.get("yes_count") or 0)
-        no_count  = int(s.get("no_count") or 0)
-        yes_pay_per = 100 if result == "yes" else 0
-        no_pay_per  = 100 if result == "no"  else 0
-        payout = (yes_count * yes_pay_per) + (no_count * no_pay_per)
-
-        # Enumerate fills for this ticker (match by either key name).
-        matched_fills = []
-        for f in fills:
-            f_tkr = f.get("ticker") or f.get("market_ticker") or ""
-            if f_tkr == tkr:
-                matched_fills.append(f)
-
-        # Replay the cost-basis calc transparently.
-        y_cost = n_cost = 0
-        y_qty = n_qty = 0
-        fill_trace = []
-        for f in matched_fills:
-            try:
-                count = int(f.get("count") or 0)
-            except Exception:
-                count = 0
-            yp = f.get("yes_price")
-            np = f.get("no_price")
-            side   = (f.get("side") or "").lower()
-            action = (f.get("action") or "").lower()
-            try:
-                fees = int(f.get("fees") or 0)
-            except Exception:
-                fees = 0
-            sign = -1 if action == "sell" else 1
-            is_yes = side == "yes" or (yp is not None and side != "no")
-            if is_yes:
-                price = int(yp if yp is not None else 0)
-                delta_cost = sign * count * price + fees
-                y_cost += delta_cost
-                y_qty  += sign * count
-                lane = "YES"
-            else:
-                price = int(np if np is not None else 0)
-                delta_cost = sign * count * price + fees
-                n_cost += delta_cost
-                n_qty  += sign * count
-                lane = "NO"
-            fill_trace.append({
-                "lane":   lane,
-                "action": action or "?",
-                "side_field": side or "?",
-                "count":  count,
-                "price_c": price,
-                "yes_price": yp,
-                "no_price":  np,
-                "fees_c": fees,
-                "sign":   sign,
-                "delta_cost_c": delta_cost,
-                "created_time": f.get("created_time") or f.get("filled_time") or "",
-            })
-        cost = y_cost + n_cost
-        if cost == 0 and (yes_count or no_count):
-            raw = s.get("revenue")
-            try:
-                computed = int(raw) if raw is not None else None
-            except Exception:
-                computed = None
-            computed_source = "fallback:raw_revenue"
-        else:
-            computed = payout - cost
-            computed_source = "payout_minus_cost"
+        yes_qty_fp = s.get("yes_count_fp")
+        no_qty_fp  = s.get("no_count_fp")
+        yes_cost_c = _kp._dollars_to_cents(s.get("yes_total_cost_dollars"))
+        no_cost_c  = _kp._dollars_to_cents(s.get("no_total_cost_dollars"))
+        fee_c      = _kp._dollars_to_cents(s.get("fee_cost"))
 
         raw_rev = s.get("revenue")
         try:
@@ -17043,27 +16985,53 @@ def debug_kalshi():
         except Exception:
             raw_rev = None
 
+        if raw_rev is None:
+            computed = None
+        else:
+            computed = raw_rev - yes_cost_c - no_cost_c - fee_c
+
+        # Enumerate fills for this ticker (useful for drill-down even
+        # though we no longer need them for the aggregate P&L).
+        matched_fills = []
+        for f in fills:
+            f_tkr = f.get("ticker") or f.get("market_ticker") or ""
+            if f_tkr == tkr:
+                matched_fills.append(f)
+
+        fill_trace = []
+        for f in matched_fills[:20]:   # cap per settlement
+            fill_trace.append({
+                "outcome_side": f.get("outcome_side"),
+                "book_side":    f.get("book_side"),
+                "action":       f.get("action"),
+                "side":         f.get("side"),
+                "count_fp":     f.get("count_fp"),
+                "yes_price_dollars": f.get("yes_price_dollars"),
+                "no_price_dollars":  f.get("no_price_dollars"),
+                "fee_cost":     f.get("fee_cost"),
+                "created_time": f.get("created_time"),
+            })
+
         if computed is not None:
             agg_our_cents += computed
         if raw_rev is not None:
             agg_raw_cents += raw_rev
-        agg_cost_cents   += max(0, cost)
-        agg_payout_cents += payout
+        agg_cost_cents += (yes_cost_c + no_cost_c)
+        agg_fee_cents  += fee_c
 
         rows.append({
             "ticker":          tkr,
             "settled_time":    s.get("settled_time") or "",
             "market_result":   result,
-            "yes_count":       yes_count,
-            "no_count":        no_count,
-            "payout_cents":    payout,
-            "yes_cost_cents":  y_cost,
-            "no_cost_cents":   n_cost,
-            "total_cost_cents": cost,
-            "our_pnl_cents":   computed,
-            "our_pnl_source":  computed_source,
+            "yes_count_fp":    yes_qty_fp,
+            "no_count_fp":     no_qty_fp,
+            "yes_cost_cents":  yes_cost_c,
+            "no_cost_cents":   no_cost_c,
+            "fee_cents":       fee_c,
+            "total_cost_cents": yes_cost_c + no_cost_c + fee_c,
             "raw_revenue_cents": raw_rev,
-            "delta_cents":     (computed - raw_rev) if (computed is not None and raw_rev is not None) else None,
+            "our_pnl_cents":   computed,
+            "our_pnl_dollars": round((computed or 0) / 100.0, 2) if computed is not None else None,
             "n_matched_fills": len(matched_fills),
             "fill_trace":      fill_trace,
             "raw_settlement":  s,  # full raw row
@@ -17073,19 +17041,20 @@ def debug_kalshi():
     totals = {
         "settlements_fetched": len(settlements),
         "fills_fetched":       len(fills),
-        "settlement_ticker_key": settlement_ticker_key,
-        "fills_ticker_key":      fills_ticker_key,
         "sum_our_pnl_cents":   agg_our_cents,
         "sum_our_pnl_dollars": round(agg_our_cents / 100.0, 2),
         "sum_raw_revenue_cents":   agg_raw_cents,
         "sum_raw_revenue_dollars": round(agg_raw_cents / 100.0, 2),
-        "sum_payout_cents":    agg_payout_cents,
-        "sum_cost_cents":      agg_cost_cents,
-        "note": ("If sum_raw_revenue_dollars matches your Kalshi account, "
-                 "the raw `revenue` field IS net P&L and we should use it "
-                 "directly. If sum_our_pnl_dollars matches, our calc is "
-                 "right. If NEITHER matches, something else is off — check "
-                 "the per-row delta_cents + fill_trace below."),
+        "sum_cost_cents":    agg_cost_cents,
+        "sum_cost_dollars":  round(agg_cost_cents / 100.0, 2),
+        "sum_fee_cents":     agg_fee_cents,
+        "sum_fee_dollars":   round(agg_fee_cents / 100.0, 2),
+        "formula": "net_pnl = revenue - yes_cost - no_cost - fee_cost",
+        "note": ("sum_our_pnl_dollars should match the balance delta you "
+                 "see in your Kalshi account over this window. "
+                 "sum_raw_revenue_dollars is just gross settlement payouts "
+                 "(what Kalshi credited at expiration, before subtracting "
+                 "the premium you paid)."),
     }
 
     out = {
