@@ -14840,6 +14840,65 @@ main.logged-page { max-width: 1040px; }
   </section>
   {% endif %}
 
+  {# Phase 32: Kalshi account — real $ P&L pulled from the user's
+     own Kalshi portfolio API. Only renders when KALSHI_API_KEY_ID
+     and KALSHI_PRIVATE_KEY_PEM are configured. #}
+  {% if kalshi_summary %}
+  <section class="records-section" style="border:1px solid #06b6d4;border-radius:12px;padding:14px;background:color-mix(in oklab,#06b6d4 5%,transparent)">
+    <h2>Kalshi Account <span style="color:#06b6d4;font-size:13px">real $ from your Kalshi portfolio API</span></h2>
+    <div class="sub">
+      Pulled directly from Kalshi's /portfolio/settlements endpoint over
+      the last 90 days. Numbers are actual dollars from your Kalshi
+      balance, not units. Independent from the model's picks — it's
+      every settlement on your account, whatever ticker.
+    </div>
+    <div class="records-grid">
+      <div class="rec-tile {{ 'good' if kalshi_summary.net_dollars > 0 else ('bad' if kalshi_summary.net_dollars < 0 else '') }}" style="border-color:#06b6d4">
+        <div class="lbl">Last 90 days</div>
+        {% if kalshi_summary.settled %}
+        <div class="wl">{{ kalshi_summary.wins }}-{{ kalshi_summary.losses }}{% if kalshi_summary.pushes %}-{{ kalshi_summary.pushes }}{% endif %}<span class="pct">{{ '%.1f' % kalshi_summary.win_pct }}%</span></div>
+        <span class="units">${{ '%+.2f' % kalshi_summary.net_dollars }}</span>
+        {% else %}
+        <div class="wl" style="color:var(--muted)">&mdash;</div>
+        <span class="units" style="color:var(--muted)">&mdash;</span>
+        {% endif %}
+        <div class="meta">{{ kalshi_summary.n_trades }} trades &middot; {{ kalshi_summary.settled }} settled</div>
+      </div>
+    </div>
+    {% if kalshi_recent %}
+    <details style="margin-top:12px">
+      <summary style="cursor:pointer;color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:11px;letter-spacing:0.14em;text-transform:uppercase;padding:6px 0">
+        &#9656; Recent settlements ({{ kalshi_recent|length }})
+      </summary>
+      <div style="margin-top:10px;overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12.5px">
+          <thead>
+            <tr style="color:var(--muted-2);font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:0.1em;text-transform:uppercase">
+              <th style="text-align:left;padding:6px 8px">Ticker</th>
+              <th style="text-align:left;padding:6px 8px">Settled</th>
+              <th style="text-align:left;padding:6px 8px">Result</th>
+              <th style="text-align:right;padding:6px 8px">Net $</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for r in kalshi_recent %}
+            <tr style="border-top:1px solid var(--rule)">
+              <td style="padding:6px 8px;font-family:'JetBrains Mono',monospace">{{ r.ticker }}</td>
+              <td style="padding:6px 8px;color:var(--muted-2)">{{ r.settled_time[:16] if r.settled_time else '' }}</td>
+              <td style="padding:6px 8px">{{ r.market_result|upper }}</td>
+              <td style="padding:6px 8px;text-align:right;color:{{ 'var(--good)' if r.net_dollars > 0 else ('var(--bad)' if r.net_dollars < 0 else 'var(--muted)') }}">
+                ${{ '%+.2f'|format(r.net_dollars) }}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </details>
+    {% endif %}
+  </section>
+  {% endif %}
+
   <section class="records-section">
     <h2>High-EV Picks <span style="color:var(--accent);font-size:13px">ev_pct &ge; +9%</span></h2>
     <div class="sub">
@@ -16506,6 +16565,21 @@ def logged_plays():
     except Exception:
         shrinkage_recs = []
 
+    # Phase 32: Kalshi portfolio tile — only if credentials are
+    # configured. Non-fatal if the account has no fills or Kalshi is
+    # unreachable.
+    try:
+        import kalshi_portfolio as _kp
+        if _kp.is_configured():
+            kalshi_summary = _kp.summarize_recent(days=90)
+            kalshi_recent  = _kp.recent_settlements_table(days=14, limit=20)
+        else:
+            kalshi_summary = None
+            kalshi_recent  = []
+    except Exception:
+        kalshi_summary = None
+        kalshi_recent  = []
+
     # Discord-posted record summary — mirror of plays_log.summary's
     # curfilter_7d/30d/90d, filtered to pick ids that were actually
     # sent to the Discord channel's daily slates.
@@ -16800,6 +16874,8 @@ def logged_plays():
         poly_summary=poly_summary,
         shrinkage_recs=shrinkage_recs,
         discord_summary=discord_summary,
+        kalshi_summary=kalshi_summary,
+        kalshi_recent=kalshi_recent,
     )
 
 
