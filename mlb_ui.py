@@ -2626,23 +2626,7 @@ details.also-wrap .today-card { opacity: 0.88; }
   {# Phase 27: card macro — reused in both single-column (<10 picks)
      and 2-column (>=10 picks) layouts. #}
   {% macro render_card(p) %}
-    <div class="today-card-wrap" style="position:relative">
-    {% set disp = (dispositions or {}).get(p.id, {}) %}
-    {# Floating tri-state disposition chip — top-right of each card.
-       Click to toggle BET / SKIP / clear. Server-side POST updates
-       logs/pick_dispositions.json so the /logged "My bets" filter
-       aggregates your actual plays, not just the model's picks. #}
-    <span class="disp-ctl" style="position:absolute;top:6px;right:6px;z-index:2;display:flex;gap:3px;font-family:'JetBrains Mono',monospace;font-size:10px">
-      <button data-disp-pick="{{ p.id }}" data-disp-state="bet"
-              class="disp-btn {{ 'active' if disp.state == 'bet' else '' }}"
-              title="Mark that you bet this pick (counts toward 'My bets' record)"
-              style="background:{{ '#22c55e' if disp.state == 'bet' else 'var(--card)' }};color:{{ '#0a0b0d' if disp.state == 'bet' else 'var(--muted)' }};border:1px solid var(--rule-strong);padding:3px 7px;border-radius:4px;cursor:pointer">BET</button>
-      <button data-disp-pick="{{ p.id }}" data-disp-state="skip"
-              class="disp-btn {{ 'active' if disp.state == 'skip' else '' }}"
-              title="Mark that you skipped this pick (so it doesn't count toward 'My bets')"
-              style="background:{{ 'var(--muted-2)' if disp.state == 'skip' else 'var(--card)' }};color:{{ '#0a0b0d' if disp.state == 'skip' else 'var(--muted)' }};border:1px solid var(--rule-strong);padding:3px 7px;border-radius:4px;cursor:pointer">SKIP</button>
-    </span>
-    <a class="today-card star {{ 'status-' ~ (p.status or 'upcoming') }} {{ 'do-not-bet' if p.do_not_bet else '' }} {{ 'whale-today' if p.whale else '' }} {{ 'my-bet' if disp.state == 'bet' else '' }}" href="/pick?date={{ date_str }}&sport={{ p.sport_slug }}&home={{ p.game_home|urlencode }}&away={{ p.game_away|urlencode }}&market={{ p.market|urlencode }}&pick={{ p.pick|urlencode }}" style="text-decoration:none; color:inherit">
+    <a class="today-card star {{ 'status-' ~ (p.status or 'upcoming') }} {{ 'do-not-bet' if p.do_not_bet else '' }} {{ 'whale-today' if p.whale else '' }}" href="/pick?date={{ date_str }}&sport={{ p.sport_slug }}&home={{ p.game_home|urlencode }}&away={{ p.game_away|urlencode }}&market={{ p.market|urlencode }}&pick={{ p.pick|urlencode }}" style="text-decoration:none; color:inherit">
       <div class="pick-head">
         {% if p.whale %}<span class="whale-badge" title="&#x1F40B; WHALE pick — bankroll-maximum tier (fp &ge; 72%, dec 1.30&ndash;1.65, Signal &ge; 4, EV &ge; 1.5%)" style="color:#38bdf8;text-shadow:0 0 14px rgba(56,189,248,0.9);font-size:17px;animation:whalePulse 2s ease-in-out infinite;margin-right:4px">&#x1F40B;</span>{% endif %}
         <span class="star">&#9733;</span>
@@ -2713,7 +2697,6 @@ details.also-wrap .today-card { opacity: 0.88; }
         {% endif %}
       </div>
     </a>
-    </div>
   {% endmacro %}
 
   {# Macro: render a list of picks grouped by status with subheaders. #}
@@ -2851,42 +2834,6 @@ function dismissStartHere() {
   if (anyLive()) {
     setInterval(refresh, 60000);
   }
-})();
-
-/* Phase 32 — disposition tri-state buttons on each pick card.
-   Click BET or SKIP to record what the user actually did; posts to
-   /api/disposition which persists to logs/pick_dispositions.json and
-   mirrors to GitHub via log_persist. Powers the "My bets" filter on
-   /logged for a user-specific vs model-recommended record. */
-(function(){
-  function toggle(btn){
-    var pid = btn.getAttribute('data-disp-pick');
-    var newState = btn.getAttribute('data-disp-state');
-    if (!pid || !newState) return;
-    var group = btn.parentElement;
-    var siblings = group.querySelectorAll('.disp-btn');
-    var alreadyActive = btn.classList.contains('active');
-    var sendState = alreadyActive ? 'clear' : newState;
-    siblings.forEach(function(b){ b.classList.remove('active'); b.style.background = 'var(--card)'; b.style.color = 'var(--muted)'; });
-    if (!alreadyActive){
-      btn.classList.add('active');
-      if (newState === 'bet')  { btn.style.background = '#22c55e'; btn.style.color = '#0a0b0d'; }
-      else                     { btn.style.background = 'var(--muted-2)'; btn.style.color = '#0a0b0d'; }
-    }
-    var fd = new FormData();
-    fd.append('pick_id', pid);
-    fd.append('state', sendState);
-    fetch('/api/disposition', {method: 'POST', body: fd}).catch(function(){
-      siblings.forEach(function(b){ b.classList.remove('active'); b.style.background = 'var(--card)'; b.style.color = 'var(--muted)'; });
-    });
-  }
-  document.addEventListener('click', function(e){
-    var t = e.target;
-    if (t && t.classList && t.classList.contains('disp-btn')) {
-      e.preventDefault(); e.stopPropagation();
-      toggle(t);
-    }
-  }, true);
 })();
 </script>
 </body>
@@ -7902,7 +7849,6 @@ def today_landing():
         split_boundary_label=split_boundary_label,
         is_split=bool(picks_early and picks_late),
         streak=streak,
-        dispositions=_load_dispositions(),
     )
 
 
@@ -15817,78 +15763,6 @@ _DISCORD_FIRED_PATH = _settings_os.path.join(
     _settings_os.path.dirname(_settings_os.path.abspath(__file__)),
     "logs", "discord_fired_events.json",
 )
-_PICK_DISPOSITIONS_PATH = _settings_os.path.join(
-    _settings_os.path.dirname(_settings_os.path.abspath(__file__)),
-    "logs", "pick_dispositions.json",
-)
-
-
-def _load_dispositions():
-    """Return {pick_id: {state, ts}} map of user-marked dispositions.
-    State is 'bet' or 'skip'. Checked locally first, GitHub mirror as
-    fallback."""
-    try:
-        with open(_PICK_DISPOSITIONS_PATH) as f:
-            return json.load(f) or {}
-    except Exception:
-        pass
-    try:
-        import log_persist
-        if log_persist.is_configured():
-            text, _sha = log_persist.read_file("logs/pick_dispositions.json")
-            if text:
-                return json.loads(text) or {}
-    except Exception:
-        pass
-    return {}
-
-
-def _save_dispositions(d):
-    try:
-        _settings_os.makedirs(_settings_os.path.dirname(_PICK_DISPOSITIONS_PATH),
-                               exist_ok=True)
-        with open(_PICK_DISPOSITIONS_PATH, "w") as f:
-            json.dump(d, f)
-    except Exception:
-        pass
-    try:
-        import log_persist
-        if log_persist.is_configured():
-            log_persist.write_file("logs/pick_dispositions.json",
-                                    json.dumps(d),
-                                    message="pick dispositions update")
-    except Exception:
-        pass
-
-
-def _passes_my_bets(pick):
-    """Predicate used by /logged's 'My bets' filter: pick's id has a
-    disposition marked 'bet' (user actually placed it)."""
-    pid = pick.get("id")
-    if not pid:
-        return False
-    disp = _load_dispositions().get(pid) or {}
-    return disp.get("state") == "bet"
-
-
-@app.route("/api/disposition", methods=["POST"])
-def set_disposition():
-    """Toggle a user's bet/skip disposition for a pick id. Expects
-    form fields: pick_id, state ('bet'|'skip'|'clear'). Returns JSON."""
-    import time as _t
-    pick_id = (request.form.get("pick_id") or "").strip()
-    state = (request.form.get("state") or "").strip().lower()
-    if not pick_id or state not in ("bet", "skip", "clear"):
-        return Response(json.dumps({"ok": False, "error": "bad_args"}),
-                        status=400, mimetype="application/json")
-    d = _load_dispositions()
-    if state == "clear":
-        d.pop(pick_id, None)
-    else:
-        d[pick_id] = {"state": state, "ts": int(_t.time())}
-    _save_dispositions(d)
-    return Response(json.dumps({"ok": True, "pick_id": pick_id, "state": state}),
-                    mimetype="application/json")
 # Serializes dispatcher ticks so concurrent UptimeRobot / manual / GH
 # Actions pings don't race each other into double-posting events.
 _DISPATCH_LOCK = _threading.Lock()
@@ -16717,7 +16591,6 @@ def logged_plays():
         "whale":      ("Whale picks",            _is_whale_pick),
         "curfilter":  ("Current filter",        plays_log._passes_current_filter),
         "discord":    ("Discord posted",        _passes_discord_posted),
-        "mybets":     ("My bets",               _passes_my_bets),
         "ev9":        ("+EV >= 9%",             lambda p: (p.get("ev_pct") is not None
                                                            and (p.get("ev_pct") or 0) >= 9)),
     }
