@@ -15658,6 +15658,10 @@ _DISCORD_SCHEDULE_PATH = _settings_os.path.join(
     _settings_os.path.dirname(_settings_os.path.abspath(__file__)),
     "logs", "discord_schedule.json",
 )
+_DISCORD_SCHEDULE_PRIOR_PATH = _settings_os.path.join(
+    _settings_os.path.dirname(_settings_os.path.abspath(__file__)),
+    "logs", "discord_schedule_prior.json",
+)
 _DISCORD_POSTED_PATH = _settings_os.path.join(
     _settings_os.path.dirname(_settings_os.path.abspath(__file__)),
     "logs", "discord_posted.json",
@@ -15748,6 +15752,67 @@ def _save_dispatch_schedule(d):
                                exist_ok=True)
         with open(_DISCORD_SCHEDULE_PATH, "w") as f:
             json.dump(d, f)
+    except Exception:
+        pass
+
+
+def _load_prior_dispatch_schedule():
+    try:
+        with open(_DISCORD_SCHEDULE_PRIOR_PATH) as f:
+            return json.load(f) or {}
+    except Exception:
+        pass
+    # Fallback 1: GitHub mirror of prior schedule
+    try:
+        import log_persist
+        if log_persist.is_configured():
+            text, _sha = log_persist.read_file("logs/discord_schedule_prior.json")
+            if text:
+                return json.loads(text)
+    except Exception:
+        pass
+    # Fallback 2: synthesize prior state from discord_posted.json for
+    # YESTERDAY. Covers the first run after this fix lands when the
+    # prior-schedule file was never populated during the migration.
+    try:
+        posted = _load_discord_posted_log()
+        if not posted:
+            return {}
+        yesterday = (datetime.now(CENTRAL).date() - timedelta(days=1)).isoformat()
+        ids = posted.get(yesterday) or []
+        if not ids:
+            return {}
+        # Dump every posted id into "slate 3" (Prime Time) as a label.
+        # We don't know which slate they came from without the real
+        # state, but Prime Time is the most common for late grades.
+        return {
+            "version": 2,
+            "date":    yesterday,
+            "slates": {
+                "1": {"pick_ids": [], "sent": True},
+                "2": {"pick_ids": [], "sent": True},
+                "3": {"pick_ids": ids, "sent": True},
+            },
+            "eod": {"sent": False, "post_at_iso": None},
+        }
+    except Exception:
+        return {}
+
+
+def _save_prior_dispatch_schedule(d):
+    try:
+        _settings_os.makedirs(_settings_os.path.dirname(_DISCORD_SCHEDULE_PRIOR_PATH),
+                               exist_ok=True)
+        with open(_DISCORD_SCHEDULE_PRIOR_PATH, "w") as f:
+            json.dump(d, f)
+    except Exception:
+        pass
+    try:
+        import log_persist
+        if log_persist.is_configured():
+            log_persist.write_file("logs/discord_schedule_prior.json",
+                                    json.dumps(d),
+                                    message="dispatch prior-day state")
     except Exception:
         pass
     # Mirror to GitHub so the state survives Render's ephemeral-fs
@@ -15899,9 +15964,68 @@ def cron_dispatch():
             actions.append("restored_from_remote")
             stale = False
     if stale:
+        # Preserve the outgoing day's state so late-grading result
+        # alerts and the EOD summary can still fire after midnight.
+        if sched and sched.get("date") and sched.get("date") != today:
+            _save_prior_dispatch_schedule(sched)
+            actions.append(f"archived_prior:{sched.get('date')}")
         sched = _compute_today_dispatch_schedule()
         _save_dispatch_schedule(sched)
         actions.append("reset_schedule")
+
+    # Prior-day catchup: fire any missing result alerts + EOD for the
+    # last 24h worth of posted picks. Covers games that graded after
+    # midnight CT.
+    prior = _load_prior_dispatch_schedule()
+    if prior and prior.get("date") and prior.get("date") != today:
+        try:
+            _prior_date = prior["date"]
+            _prior_date_dt = datetime.fromisoformat(_prior_date).date()
+            _age_days = (now_ct.date() - _prior_date_dt).days
+        except Exception:
+            _age_days = 999
+        # Only process prior state up to 24h old
+        if 0 < _age_days <= 1:
+            try:
+                import plays_log as _pl
+                try:
+                    _pl.grade_pending_backfill(days_back=2, grace_hours=1)
+                except Exception:
+                    pass
+                _graded = _pl.grade_all(limit_dates=3) or {}
+                _ppicks = _graded.get(prior["date"]) or []
+                _by_id = {p.get("id"): p for p in _ppicks if p.get("id")}
+                _ppairs = []
+                for _ss, _meta in (prior.get("slates") or {}).items():
+                    _s = int(_ss)
+                    _label = {1: "Morning", 2: "Afternoon",
+                              3: "Prime Time"}.get(_s, f"Slate {_s}")
+                    for _pid in (_meta.get("pick_ids") or []):
+                        _ppairs.append((_pid, _label))
+                if _ppairs:
+                    _late = _db.diff_newly_graded(_ppicks, _ppairs)
+                    if _late:
+                        _n = _db.send_result_alerts(webhook, _late)
+                        if _n:
+                            actions.append(f"prior_results:{_n}")
+                # Prior-day EOD if it never fired
+                _p_eod = prior.get("eod") or {}
+                if (not _p_eod.get("sent")) and _ppicks:
+                    _picks_by_slate = {}
+                    for _ss, _meta in (prior.get("slates") or {}).items():
+                        _s = int(_ss)
+                        _ids = _meta.get("pick_ids") or []
+                        _picks_by_slate[_s] = [_by_id[i] for i in _ids
+                                                if i in _by_id]
+                    _dl = _prior_date_dt.strftime("%A, %B %d")
+                    if _db.send_eod_summary(webhook, _picks_by_slate,
+                                              date_label=_dl):
+                        _p_eod["sent"] = True
+                        prior["eod"] = _p_eod
+                        _save_prior_dispatch_schedule(prior)
+                        actions.append("prior_eod")
+            except Exception:
+                pass
 
     def _parse(iso):
         if not iso:
