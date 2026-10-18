@@ -13851,6 +13851,46 @@ def _ai_analyze_matchup(sport_slug, game_ctx):
     else:
         ctx_lines.append(f"{sport_slug.upper()} matchup: {game_ctx.get('away_name','?')} vs {game_ctx.get('home_name','?')}")
 
+    # Phase 32 enhancements — same signal pipeline tags for every sport:
+    #   weather risk + injury scratch (pick_enhancers.D/E)
+    #   CLV summary (open vs current line_move_pp)
+    #   pick's current signal_score if attached
+    try:
+        import pick_enhancers as _pe
+        h_name = (game_ctx.get("home_name")
+                  or (game_ctx.get("home") or {}).get("team") or "")
+        a_name = (game_ctx.get("away_name")
+                  or (game_ctx.get("away") or {}).get("team") or "")
+        start_time = (game_ctx.get("start_time")
+                      or game_ctx.get("first_pitch") or "")
+        if h_name and start_time:
+            try:
+                wrisk = _pe.get_weather_risk(sport_slug, h_name, start_time)
+            except Exception:
+                wrisk = None
+            try:
+                irisk = _pe.get_injury_risk(sport_slug, h_name, a_name, start_time)
+            except Exception:
+                irisk = None
+            if wrisk and wrisk != "ok":
+                ctx_lines.append(f"- Weather: {wrisk} wind risk (impacts totals / passing)")
+            if irisk:
+                ctx_lines.append(f"- Injury note: {irisk}")
+    except Exception:
+        pass
+    # CLV / line-move summary from the pick itself if attached.
+    pk = game_ctx.get("pick") or {}
+    try:
+        lm = float(pk.get("line_move_pp") or 0.0)
+        if abs(lm) >= 0.005:
+            direction = "toward our side" if lm > 0 else "away from our side"
+            ctx_lines.append(f"- Line move: {lm*100:+.1f}pp {direction} since open")
+    except (TypeError, ValueError):
+        pass
+    sig = pk.get("signal_score")
+    if sig is not None:
+        ctx_lines.append(f"- Signal composite: {sig}/5 (EV cushion + line move + prob floor + Kalshi agree)")
+
     context = "\n".join(ctx_lines)
     prompt = f"""You are an expert sports betting analyst with access to the web.
 Produce the sharpest, most CURRENT read possible on this matchup. Use web search
@@ -15920,41 +15960,6 @@ def _compute_today_dispatch_schedule():
     }
 
 
-def _send_half_results(half, pick_ids):
-    """Look up graded picks for the given ids and post the results PNG."""
-    if not pick_ids:
-        return False
-    try:
-        import discord_bot as _db
-        import plays_log as _pl
-    except Exception:
-        return False
-    settings = _load_settings()
-    webhook = (settings.get("daily_picks_webhook_url") or "").strip()
-    if not webhook:
-        return False
-    try:
-        _pl.grade_pending_backfill(days_back=1, grace_hours=1)
-    except Exception:
-        pass
-    try:
-        graded = _pl.grade_all(limit_dates=2) or {}
-    except Exception:
-        graded = {}
-    lookup = {}
-    for _dt, picks_list in graded.items():
-        for p in picks_list:
-            if p.get("id") in pick_ids:
-                lookup[p.get("id")] = p
-    # Preserve the originally-posted order so the PNG matches what the
-    # user saw earlier (sorted again by W/L/P inside send_half_results).
-    picks_for_results = [lookup[pid] for pid in pick_ids if pid in lookup]
-    if not picks_for_results:
-        return False
-    date_label = datetime.now(CENTRAL).strftime("%A, %B %d")
-    return bool(_db.send_half_results(webhook, picks_for_results,
-                                       half=half, date_label=date_label))
-
 
 @app.route("/cron/dispatch")
 def cron_dispatch():
@@ -16245,28 +16250,6 @@ def cron_dispatch():
         "actions": actions, "state": sched,
     }, default=str), mimetype="application/json")
 
-
-@app.route("/cron/intro")
-def cron_intro():
-    """One-shot: posts the welcome intro text to the daily-picks
-    Discord channel. Call this once after configuring the webhook so
-    viewers see what the feed does; then pin that message in Discord."""
-    settings = _load_settings()
-    secret = (settings.get("cron_secret") or "").strip()
-    if secret and (request.args.get("key") or "") != secret:
-        return Response(json.dumps({"ok": False, "error": "unauthorized"}),
-                        status=401, mimetype="application/json")
-    webhook = (settings.get("daily_picks_webhook_url") or "").strip()
-    if not webhook:
-        return Response(json.dumps({"ok": False, "error": "no_webhook"}),
-                        mimetype="application/json")
-    try:
-        import discord_bot as _db
-        ok = _db.send_intro(webhook)
-    except Exception as e:
-        return Response(json.dumps({"ok": False, "error": str(e)}),
-                        mimetype="application/json")
-    return Response(json.dumps({"ok": bool(ok)}), mimetype="application/json")
 
 
 @app.route("/settings", methods=["GET", "POST"])

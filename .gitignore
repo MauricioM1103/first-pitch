@@ -11,3 +11,11 @@ mlb_tonight_*.csv
 # Logged plays — written at runtime by plays_log.py on the Render instance.
 # Keep local-only logs out of git; prod builds its own history.
 logs/
+
+# Local scratch + editor noise
+.claude.json
+.claude.json.backup
+.claude/
+.tmp.html
+*.tmp
+*.bak
