@@ -15507,27 +15507,8 @@ def _maybe_notify_changes(star_picks):
             dnb_alerts = _db.diff_posted_hard_dnb(star_picks, posted_by_slate)
             if dnb_alerts:
                 _db.send_change_alert(webhook, entrants=[], dnb_alerts=dnb_alerts)
-            # Expand pool: posted top-N picks (labeled by slate) PLUS
-            # any current-filter pick on today's board (labeled
-            # "Current filter"). User wants result alerts for every
-            # winning/losing pick, not only the top-5.
-            all_pairs = list(posted_pairs)
-            try:
-                import plays_log as _pl
-                posted_id_set = {pid for pid, _ in posted_pairs}
-                for sp in star_picks:
-                    pid = sp.get("id")
-                    if not pid or pid in posted_id_set:
-                        continue
-                    try:
-                        if _pl._passes_current_filter(sp):
-                            all_pairs.append((pid, "Current filter"))
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            if all_pairs:
-                graded = _db.diff_newly_graded(star_picks, all_pairs)
+            if posted_pairs:
+                graded = _db.diff_newly_graded(star_picks, posted_pairs)
                 if graded:
                     _db.send_result_alerts(webhook, graded)
     except Exception:
@@ -16040,7 +16021,7 @@ def cron_dispatch():
     GRADE_INTERVAL = 10 * 60  # 10 min between ESPN backfill calls
     DNB_INTERVAL   = 15 * 60  # 15 min between board rebuilds for DNB
 
-    if _throttle_due(_grade_throttle_path, GRADE_INTERVAL):
+    if posted_pairs and _throttle_due(_grade_throttle_path, GRADE_INTERVAL):
         try:
             import plays_log as _pl
             try:
@@ -16049,24 +16030,7 @@ def cron_dispatch():
                 pass
             graded_by_date = _pl.grade_all(limit_dates=2) or {}
             today_picks = (graded_by_date.get(today) or [])
-            # Discord posted top-5 picks — label by slate so viewers
-            # know which slate's pick just graded.
-            all_pairs = list(posted_pairs)
-            posted_id_set = {pid for pid, _ in posted_pairs}
-            # Plus every current-filter pick today that isn't in a
-            # posted slate — labeled generically. Catches wins/losses
-            # the user still cares about even though they didn't make
-            # the top-5 cutoff for that slate.
-            for p in today_picks:
-                pid = p.get("id")
-                if not pid or pid in posted_id_set:
-                    continue
-                try:
-                    if _pl._passes_current_filter(p):
-                        all_pairs.append((pid, "Current filter"))
-                except Exception:
-                    pass
-            graded = _db.diff_newly_graded(today_picks, all_pairs)
+            graded = _db.diff_newly_graded(today_picks, posted_pairs)
             if graded:
                 n = _db.send_result_alerts(webhook, graded)
                 if n:
