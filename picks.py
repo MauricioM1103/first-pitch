@@ -777,25 +777,30 @@ def _apply_consensus(picks):
         p["mc_prob"] = sim_prob
         p["divergence"] = abs(sim_prob - fair)
 
-        # Model consensus first: pricing + MC blended per-sport by analyzer.
+        # The "model view" is the Monte Carlo simulation output —
+        # that's the only Pinnacle-independent probability we have for
+        # most markets. (For ML / Spread / Total picks, p["fair_prob"]
+        # was initialized to the Pinnacle devig in generic_odds._add_bet,
+        # so blending it into the model side would double-count the
+        # market. Previously we did a two-stage blend here that halved
+        # the sim's intended weight.)
         pw, mw = sport_weights.get(p.get("sport"), (0.5, 0.5))
-        model_consensus = pw * fair + mw * sim_prob
         p["pricing_weight"] = pw
         p["mc_weight"] = mw
         p["pricing_prob"] = fair
-        p["model_consensus"] = model_consensus
+        p["model_consensus"] = sim_prob
 
-        # Final fair = per-sport-weighted blend of our model's view and
-        # Pinnacle's devigged market price. Default is 40% model / 60%
-        # market (Pinnacle is sharp); soccer uses 60% model / 40% market
-        # because the model is calibrated or UNDER-confident on soccer
-        # (see _SPORT_MODEL_WEIGHT comment).
+        # Single-stage per-sport blend. mw_sport (from MODEL_WEIGHT /
+        # _SPORT_MODEL_WEIGHT) is now the ACTUAL effective weight of
+        # the model view, and market_w the actual weight of Pinnacle.
+        # Default = 35% model / 65% Pinnacle; NFL/NCAAF 30/70; soccer
+        # 45/55; UFC 50/50 — matching the comments above.
         pinnacle = p.get("pinnacle_prob")
         if pinnacle is not None and pinnacle > 0:
-            consensus = mw_sport * model_consensus + market_w * pinnacle
+            consensus = mw_sport * sim_prob + market_w * pinnacle
             p["pinnacle_prob"] = pinnacle
         else:
-            consensus = model_consensus
+            consensus = sim_prob
         p["consensus_prob"] = consensus
         # fair_prob now = consensus so every downstream reader uses it
         p["fair_prob"] = consensus

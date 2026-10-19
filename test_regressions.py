@@ -267,5 +267,76 @@ class TestDispatcherReasonCodes(unittest.TestCase):
         self.assertEqual(r.get("reason"), "no_picks_in_slate_window")
 
 
+class TestFairProbBlend(unittest.TestCase):
+    """Would have caught: the double-counting bug in picks._augment_with_mc
+    where fair_prob (initialized to the Pinnacle devig) was blended
+    first into model_consensus and then AGAIN into consensus against
+    Pinnacle, halving the Monte Carlo sim's intended weight. Default
+    was advertised as 35% model / 65% market but ran at effectively
+    17% sim / 83% pinnacle. Fix: collapse to a single-stage per-sport
+    blend `mw_sport * sim + market_w * pinnacle`."""
+
+    def _blend(self, mw_sport, sim, pin):
+        """Mirror the production formula (post-fix)."""
+        market_w = 1.0 - mw_sport
+        return mw_sport * sim + market_w * pin
+
+    def test_default_blend_is_35_model_65_market(self):
+        # NHL/MLB default: mw_sport = 0.35
+        got = self._blend(0.35, sim=0.70, pin=0.60)
+        self.assertAlmostEqual(got, 0.35 * 0.70 + 0.65 * 0.60, places=6)
+        self.assertAlmostEqual(got, 0.635, places=3)
+
+    def test_nfl_blend_is_30_model_70_market(self):
+        got = self._blend(0.30, sim=0.70, pin=0.60)
+        self.assertAlmostEqual(got, 0.30 * 0.70 + 0.70 * 0.60, places=6)
+        self.assertAlmostEqual(got, 0.63, places=3)
+
+    def test_soccer_blend_is_45_model_55_market(self):
+        got = self._blend(0.45, sim=0.70, pin=0.60)
+        self.assertAlmostEqual(got, 0.45 * 0.70 + 0.55 * 0.60, places=6)
+        self.assertAlmostEqual(got, 0.645, places=3)
+
+    def test_ufc_blend_is_50_50(self):
+        got = self._blend(0.50, sim=0.70, pin=0.60)
+        self.assertAlmostEqual(got, 0.65, places=3)
+
+    def test_blend_matches_production_apply_consensus(self):
+        # Simulate the real _apply_consensus path with a stub pick.
+        # Values chosen so |sim - fair| < CONSENSUS_MAX_DIVERGENCE
+        # (0.08) and consensus > MIN_FAIR_PROB (0.46).
+        import picks
+        p = {
+            "sport":       "NHL",
+            "sport_slug":  "nhl",
+            "market":      "ML",
+            "pick":        "Home ML",
+            "home_team":   "A", "away_team": "B",
+            "fair_prob":    0.60,   # initial = Pinnacle devig
+            "pinnacle_prob": 0.60,
+            "decimal":      1.90,
+        }
+        # Monkeypatch _sim_for / _sim_prob_for_pick to return a known
+        # sim_prob close enough to not trigger the divergence filter.
+        orig_sim_for = picks._sim_for
+        orig_sim_prob_for = picks._sim_prob_for_pick
+        picks._SIM_CACHE.clear()
+        picks._sim_for = lambda *a, **k: {"home_win_prob": 0.66}
+        picks._sim_prob_for_pick = lambda sim, p: 0.66
+        try:
+            kept = picks._apply_consensus([dict(p)])
+        finally:
+            picks._sim_for = orig_sim_for
+            picks._sim_prob_for_pick = orig_sim_prob_for
+            picks._SIM_CACHE.clear()
+        self.assertEqual(len(kept), 1)
+        # NHL default mw_sport = 0.35 → expect 0.35*0.66 + 0.65*0.60
+        expected = 0.35 * 0.66 + 0.65 * 0.60
+        self.assertAlmostEqual(kept[0]["fair_prob"], expected, places=3,
+            msg=("Fair prob should be the single-stage blend. The "
+                 "pre-fix two-stage blend would have halved the sim's "
+                 "weight and returned a different value."))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
