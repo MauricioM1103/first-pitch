@@ -49,6 +49,13 @@ _TOP_N = 5
 _MIN_SIGNAL_FOR_POST = 3
 _SIGNAL_3_MIN_EV = 3.0  # percent
 
+# EOD summary pagination.
+# 9 cards per PNG mirrors the slate layout, 3 PNG max gives us up to
+# 27 picks across the day. More than 27 very rarely happens; if it
+# does we drop the lowest-signal pending picks past the cap.
+_EOD_PER_PNG = 9
+_EOD_MAX_PNGS = 3
+
 
 _SPORT_FLOORS_PATH = os.path.join(_BASE_DIR, "logs",
                                    "sport_signal_floors.json")
@@ -160,11 +167,13 @@ _SLATE_WINDOWS = {
     3: (18, 28),   # Prime:     games 6 PM CT+ (28 = next-day 4 AM, catches 10 PM+)
 }
 _SLATE_LABELS = {
+    0: "Day",           # fallback bucket when exact slate is unknown
     1: "Morning",
     2: "Afternoon",
     3: "Prime Time",
 }
 _SLATE_EMOJI = {
+    0: ":bar_chart:",
     1: ":sun_with_face:",
     2: ":partly_sunny:",
     3: ":city_sunset:",
@@ -867,29 +876,51 @@ def diff_posted_hard_dnb(star_picks, posted_slate_ids):
 
 
 def send_eod_summary(webhook_url, picks_by_slate, date_label=""):
-    """End-of-day summary PNG. picks_by_slate = {slate_num: [picks]}
-    where each pick has been graded (result + profit_u). Shows the
-    whole day's record + units + per-slate breakdown."""
+    """End-of-day summary. picks_by_slate = {slate_num: [picks]} where
+    each pick has been graded (result + profit_u). Shows the WHOLE
+    DAY's record across every slate, paginated into 1-3 PNGs (up to
+    _EOD_PER_PNG cards per image, _EOD_MAX_PNGS images total).
+
+    Pagination: wins first (strongest signal first), then losses
+    (worst first — biggest units bled), then pushes/pending. Keeps
+    the top-of-list visually dense with the positives, which is what
+    the viewer most wants to see at EOD.
+    """
     if not webhook_url or not picks_by_slate:
         return 0
     label = date_label or datetime.utcnow().strftime("%A, %B %d")
 
+    # Flatten + dedup by id in case the same pick appears on multiple
+    # slate pick_id lists (shouldn't happen, defensive).
     all_picks = []
+    seen = set()
     per_slate_rec = {}
     for s, picks in picks_by_slate.items():
         if not picks:
             continue
-        all_picks.extend(picks)
-        w = sum(1 for p in picks if p.get("result") == "W")
-        l = sum(1 for p in picks if p.get("result") == "L")
-        pu = sum(1 for p in picks if p.get("result") == "P")
+        w = l = pu = pend_s = 0
         u = 0.0
         for p in picks:
+            pid = p.get("id")
+            if pid and pid in seen:
+                continue
+            if pid:
+                seen.add(pid)
+            all_picks.append(p)
+            r = p.get("result")
+            if r == "W":
+                w += 1
+            elif r == "L":
+                l += 1
+            elif r == "P":
+                pu += 1
+            else:
+                pend_s += 1
             try:
                 u += float(p.get("profit_u") or 0.0)
             except (TypeError, ValueError):
                 pass
-        per_slate_rec[s] = (w, l, pu, u, len(picks) - (w + l + pu))
+        per_slate_rec[s] = (w, l, pu, u, pend_s)
 
     if not all_picks:
         return 0
@@ -907,6 +938,8 @@ def send_eod_summary(webhook_url, picks_by_slate, date_label=""):
     pend = len(all_picks) - settled
     hit = f"{(tw / settled * 100):.0f}%" if settled else "n/a"
 
+    # Preamble text (unchanged shape — just the headline + per-slate
+    # breakdown)
     lines = [
         f":bar_chart: **Day summary — {label}**",
         "",
@@ -924,19 +957,46 @@ def send_eod_summary(webhook_url, picks_by_slate, date_label=""):
         lines.append(line)
     post_text(webhook_url, "\n".join(lines))
 
-    # One tall PNG with every graded pick, sorted by result
-    def _rank(p):
-        order = {"W": 0, "L": 1, "P": 2}.get(p.get("result"), 3)
-        return (order, -(int(p.get("signal_score") or 0)))
-    sorted_picks = sorted(all_picks, key=_rank)
-    png = render_picks_png_tall(
-        sorted_picks[:_TOP_N * 3],  # cap height at ~15 cards
-        title=f"Day Summary — {tw}-{tl}-{tp}",
-        subtitle=f"{label}  ·  {tu:+.2f}u",
-    )
-    if not png:
-        return 0
-    return 1 if send_discord_image(webhook_url, png, "eod_summary.png") else 0
+    # Pagination.
+    # Order: wins (signal desc) → losses (|profit_u| desc, biggest
+    # bleeders first) → pushes → pending.
+    def _profit(p):
+        try:
+            return float(p.get("profit_u") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    wins    = [p for p in all_picks if p.get("result") == "W"]
+    losses  = [p for p in all_picks if p.get("result") == "L"]
+    pushes  = [p for p in all_picks if p.get("result") == "P"]
+    pending_picks = [p for p in all_picks
+                     if p.get("result") not in ("W", "L", "P")]
+    wins.sort(key=lambda p: -(int(p.get("signal_score") or 0)))
+    losses.sort(key=_profit)                        # most-negative first
+    pushes.sort(key=lambda p: -(int(p.get("signal_score") or 0)))
+    pending_picks.sort(key=lambda p: -(int(p.get("signal_score") or 0)))
+    ordered = wins + losses + pushes + pending_picks
+
+    PER_PNG = _EOD_PER_PNG
+    MAX_PNGS = _EOD_MAX_PNGS
+    total_pages = max(1, min(MAX_PNGS, (len(ordered) + PER_PNG - 1) // PER_PNG))
+    sent_count = 0
+    for page_idx in range(total_pages):
+        chunk = ordered[page_idx * PER_PNG:(page_idx + 1) * PER_PNG]
+        if not chunk:
+            break
+        if total_pages > 1:
+            title = f"Day Summary — {tw}-{tl}-{tp}  ({page_idx + 1}/{total_pages})"
+        else:
+            title = f"Day Summary — {tw}-{tl}-{tp}"
+        subtitle = f"{label}  ·  {tu:+.2f}u"
+        png = render_picks_png_tall(chunk, title=title, subtitle=subtitle)
+        if not png:
+            continue
+        fname = f"eod_summary_{page_idx + 1}.png" if total_pages > 1 else "eod_summary.png"
+        if send_discord_image(webhook_url, png, fname):
+            sent_count += 1
+    return sent_count
 
 
 # Keep send_daily_picks + diff_posted_dnb as aliases for backward
@@ -1056,26 +1116,30 @@ def _write_result_sent(ids):
         pass
 
 
-def diff_newly_graded(picks_source, posted_pairs):
-    """Return [(pick, half_label), ...] for POSTED top-10 picks that
-    just graded W/L/P and haven't been alerted today.
+def diff_newly_graded(picks_source, posted_pairs, wins_only=True):
+    """Return [(pick, slate_label), ...] for POSTED picks that just
+    graded and haven't been alerted today.
 
     picks_source: iterable of pick dicts (from the live board or from
                   plays_log.grade_all for today).
-    posted_pairs: list of (pick_id, half_label) tuples.
+    posted_pairs: list of (pick_id, slate_label) tuples.
+    wins_only:    True (default) — only fire alerts for wins (W).
+                  Losses and pushes stay quiet; the EOD summary carries
+                  them in bulk. Set False to also surface L/P.
 
     Dedup via logs/discord_result_sent.json so each pick fires exactly
     one result alert per day."""
     sent = _load_result_sent()
     pick_by_id = {p.get("id"): p for p in picks_source if p.get("id")}
+    accept = ("W",) if wins_only else ("W", "L", "P")
     out = []
-    for pid, half_label in posted_pairs:
+    for pid, slate_label in posted_pairs:
         p = pick_by_id.get(pid)
         if not p:
             continue
         r = p.get("result")
-        if r in ("W", "L", "P") and pid not in sent:
-            out.append((p, half_label))
+        if r in accept and pid not in sent:
+            out.append((p, slate_label))
             sent.add(pid)
     if out:
         _write_result_sent(sent)
@@ -1100,19 +1164,23 @@ def _format_scoreline(pick):
 
 
 def send_result_alerts(webhook_url, graded_pairs):
-    """One PNG per newly-graded pick with its W/L/P chip and a caption
-    naming the slate + units + final scoreline. No rate limit — each
-    pick fires exactly once."""
+    """One single-pick PNG per newly-graded WIN. Losses and pushes
+    stay quiet — only wins get a live alert (quiet feed for the user).
+    Each winning pick fires exactly once; the EOD summary still shows
+    the whole day's record including L/P.
+
+    `graded_pairs` is expected to be prefiltered to wins already (via
+    diff_newly_graded(wins_only=True)) but we re-check here as a
+    safety net so an upstream call with the default (W/L/P) can't
+    sneak a loss PNG through."""
     if not webhook_url or not graded_pairs:
         return 0
     sent = 0
     stamp = datetime.utcnow().strftime("%H:%M UTC")
-    for pick, half_label in graded_pairs:
+    for pick, slate_label in graded_pairs:
         r = pick.get("result")
-        emoji = {"W": ":white_check_mark:",
-                 "L": ":x:",
-                 "P": ":white_flag:"}.get(r, "")
-        word = {"W": "WON", "L": "LOST", "P": "PUSH"}.get(r, r or "RESULT")
+        if r != "W":
+            continue
         try:
             units = float(pick.get("profit_u") or 0.0)
             units_txt = f"  ·  {units:+.2f}u"
@@ -1122,14 +1190,14 @@ def send_result_alerts(webhook_url, graded_pairs):
         score_line = f"  ·  Final: {score}" if score else ""
         png = render_picks_png_tall(
             [pick],
-            title=f"{word} — {half_label}",
+            title=f"WON — {slate_label}",
             subtitle=(f"{pick.get('pick') or ''}{units_txt}"
                       f"{score_line}  ·  {stamp}"),
         )
         if png:
-            msg = (f"{emoji} **{half_label} pick** — **{word}**"
+            msg = (f":white_check_mark: **{slate_label} pick** — **WON**"
                    f"{units_txt}{(' | ' + score) if score else ''}")
-            if send_discord_image(webhook_url, png, f"result_{r}.png", msg):
+            if send_discord_image(webhook_url, png, "result_W.png", msg):
                 sent += 1
     return sent
 

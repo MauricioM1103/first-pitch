@@ -16024,8 +16024,14 @@ def _load_prior_dispatch_schedule():
     except Exception:
         pass
     # Fallback 2: synthesize prior state from discord_posted.json for
-    # YESTERDAY. Covers the first run after this fix lands when the
-    # prior-schedule file was never populated during the migration.
+    # YESTERDAY. Covers the case where the state file was lost at
+    # midnight rollover (Render spin-down) before the prior-schedule
+    # mirror caught up. We can't recover exact slate attribution, so
+    # we park every posted id in slate 0 — the EOD renderer treats
+    # slate 0 as "Day's picks" rather than mis-labelling as any one
+    # slate. Previously this fallback dumped everything into slate 3
+    # (Prime Time), which is why some EOD summaries only showed the
+    # prime-time slice.
     try:
         posted = _load_discord_posted_log()
         if not posted:
@@ -16034,16 +16040,12 @@ def _load_prior_dispatch_schedule():
         ids = posted.get(yesterday) or []
         if not ids:
             return {}
-        # Dump every posted id into "slate 3" (Prime Time) as a label.
-        # We don't know which slate they came from without the real
-        # state, but Prime Time is the most common for late grades.
         return {
             "version": 2,
             "date":    yesterday,
             "slates": {
-                "1": {"pick_ids": [], "sent": True},
-                "2": {"pick_ids": [], "sent": True},
-                "3": {"pick_ids": ids, "sent": True},
+                "0": {"pick_ids": ids, "sent": True,
+                      "label_override": "Day"},
             },
             "eod": {"sent": False, "post_at_iso": None},
         }
@@ -16351,6 +16353,21 @@ def _cron_dispatch_inner(_db, settings, webhook):
                         _ids = _meta.get("pick_ids") or []
                         _picks_by_slate[_s] = [_by_id[i] for i in _ids
                                                 if i in _by_id]
+                    # Fallback: union every id posted yesterday from
+                    # discord_posted.json if no slate carries ids
+                    # (schedule file was lost during the day).
+                    if not any(_picks_by_slate.values()):
+                        try:
+                            _posted_ids = set(
+                                _load_discord_posted_log().get(prior["date"]) or [])
+                        except Exception:
+                            _posted_ids = set()
+                        if _posted_ids:
+                            _picks_by_slate = {
+                                0: [_by_id[i] for i in _posted_ids
+                                    if i in _by_id]
+                            }
+                            actions.append("prior_eod_fallback_from_posted_log")
                     _dl = _prior_date_dt.strftime("%A, %B %d")
                     if _db.send_eod_summary(webhook, _picks_by_slate,
                                               date_label=_dl):
@@ -16493,6 +16510,22 @@ def _cron_dispatch_inner(_db, settings, webhook):
             for s_str, meta in slates.items():
                 ids = meta.get("pick_ids") or []
                 picks_by_slate[int(s_str)] = [by_id[i] for i in ids if i in by_id]
+            # Fallback: if NO slate has pick_ids (state got wiped by
+            # a mid-day restart or clock drift), union every id in
+            # today's discord_posted.json so EOD still shows the full
+            # day instead of silently emitting an empty summary. These
+            # fallback ids go in slate 0 ("Day") since we can't
+            # attribute them back to specific slates.
+            if not any(picks_by_slate.values()):
+                try:
+                    posted_today_ids = set(
+                        _load_discord_posted_log().get(today) or [])
+                except Exception:
+                    posted_today_ids = set()
+                if posted_today_ids:
+                    picks_by_slate = {0: [by_id[i] for i in posted_today_ids
+                                           if i in by_id]}
+                    actions.append("eod_fallback_from_posted_log")
             if _db.send_eod_summary(webhook, picks_by_slate,
                                      date_label=now_ct.strftime("%A, %B %d")):
                 _mark_fired(eod_key)
@@ -16523,6 +16556,19 @@ def _cron_dispatch_inner(_db, settings, webhook):
                      3: "Prime Time"}.get(s, f"Slate {s}")
             for pid in ids:
                 posted_pairs.append((pid, label))
+    # Fallback: if state has no attributed pick_ids (schedule file was
+    # lost during the day), use discord_posted.json so WIN alerts still
+    # fire for picks that already went out. These lose their slate
+    # attribution and get the "Day" label.
+    if not posted_pairs:
+        try:
+            posted_ids_today = set(_load_discord_posted_log().get(today) or [])
+        except Exception:
+            posted_ids_today = set()
+        for pid in posted_ids_today:
+            posted_pairs.append((pid, "Day"))
+        if posted_ids_today:
+            posted_by_slate[0] = sorted(posted_ids_today)
     # Throttles: UptimeRobot pings every 5 min, so step 5 (ESPN grade
     # backfill) and step 6 (board rebuild for hard-DNB check) run far
     # more often than their underlying data changes. Gate each with a
@@ -16557,10 +16603,10 @@ def _cron_dispatch_inner(_db, settings, webhook):
     GRADE_INTERVAL = 10 * 60  # 10 min between ESPN backfill calls
     DNB_INTERVAL   = 15 * 60  # 15 min between board rebuilds for DNB
 
-    # Per-pick result PNGs are intentionally disabled — results now
-    # come through once per day in the EOD summary slide only. We
-    # still keep grade_pending_backfill on throttle so the EOD
-    # aggregation has fresh grades to work with.
+    # Per-pick WIN alerts (fires once per pick, win-only). Grading
+    # backfill runs on the same throttle so results propagate without
+    # thrashing ESPN. Losses + pushes are not announced — they're
+    # summarized in the EOD slide.
     if _throttle_due(_grade_throttle_path, GRADE_INTERVAL):
         try:
             import plays_log as _pl
@@ -16568,6 +16614,30 @@ def _cron_dispatch_inner(_db, settings, webhook):
                 _pl.grade_pending_backfill(days_back=1, grace_hours=1)
             except Exception:
                 pass
+            # Pull today's graded picks and emit a one-pick PNG per
+            # posted pick that just flipped to W.
+            try:
+                _graded_today = (_pl.grade_all(limit_dates=2) or {}).get(today) or []
+            except Exception:
+                _graded_today = []
+            if _graded_today and posted_pairs:
+                # posted_pairs is a list of (pick_id, slate_label).
+                pairs_pid = [(pid, lbl) for (pid, lbl) in posted_pairs]
+                try:
+                    newly = _db.diff_newly_graded(_graded_today, pairs_pid,
+                                                    wins_only=True)
+                except TypeError:
+                    # Older signature without wins_only — fall back then
+                    # filter here as a safety net.
+                    newly = _db.diff_newly_graded(_graded_today, pairs_pid)
+                    newly = [(p, l) for (p, l) in newly if p.get("result") == "W"]
+                if newly:
+                    try:
+                        n = _db.send_result_alerts(webhook, newly)
+                        if n:
+                            actions.append(f"win_alerts:{n}")
+                    except Exception:
+                        pass
             _mark_throttle(_grade_throttle_path)
         except Exception:
             pass
