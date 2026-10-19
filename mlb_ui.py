@@ -16414,6 +16414,23 @@ def debug_blend_backtest():
         max_dec = float(request.args.get("max_dec") or "0.0")
     except Exception:
         max_dec = 0.0
+    try:
+        # Decimal floor — restrict to picks with price >= min_dec.
+        # Combined with max_dec, defines a price band (e.g. 1.30-1.65
+        # for whale-tier). 0 = disabled.
+        min_dec = float(request.args.get("min_dec") or "0.0")
+    except Exception:
+        min_dec = 0.0
+    # Whale mode: apply the plays_log._is_whale_pick definition exactly
+    # (fp >= 0.72, decimal 1.30-1.65, signal >= 4, ev >= 1.5, no risk).
+    # Overrides other filter params when set.
+    whale = request.args.get("whale") in ("1", "true", "yes")
+    if whale:
+        min_signal = 4
+        min_ev     = 1.5
+        min_prob   = 0.72
+        min_dec    = 1.30
+        max_dec    = 1.65
 
     graded_by_date = _pl.grade_all(limit_dates=days) or {}
 
@@ -16552,6 +16569,7 @@ def debug_blend_backtest():
                 and raw_ev >= min_ev
                 and raw_fair >= min_prob
                 and (max_dec <= 0 or dec <= max_dec)
+                and (min_dec <= 0 or dec >= min_dec)
             ),
             "result": p.get("result"),
             "profit_u": p.get("profit_u") or 0.0,
