@@ -16178,12 +16178,24 @@ def debug_dispatch():
     now_ct   = datetime.now(CENTRAL)
     today    = now_ct.date().isoformat()
 
-    # Load current schedule state (via log_persist mirror if local gone)
+    # Load current schedule state. The local file lives on Render's
+    # ephemeral FS and can disappear on spin-down; `_load_dispatch_
+    # schedule_remote_fallback` reads the GitHub mirror. Prefer the
+    # local file when it exists and matches today's date — otherwise
+    # fall back to the mirror so this page reflects reality instead
+    # of showing an empty schedule the live dispatcher clearly has.
     sched = {}
     try:
         sched = _load_dispatch_schedule() or {}
     except Exception:
         pass
+    if sched.get("date") != today:
+        try:
+            remote = _load_dispatch_schedule_remote_fallback() or {}
+            if remote.get("date") == today:
+                sched = remote
+        except Exception:
+            pass
     prior = {}
     try:
         prior = _load_prior_dispatch_schedule() or {}
