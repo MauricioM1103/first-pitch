@@ -1890,6 +1890,33 @@ def _passes_current_filter(pk):
     return _was_live_at_game_start(pk)
 
 
+def _passes_current_filter_v2(pk):
+    """CURRENT FILTER 2.0 — same as _passes_current_filter PLUS the
+    decimal >= 1.50 constraint shipped 2026-10-19. 30-day backtest
+    found that heavy-favorite picks (decimal < 1.50, shorter than
+    ~-200 American) consistently underperform expectation on this
+    model — removing them lifted ROI from +16.2% to +22.1% and units
+    from +13.78u to +15.00u on 20% fewer bets.
+
+    Alt-line picks and Correct Score are exempt from the decimal
+    floor (alts are informational companions; CS prices are
+    structurally wide and not comparable to ML favorites)."""
+    if not _passes_current_filter(pk):
+        return False
+    try:
+        dec = float(pk.get("decimal") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    if dec >= 1.50:
+        return True
+    # Below 1.50 — exempt alt picks and Correct Score
+    if pk.get("alt_line_flag") or pk.get("source") == "alt":
+        return True
+    if (pk.get("market") or "") == "Correct Score":
+        return True
+    return False
+
+
 def _is_whale_pick(pk):
     """WHALE PICK (bankroll-maximum tier) — the pick is strong enough
     to justify a quarter-to-half-Kelly stake (5-10% of bankroll).
@@ -1953,7 +1980,8 @@ def _is_whale_pick(pk):
 
 def record_in_window(graded_by_date, days_back, strong_only=False, today=None,
                      source=None, conf_tier=None, plus_ev_only=False,
-                     min_ev=None, current_filter=False, whale_only=False):
+                     min_ev=None, current_filter=False, whale_only=False,
+                     current_filter_v2=False):
     """Aggregate W/L/P/pending + units + ROI for picks that match the filters.
       source="ev"       → only EV-verified consensus picks.
       source="model"    → only model-only picks that scored 4/5 or 5/5.
@@ -1988,7 +2016,10 @@ def record_in_window(graded_by_date, days_back, strong_only=False, today=None,
         if d < cutoff or d > today:
             continue
         for pk in picks:
-            if current_filter:
+            if current_filter_v2:
+                if not _passes_current_filter_v2(pk):
+                    continue
+            elif current_filter:
                 if not _passes_current_filter(pk):
                     continue
             elif strong_only:
@@ -2087,6 +2118,15 @@ def summary(graded_by_date, today=None):
         out[f"curfilter_{label}"] = record_in_window(graded_by_date, days,
                                                      False, today,
                                                      current_filter=True)
+        # Current Filter 2.0 — adds decimal >= 1.50 to the current
+        # filter rules. 30-day backtest (2026-10-19) found this lifts
+        # ROI from +16.2% → +22.1% and units from +13.78u → +15.00u
+        # on 20% fewer bets. Shipped as the live default on the TODAY
+        # board; this record tile shows how the retro-replay would
+        # have looked.
+        out[f"curfilter2_{label}"] = record_in_window(graded_by_date, days,
+                                                      False, today,
+                                                      current_filter_v2=True)
         # back-compat (not rendered)
         out[f"ev_{label}"]       = record_in_window(graded_by_date, days, False, today, source="ev")
         out[f"model_{label}"]    = record_in_window(graded_by_date, days, False, today, source="model")

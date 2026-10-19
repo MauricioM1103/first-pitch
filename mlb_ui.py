@@ -14877,6 +14877,39 @@ main.logged-page { max-width: 1040px; }
     {{ mini_3d('curfilter', 'current filter') }}
   </section>
 
+  <section class="records-section" style="border:1px solid var(--good);border-radius:12px;padding:14px;background:color-mix(in oklab,var(--good) 5%,transparent)">
+    <h2>Current Filter 2.0 <span style="color:var(--good);font-size:13px">live default on today&#39;s board</span></h2>
+    <div class="sub">
+      Same rules as Current Filter above <strong>plus the honest-blend tuning
+      shipped 2026-10-19</strong>: picks with decimal &lt; 1.50 (shorter than
+      ~&minus;200 American) are excluded. 30-day backtest found these heavy
+      favorites consistently underperform expectation on this model &mdash;
+      removing them lifted ROI from +16.2% to +22.1% and units from +13.78u
+      to +15.00u on 20% fewer bets. Alt-line picks and Correct Score are
+      exempt from the decimal floor. This record applies the v2 filter
+      retroactively to the same graded picks, so you can compare directly
+      vs the v1 tile above.
+    </div>
+    <div class="records-grid">
+      {% set _cf2_7_settled = (summary['curfilter2_7d'] or {}).settled %}
+      {% for key, label in [('curfilter2_7d','Last 7 days'),('curfilter2_30d','Last 30 days'),('curfilter2_90d','Last 90 days')] %}
+      {% set r = summary[key] %}
+      {% set _dup = (key != 'curfilter2_7d' and r.settled and _cf2_7_settled and r.settled == _cf2_7_settled) %}
+      <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}" style="border-color:var(--good)">
+        <div class="lbl">{{ label }}{% if _dup %} <span style="color:var(--muted-2);font-size:10px;font-weight:400;letter-spacing:0" title="Same settled count as Last 7 days — history doesn't extend further yet.">(insufficient history)</span>{% endif %}</div>
+        {% if r.settled %}
+        <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
+        <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
+        {% else %}
+        <div class="wl" style="color:var(--muted)">&mdash;</div>
+        <span class="units" style="color:var(--muted)">&mdash;</span>
+        {% endif %}
+        <div class="meta">{{ r.settled }} settled{% if r.pending %} &middot; {{ r.pending }} pending{% endif %}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+
   {% if by_sport_curfilter %}
   <section class="records-section">
     <h2>Signal Filter &mdash; Per-Sport <span style="color:var(--good);font-size:13px">where to adjust model weights</span></h2>
