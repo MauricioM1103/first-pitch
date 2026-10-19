@@ -761,18 +761,23 @@ def send_slate_picks(webhook_url, picks, date_label="", slate=1):
     """Post one tall PNG with the top-N (Signal >= 4) picks for the
     given slate (1 Morning / 2 Afternoon / 3 Prime Time).
 
-    Returns {"sent": 0|1, "pick_ids": [...]} so the caller can store
-    exactly which picks were posted for later DNB tracking + results."""
+    Returns {"sent": 0|1, "pick_ids": [...], "reason": "..."} so the
+    caller can tell the difference between "no picks were in this
+    slate's time window" (should NOT retry) and "post to Discord
+    failed" (SHOULD retry on next tick)."""
     if not webhook_url or not picks:
-        return {"sent": 0, "pick_ids": []}
+        return {"sent": 0, "pick_ids": [], "reason": "no_webhook_or_no_board"}
     label = date_label or datetime.utcnow().strftime("%A, %B %d")
     slate_name = _SLATE_LABELS.get(slate, "Slate")
     emoji = _SLATE_EMOJI.get(slate, ":star:")
 
-    pool = _filter_slate(picks, slate)
+    pool_in_window = _filter_slate(picks, slate)
+    if not pool_in_window:
+        return {"sent": 0, "pick_ids": [],
+                "reason": "no_picks_in_slate_window"}
     # Signal 3.5 gate — Signal 4+ always qualifies, Signal 3 only
     # with EV >= _SIGNAL_3_MIN_EV. _rank_picks drops DNB separately.
-    pool = [p for p in pool if _qualifies_for_discord(p)]
+    pool = [p for p in pool_in_window if _qualifies_for_discord(p)]
     ranked = _rank_picks(pool)
     # Correlated-pick avoidance: at most 1 pick per game. If multiple
     # picks on the same matchup qualify, keep only the strongest.
@@ -795,8 +800,11 @@ def send_slate_picks(webhook_url, picks, date_label="", slate=1):
     top = _diversify_by_market(deduped, _TOP_N)
     if not top:
         # Stay quiet if nothing clears the Signal >= 4 bar — better than
-        # posting an empty slide or dropping to Signal 3 noise.
-        return {"sent": 0, "pick_ids": []}
+        # posting an empty slide or dropping to Signal 3 noise. Caller
+        # should treat this as "nothing to send", not a transient
+        # failure to retry.
+        return {"sent": 0, "pick_ids": [],
+                "reason": "nothing_cleared_signal_3_5_gate"}
 
     hours = sorted([h for h in (_pick_hour_ct(p) for p in top) if h is not None])
     if hours:
@@ -841,10 +849,15 @@ def send_slate_picks(webhook_url, picks, date_label="", slate=1):
         subtitle=label,
     )
     if not png:
-        return {"sent": 0, "pick_ids": []}
+        return {"sent": 0, "pick_ids": [], "reason": "png_render_failed"}
     posted_ids = [p.get("id") for p in top if p.get("id")]
     ok = send_discord_image(webhook_url, png, f"slate{slate}.png")
-    return {"sent": 1 if ok else 0, "pick_ids": posted_ids}
+    if ok:
+        return {"sent": 1, "pick_ids": posted_ids}
+    # The actual HTTP POST to Discord failed (401/404/429/network).
+    # Caller should retry this on the next tick.
+    return {"sent": 0, "pick_ids": posted_ids,
+            "reason": "discord_post_failed"}
 
 
 def diff_posted_hard_dnb(star_picks, posted_slate_ids):

@@ -15772,10 +15772,11 @@ def _send_slate_png(slate):
         # Log posted ids so /logged can show a dedicated "Discord posted"
         # record alongside the current filter.
         _record_discord_posted(_date_str, r["pick_ids"])
-    return {"sent": r.get("sent", 0),
-            "picks": len(flat),
-            "slate": slate,
-            "pick_ids": r.get("pick_ids", [])}
+    return {"sent":    r.get("sent", 0),
+            "picks":   len(flat),
+            "slate":   slate,
+            "pick_ids": r.get("pick_ids", []),
+            "reason":  r.get("reason")}
 
 
 # Legacy wrapper kept so /cron/daily-picks still works.
@@ -16618,32 +16619,41 @@ def _cron_dispatch_inner(_db, settings, webhook):
             meta["pick_ids"] = r.get("pick_ids", [])
             attempts = int(meta.get("attempts") or 0) + 1
             meta["attempts"] = attempts
+            reason = r.get("reason")
             meta["last_result"] = {
                 "sent":   bool(r.get("sent")),
-                "error":  r.get("error"),
+                "reason": reason,
                 "picks":  r.get("picks"),
             }
             slates[str(s)] = meta
             changed = True
+
+            # Reasons that mean "legitimately nothing to post" — mark
+            # done so we don't retry forever. Reasons that mean "the
+            # actual HTTP POST failed" leave sent=False so the next
+            # 5-min UptimeRobot tick retries, up to _MAX_SLATE_ATTEMPTS.
+            _TERMINAL_REASONS = {
+                "no_picks_in_slate_window",
+                "nothing_cleared_signal_3_5_gate",
+                "no_webhook_or_no_board",
+            }
             if r.get("sent"):
                 meta["sent"] = True
                 _mark_fired(slate_key)
                 actions.append(f"slate{s}_picks")
-            elif (r.get("picks") or 0) == 0:
-                # Board built but nothing qualified — legitimately
-                # nothing to post. Mark done so we don't retry forever.
+            elif reason in _TERMINAL_REASONS:
                 meta["sent"] = True
                 _mark_fired(slate_key)
-                actions.append(f"slate{s}_skipped:no_qualifying_picks")
+                actions.append(f"slate{s}_skipped:{reason}")
             elif attempts >= _MAX_SLATE_ATTEMPTS:
                 # Capped: webhook has been failing persistently. Give up
                 # for today so we don't retry forever, but DO NOT mark
                 # fired — the operator should check /debug/discord.
                 meta["sent"] = True
-                actions.append(f"slate{s}_gave_up_after_{attempts}:{r.get('error')}")
+                actions.append(f"slate{s}_gave_up_after_{attempts}:{reason}")
             else:
                 # Transient failure — leave sent=False so next tick retries.
-                actions.append(f"slate{s}_retry_{attempts}:{r.get('error') or 'post_failed'}")
+                actions.append(f"slate{s}_retry_{attempts}:{reason or 'post_failed'}")
 
     # 4. EOD summary — 1 AM next day, fires once per calendar day. We
     # pull the saved pick_ids from each slate and grade via plays_log.
