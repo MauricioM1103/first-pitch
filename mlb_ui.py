@@ -7553,6 +7553,24 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
         for p in row["picks"]:
             _apply_fair_prob_blend(p)
             p["signal_score"] = _signal_score(p)
+            # Backtested 2026-10-19: heavy favorites (decimal < 1.50,
+            # ~ -200 American or shorter) consistently underperform
+            # expectation on this model. 30-day backtest showed
+            # excluding them lifted ROI from +16.22% to +22.06% and
+            # units from +13.78u to +15.00u on 20% fewer bets. Mark
+            # these picks do_not_bet so they stay visible as context
+            # but drop out of the current-filter record and TODAY
+            # tally. Alt-line picks and Correct Score are exempt
+            # (alt picks are informational; CS prices are wide by
+            # design, not comparable to ML favorites).
+            try:
+                _dec = float(p.get("decimal") or 0.0)
+            except (TypeError, ValueError):
+                _dec = 0.0
+            if (_dec and _dec < 1.50
+                    and not p.get("alt_line_flag")
+                    and (p.get("market") or "") != "Correct Score"):
+                p["do_not_bet"] = True
             if p.get("model_only"):
                 p["strong"] = False
                 p["whale"]  = False
