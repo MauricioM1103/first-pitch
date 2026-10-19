@@ -2661,6 +2661,19 @@ details.also-wrap .today-card { opacity: 0.88; }
             <span class="ev-chip">+{{ '%.1f'|format(p.ev_pct) }}% EV</span>
           {% endif %}
         {% endif %}
+        {# Model-outlier chip: fires when our model prob and Pinnacle's
+           devigged prob disagree by >= 10 percentage points, regardless
+           of EV. Big disagreements often indicate a model artifact,
+           late-breaking info Pinnacle has but we don't (e.g. injury
+           scratch, lineup change), or a stale Pinnacle price. Shown
+           alongside the EV chip so the user sees the two sanity signals
+           together. Does NOT change the pick's rank — purely a flag. #}
+        {% if p.fair_prob is not none and p.pinnacle_prob is not none %}
+          {% set _gap_pp = ((p.fair_prob - p.pinnacle_prob) * 100) %}
+          {% if _gap_pp|abs >= 10 %}
+            <span class="ev-chip ev-chip-sanity" title="Model prob diverges from Pinnacle devigged by {{ '%+.1f'|format(_gap_pp) }}pp. Big disagreements often indicate a model artifact, late-breaking info Pinnacle has baked in (lineup, scratch, weather), or a stale market price. Verify before placing.">&#916; {{ '%+.0f'|format(_gap_pp) }}pp vs Pinnacle &#9888;</span>
+          {% endif %}
+        {% endif %}
         {% if p.line_move_pp is not none and (p.line_move_pp|abs) >= 0.001 %}
           <span class="move-chip {{ 'adverse' if p.line_move_pp < 0 else '' }}">
             {{ '↑' if p.line_move_pp > 0 else '↓' }}{{ '%+.1f'|format(p.line_move_pp * 100) }}pp
@@ -16148,6 +16161,124 @@ def _compute_today_dispatch_schedule():
         },
     }
 
+
+
+@app.route("/debug/dispatch")
+def debug_dispatch():
+    """Human-readable ops dashboard for the Discord dispatcher. Shows:
+    today's schedule state (agenda / 3 slates / EOD) with sent-flag,
+    attempts, last-result, and queued post times; whether UptimeRobot
+    appears to still be pinging (last-dispatch-tick age); the win
+    alerts already fired today; and the current webhook probe status.
+    One glance tells you if everything's healthy without parsing JSON.
+    """
+    import json as _json
+    settings = _load_settings()
+    webhook  = (settings.get("daily_picks_webhook_url") or "").strip()
+    now_ct   = datetime.now(CENTRAL)
+    today    = now_ct.date().isoformat()
+
+    # Load current schedule state (via log_persist mirror if local gone)
+    sched = {}
+    try:
+        sched = _load_dispatch_schedule() or {}
+    except Exception:
+        pass
+    prior = {}
+    try:
+        prior = _load_prior_dispatch_schedule() or {}
+    except Exception:
+        pass
+
+    # Win-alerts already sent today
+    win_ids = []
+    try:
+        import discord_bot as _db
+        win_ids = sorted(_db._load_result_sent() or [])
+    except Exception:
+        pass
+
+    # Fired events (dedup file)
+    fired = {}
+    try:
+        import log_persist
+        text, _sha = log_persist.read_file("logs/discord_fired_events.json")
+        if text:
+            fired = _json.loads(text) or {}
+    except Exception:
+        try:
+            with open(_DISCORD_FIRED_PATH) as f:
+                fired = _json.load(f) or {}
+        except Exception:
+            pass
+    fired_today = sorted(k for k in fired.keys() if k.startswith(today))
+
+    def _row(label, meta):
+        """Pretty-print one slate row."""
+        if not meta:
+            return f"  {label}: (not in schedule)"
+        sent = meta.get("sent")
+        pat  = meta.get("post_at_iso") or "?"
+        att  = meta.get("attempts")
+        pids = meta.get("pick_ids") or []
+        last = meta.get("last_result") or {}
+        bits = [f"  {label}:",
+                f"sent={'YES' if sent else 'no '}",
+                f"at={pat}",
+                f"picks={len(pids)}"]
+        if att:
+            bits.append(f"attempts={att}")
+        if last:
+            bits.append(f"last=sent:{last.get('sent')}" +
+                        (f" err:{last['error']}" if last.get('error') else "") +
+                        (f" picks:{last['picks']}" if last.get('picks') is not None else ""))
+        return "  ".join(bits)
+
+    slates = sched.get("slates") or {}
+    agenda = sched.get("agenda") or {}
+    eod    = sched.get("eod") or {}
+
+    lines = []
+    lines.append("=" * 70)
+    lines.append(f"  DISCORD DISPATCHER — ops view")
+    lines.append("=" * 70)
+    lines.append(f"  Now (CT):     {now_ct.isoformat()}")
+    lines.append(f"  Today:        {today}")
+    lines.append(f"  Webhook:      {'configured (…' + webhook[-20:] + ')' if webhook else 'MISSING — set in /settings'}")
+    lines.append("")
+    lines.append("  TODAY'S SCHEDULE")
+    lines.append("  " + "-" * 66)
+    lines.append(_row("Agenda  ", agenda))
+    for s in ("1", "2", "3"):
+        lines.append(_row(f"Slate {s} ", slates.get(s)))
+    lines.append(_row("EOD     ", eod))
+    lines.append("")
+    lines.append(f"  Fired dedup markers today ({len(fired_today)}):")
+    for k in fired_today:
+        lines.append(f"    {k}")
+    lines.append("")
+    lines.append(f"  Win alerts posted today ({len(win_ids)}):")
+    for pid in win_ids:
+        lines.append(f"    {pid}")
+    lines.append("")
+    if prior:
+        lines.append("  PRIOR DAY (archived)")
+        lines.append("  " + "-" * 66)
+        lines.append(f"  Date: {prior.get('date')}")
+        _p_slates = prior.get("slates") or {}
+        _p_eod    = prior.get("eod") or {}
+        for s, meta in sorted(_p_slates.items()):
+            lines.append(_row(f"Slate {s} ", meta))
+        lines.append(_row("EOD     ", _p_eod))
+        lines.append("")
+    lines.append("  QUICK ACTIONS")
+    lines.append("  " + "-" * 66)
+    lines.append("  Probe webhook:        /debug/discord?test=1")
+    lines.append("  Force send slate N:   /cron/send-slate?s=1  (or 2 / 3)")
+    lines.append("  Force dispatcher:     /cron/dispatch")
+    lines.append("  Full JSON state:      /cron/dispatch  (raw)")
+    lines.append("")
+    return Response("\n".join(lines), mimetype="text/plain")
 
 
 @app.route("/debug/discord")
