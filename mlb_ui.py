@@ -14730,10 +14730,12 @@ main.logged-page { max-width: 1040px; }
       Membership rule: a pick counts here only if it was still in the recommended set within 60 minutes of game start (not pulled off the board early when the market bets the EV out).
     </div>
     <div class="records-grid">
+      {% set _cf7_settled = (summary['curfilter_7d'] or {}).settled %}
       {% for key, label in [('curfilter_7d','Last 7 days'),('curfilter_30d','Last 30 days'),('curfilter_90d','Last 90 days')] %}
       {% set r = summary[key] %}
+      {% set _dup = (key != 'curfilter_7d' and r.settled and _cf7_settled and r.settled == _cf7_settled) %}
       <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
-        <div class="lbl">{{ label }}</div>
+        <div class="lbl">{{ label }}{% if _dup %} <span style="color:var(--muted-2);font-size:10px;font-weight:400;letter-spacing:0" title="This window shows the same settled count as Last 7 days — history doesn't go back far enough yet to see distinct {{ 'last 30' if key == 'curfilter_30d' else 'last 90' }} day data.">(insufficient history)</span>{% endif %}</div>
         {% if r.settled %}
         <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
         <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
@@ -14813,10 +14815,12 @@ main.logged-page { max-width: 1040px; }
       adding real value on top of the Signal 3.5 bar.
     </div>
     <div class="records-grid">
+      {% set _d7_settled = (discord_summary['discord_7d'] or {}).settled %}
       {% for key, label in [('discord_7d','Last 7 days'),('discord_30d','Last 30 days'),('discord_90d','Last 90 days')] %}
       {% set r = discord_summary[key] %}
+      {% set _dup = (key != 'discord_7d' and r.settled and _d7_settled and r.settled == _d7_settled) %}
       <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
-        <div class="lbl">{{ label }}</div>
+        <div class="lbl">{{ label }}{% if _dup %} <span style="color:var(--muted-2);font-size:10px;font-weight:400;letter-spacing:0" title="Same settled count as Last 7 days — Discord was enabled too recently for a distinct {{ 'last 30' if key == 'discord_30d' else 'last 90' }} day sample.">(insufficient history)</span>{% endif %}</div>
         {% if r.settled %}
         <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
         <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
@@ -14857,6 +14861,14 @@ main.logged-page { max-width: 1040px; }
         {% endif %}
         <div class="meta">{{ kalshi_summary.n_trades }} trades &middot; {{ kalshi_summary.settled }} settled &middot; ${{ '%.2f' % kalshi_summary.cost_dollars }} risked</div>
       </div>
+      {% if kalshi_summary.model_cross_settled %}
+      <div class="rec-tile {{ 'good' if kalshi_summary.model_cross_units > 0 else ('bad' if kalshi_summary.model_cross_units < 0 else '') }}" style="border-color:#06b6d4;opacity:0.9" title="Model's own Signal 3+ picks graded over the SAME window as the Kalshi anchor. Compare the two sides to see whether Kalshi losses track with the model being wrong (both negative) or diverge from it (model up, Kalshi down means your Kalshi bets or staking don't match the model).">
+        <div class="lbl">Model picks (same window)</div>
+        <div class="wl">{{ kalshi_summary.model_cross_wins }}-{{ kalshi_summary.model_cross_settled - kalshi_summary.model_cross_wins }}<span class="pct">{{ '%.1f' % kalshi_summary.model_cross_hit_pct }}%</span></div>
+        <span class="units">{{ '%+.2f' % kalshi_summary.model_cross_units }}u</span>
+        <div class="meta">{{ kalshi_summary.model_cross_settled }} settled &middot; cross-check vs Kalshi</div>
+      </div>
+      {% endif %}
     </div>
     <div style="color:var(--muted-2);font-size:11.5px;margin-top:8px">
       P&amp;L = <code>revenue</code> &minus; <code>yes_total_cost_dollars</code>
@@ -17031,6 +17043,44 @@ def logged_plays():
             # (currently 2026-08-18) as the fixed anchor.
             kalshi_summary = _kp.summarize_recent()
             kalshi_recent  = _kp.recent_settlements_table(limit=20)
+            # Cross-check: aggregate the model's own graded units for
+            # picks dated on/after the Kalshi anchor. Lets the user
+            # compare "model would have made X u" vs "my Kalshi
+            # account made Y dollars" over the same window — a quick
+            # way to tell if the Kalshi losses are divergent from the
+            # model (bets Kalshi made that the model wouldn't have, or
+            # staking size issues) vs the model itself being wrong.
+            try:
+                _anchor = kalshi_summary.get("record_start") if kalshi_summary else None
+                _units = 0.0
+                _settled = 0
+                _wins = 0
+                if _anchor:
+                    for _ds, _pks in (graded_by_date or {}).items():
+                        if _ds < _anchor:
+                            continue
+                        for _pk in _pks:
+                            if _pk.get("model_only"):
+                                continue
+                            if (_pk.get("signal_score") or 0) < 3:
+                                continue
+                            _r = _pk.get("result")
+                            if _r not in ("W", "L", "P"):
+                                continue
+                            _settled += 1
+                            if _r == "W":
+                                _wins += 1
+                            try:
+                                _units += float(_pk.get("profit_u") or 0.0)
+                            except (TypeError, ValueError):
+                                pass
+                if kalshi_summary is not None and _settled:
+                    kalshi_summary["model_cross_units"]   = round(_units, 2)
+                    kalshi_summary["model_cross_settled"] = _settled
+                    kalshi_summary["model_cross_wins"]    = _wins
+                    kalshi_summary["model_cross_hit_pct"] = round(100.0 * _wins / _settled, 1)
+            except Exception:
+                pass
         else:
             kalshi_summary = None
             kalshi_recent  = []
