@@ -16363,6 +16363,232 @@ def healthz():
                     status=200 if ok else 500)
 
 
+@app.route("/debug/blend-backtest")
+def debug_blend_backtest():
+    """Backtest: take EVERY graded pick from the last N days (default 90),
+    re-apply the single-stage per-sport blend to each pick's fair_prob,
+    re-compute ev_pct from the blended fair_prob, re-run the signal_score
+    with the NEW threshold table (EV 2/4, prob floor 0.58), re-apply the
+    current filter (Signal >= 3 + not model-only + 60-min pre-game
+    membership), and aggregate W-L-P-units-ROI for the surviving set.
+    Returns a plain-text comparison vs the OLD-filter record so you can
+    see whether tightening the EV scale would have helped or hurt.
+
+    Pass ?days=N to change the window (default 90). Pass ?min_signal=N
+    to simulate alternate Signal floors (default 3). Pass ?min_ev=X to
+    simulate alternate EV minimum thresholds (default 2.0)."""
+    import plays_log as _pl
+    import picks as _picks_mod
+    try:
+        days = int(request.args.get("days") or "90")
+    except Exception:
+        days = 90
+    try:
+        min_signal = int(request.args.get("min_signal") or "3")
+    except Exception:
+        min_signal = 3
+    try:
+        min_ev = float(request.args.get("min_ev") or "2.0")
+    except Exception:
+        min_ev = 2.0
+
+    graded_by_date = _pl.grade_all(limit_dates=days) or {}
+
+    # Helper: re-blend ONE pick and re-score it. Returns dict with:
+    #   old_cleared  = did it clear the old filter (Signal 3+ on raw EV)
+    #   new_cleared  = does it clear the new filter (Signal 3+ on blended EV)
+    #   old_signal, new_signal
+    #   old_ev, new_ev, blended_fair, result, profit_u
+    def _rescore(p):
+        if p.get("model_only"):
+            return None
+        if not p.get("passes_curfilter") and not p.get("strong"):
+            # Pick wasn't in the recommended set within 60-min of game start
+            # by either the old filter OR current snapshot, skip it (same
+            # membership rule as the standing current-filter record).
+            # Still let it through if it has signal_score >= 3 historically.
+            pass
+        pin = p.get("pinnacle_prob")
+        sim = p.get("mc_prob")
+        if sim is None:
+            sim = p.get("fair_prob")
+        try:
+            dec = float(p.get("decimal") or 0.0)
+        except (TypeError, ValueError):
+            return None
+        if dec <= 1.0:
+            return None
+        try:
+            old_ev = float(p.get("ev_pct") or 0.0)
+            old_fair = float(p.get("fair_prob") or 0.0)
+        except (TypeError, ValueError):
+            return None
+        # Compute new blended fair_prob + ev
+        if pin is None or sim is None:
+            # Can't rebuild without both — treat as unchanged, which
+            # means it keeps its old scoring.
+            new_fair = old_fair
+            new_ev = old_ev
+        else:
+            try:
+                pin_f = float(pin)
+                sim_f = float(sim)
+            except (TypeError, ValueError):
+                return None
+            slug = (p.get("sport_slug") or (p.get("sport") or "")).lower()
+            mw_sport = _picks_mod._SPORT_MODEL_WEIGHT.get(
+                slug, _picks_mod.MODEL_WEIGHT)
+            market_w = 1.0 - mw_sport
+            new_fair = mw_sport * sim_f + market_w * pin_f
+            try:
+                push = float(p.get("push_prob") or 0.0)
+            except (TypeError, ValueError):
+                push = 0.0
+            new_ev = (new_fair * dec - (1 - push)) * 100.0
+
+        # OLD signal_score was EV 3/6 + 0.60 floor. Replicate.
+        def _old_sig(fair, ev):
+            s = 0
+            if ev >= 6.0: s += 2
+            elif ev >= 3.0: s += 1
+            # line_move + book_agreement from stored fields
+            try:
+                mv = float(p.get("line_move_pp") or 0.0)
+            except Exception: mv = 0.0
+            if mv > 0: s += 1
+            if p.get("kalshi_confirmed"):
+                s += 1
+            else:
+                dk = p.get("dk_divergence_pp")
+                k = p.get("kalshi_divergence_pp")
+                try:
+                    if (dk is not None and float(dk) > 0) or (k is not None and float(k) > 0):
+                        s += 1
+                except Exception: pass
+            if fair >= 0.60 and p.get("source") != "alt": s += 1
+            return min(5, max(0, s))
+
+        # NEW signal_score was EV 2/4 + 0.58 floor.
+        def _new_sig(fair, ev):
+            s = 0
+            if ev >= 4.0: s += 2
+            elif ev >= 2.0: s += 1
+            try:
+                mv = float(p.get("line_move_pp") or 0.0)
+            except Exception: mv = 0.0
+            if mv > 0: s += 1
+            if p.get("kalshi_confirmed"):
+                s += 1
+            else:
+                dk = p.get("dk_divergence_pp")
+                k = p.get("kalshi_divergence_pp")
+                try:
+                    if (dk is not None and float(dk) > 0) or (k is not None and float(k) > 0):
+                        s += 1
+                except Exception: pass
+            if fair >= 0.58 and p.get("source") != "alt": s += 1
+            return min(5, max(0, s))
+
+        old_s = _old_sig(old_fair, old_ev)
+        new_s = _new_sig(new_fair, new_ev)
+        return {
+            "old_sig": old_s, "new_sig": new_s,
+            "old_ev":  old_ev, "new_ev": new_ev,
+            "old_fair": old_fair, "new_fair": new_fair,
+            "old_cleared": old_s >= 3 and p.get("passes_curfilter", False),
+            "new_cleared": new_s >= min_signal and new_ev >= min_ev,
+            "result": p.get("result"),
+            "profit_u": p.get("profit_u") or 0.0,
+            "ev_delta_pct": new_ev - old_ev,
+            "fair_delta_pp": (new_fair - old_fair) * 100,
+        }
+
+    old_set = []   # picks that cleared the OLD filter
+    new_set = []   # picks that would clear the NEW filter
+    both_set = [] # intersection
+    only_new = [] # new-only (would have been added)
+    only_old = [] # old-only (would have been dropped)
+
+    for date, picks in sorted(graded_by_date.items()):
+        for p in picks:
+            r = _rescore(p)
+            if r is None:
+                continue
+            if r["old_cleared"] and r["result"] in ("W", "L", "P"):
+                old_set.append(r)
+            if r["new_cleared"] and r["result"] in ("W", "L", "P"):
+                new_set.append(r)
+            if r["old_cleared"] and r["new_cleared"]:
+                both_set.append(r)
+            elif r["new_cleared"] and not r["old_cleared"]:
+                only_new.append(r)
+            elif r["old_cleared"] and not r["new_cleared"]:
+                only_old.append(r)
+
+    def _agg(rows):
+        w = sum(1 for r in rows if r["result"] == "W")
+        l = sum(1 for r in rows if r["result"] == "L")
+        pu = sum(1 for r in rows if r["result"] == "P")
+        settled = w + l + pu
+        units = sum(float(r.get("profit_u") or 0.0) for r in rows)
+        risked = settled   # 1 unit per pick is the standing assumption
+        return {
+            "n": len(rows), "W": w, "L": l, "P": pu, "settled": settled,
+            "hit_pct": (100.0 * w / settled) if settled else 0.0,
+            "units": round(units, 2),
+            "roi_pct": (100.0 * units / risked) if risked else 0.0,
+        }
+
+    old_agg  = _agg(old_set)
+    new_agg  = _agg(new_set)
+    both_agg = _agg(both_set)
+    gained   = _agg(only_new)
+    dropped  = _agg(only_old)
+
+    out = []
+    out.append("=" * 76)
+    out.append(f"  BLEND BACKTEST — last {days} days of graded picks")
+    out.append("=" * 76)
+    out.append(f"  Simulating new filter at Signal >= {min_signal}  EV >= {min_ev:.1f}%  prob floor 0.58")
+    out.append("")
+    out.append("                       picks   W-L-P    hit%    units     ROI%")
+    out.append("  " + "-" * 70)
+    def _row(label, a):
+        return (f"  {label:20s}  {a['n']:>4}   {a['W']:>2}-{a['L']:>2}-{a['P']:>2}  "
+                f"{a['hit_pct']:>5.1f}%  {a['units']:>+7.2f}u  {a['roi_pct']:>+6.2f}%")
+    out.append(_row("OLD filter (as-run)", old_agg))
+    out.append(_row("NEW filter (sim)",    new_agg))
+    out.append("")
+    out.append(f"  Kept by BOTH filters:     {_row('', both_agg).strip()}")
+    out.append(f"  DROPPED (old had, new -): {_row('', dropped).strip()}")
+    out.append(f"  GAINED  (new has, old -): {_row('', gained).strip()}")
+    out.append("")
+    if dropped["n"] > 0:
+        out.append(f"  Dropped set ROI {dropped['roi_pct']:+.2f}%  → if positive, we LOST profitable picks.")
+        out.append(f"                            → if negative, we DROPPED losers (good).")
+    if gained["n"] > 0:
+        out.append(f"  Gained set ROI {gained['roi_pct']:+.2f}%  → if positive, we ADDED winners (good).")
+        out.append(f"                            → if negative, we added losers.")
+    out.append("")
+    out.append("  INTERPRETATION:")
+    net_vs = new_agg["units"] - old_agg["units"]
+    out.append(f"    Net units delta (NEW − OLD): {net_vs:+.2f}u")
+    out.append(f"    Pick-volume delta: {new_agg['n'] - old_agg['n']:+d}")
+    if net_vs >= 0 and new_agg["n"] <= old_agg["n"]:
+        out.append("    → New filter is a strict improvement (more units, fewer bets).")
+    elif net_vs >= 0:
+        out.append("    → New filter is net-positive — more units, maybe more picks.")
+    elif new_agg["n"] <= old_agg["n"] * 0.7:
+        out.append("    → New filter is tighter but net-negative in units — may be too strict.")
+    else:
+        out.append("    → New filter is net-negative in units — consider reverting or re-tuning.")
+    out.append("")
+    out.append(f"  Query params:  ?days=N  ?min_signal=N  ?min_ev=X")
+    out.append("  Example:  /debug/blend-backtest?days=30&min_ev=1.5")
+    out.append("")
+    return Response("\n".join(out), mimetype="text/plain")
+
+
 @app.route("/debug/dispatch")
 def debug_dispatch():
     """Human-readable ops dashboard for the Discord dispatcher. Shows:
