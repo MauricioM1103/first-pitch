@@ -15866,6 +15866,32 @@ _DISPATCH_HEARTBEAT_PATH = _settings_os.path.join(
 # Actions pings don't race each other into double-posting events.
 _DISPATCH_LOCK = _threading.Lock()
 
+# In-memory ring buffer of the last few dispatcher errors so we don't
+# have to swallow them silently in the risky `except Exception: pass`
+# sites. Surfaces on /debug/dispatch. Not persisted — reset on every
+# instance restart, which is fine since the dashboard is operational
+# diagnostics, not long-term audit.
+_DISPATCH_ERRORS = []
+_DISPATCH_ERROR_LOCK = _threading.Lock()
+_DISPATCH_ERRORS_MAX = 20
+
+
+def _record_dispatch_error(context, exc):
+    """Store (ts, context, exception type + str) in a bounded ring
+    buffer. Used to replace risky silent swallows in the dispatcher
+    body so operators can see failures on /debug/dispatch instead of
+    having to grep stdout logs."""
+    try:
+        ts = datetime.now(CENTRAL).isoformat(timespec="seconds")
+        entry = {"ts": ts, "context": context,
+                 "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+        with _DISPATCH_ERROR_LOCK:
+            _DISPATCH_ERRORS.append(entry)
+            if len(_DISPATCH_ERRORS) > _DISPATCH_ERRORS_MAX:
+                del _DISPATCH_ERRORS[0:len(_DISPATCH_ERRORS) - _DISPATCH_ERRORS_MAX]
+    except Exception:
+        pass
+
 
 def _load_fired_events():
     """Return set of 'YYYY-MM-DD:event' keys we've already posted to
@@ -16356,6 +16382,13 @@ def debug_dispatch():
     for pid in win_ids:
         lines.append(f"    {pid}")
     lines.append("")
+    with _DISPATCH_ERROR_LOCK:
+        _errs = list(_DISPATCH_ERRORS)
+    if _errs:
+        lines.append(f"  Dispatcher errors (last {len(_errs)}):")
+        for e in _errs:
+            lines.append(f"    {e['ts']}  {e['context']}: {e['error']}")
+        lines.append("")
     if prior:
         lines.append("  PRIOR DAY (archived)")
         lines.append("  " + "-" * 66)
@@ -16659,8 +16692,8 @@ def _cron_dispatch_inner(_db, settings, webhook):
                     sched["agenda"] = agenda
                     actions.append("agenda")
                     changed = True
-            except Exception:
-                pass
+            except Exception as _e:
+                _record_dispatch_error("send_agenda", _e)
 
     # 1-3. Slate posts.
     # Rule: only mark sent=True when the Discord POST actually succeeded
@@ -16859,8 +16892,8 @@ def _cron_dispatch_inner(_db, settings, webhook):
             import plays_log as _pl
             try:
                 _pl.grade_pending_backfill(days_back=1, grace_hours=1)
-            except Exception:
-                pass
+            except Exception as _e:
+                _record_dispatch_error("grade_backfill_win_alerts", _e)
             # Pull today's graded picks and emit a one-pick PNG per
             # posted pick that just flipped to W.
             try:
@@ -16883,8 +16916,8 @@ def _cron_dispatch_inner(_db, settings, webhook):
                         n = _db.send_result_alerts(webhook, newly)
                         if n:
                             actions.append(f"win_alerts:{n}")
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        _record_dispatch_error("send_result_alerts", _e)
                     # Also push the win to Pushover for a phone-screen
                     # alert — only when the Pushover creds are set in
                     # /settings. Discord already fires the full card;
