@@ -16012,11 +16012,25 @@ def _load_dispatch_schedule():
 
 
 def _save_dispatch_schedule(d):
+    """Persist the dispatcher's day-state to both the local file AND the
+    GitHub mirror so it survives Render spin-downs mid-day. Previously
+    only wrote locally, which meant any pick_ids captured on a slate
+    fire were lost if the Render instance spun down before the next
+    scheduled fire — the recompute-on-stale path then rebuilt an empty
+    schedule and the slate's picks appeared as 0 on the next tick."""
     try:
         _settings_os.makedirs(_settings_os.path.dirname(_DISCORD_SCHEDULE_PATH),
                                exist_ok=True)
         with open(_DISCORD_SCHEDULE_PATH, "w") as f:
             json.dump(d, f)
+    except Exception:
+        pass
+    try:
+        import log_persist
+        if log_persist.is_configured():
+            log_persist.write_file("logs/discord_schedule.json",
+                                    json.dumps(d),
+                                    message="dispatcher state update")
     except Exception:
         pass
 
@@ -16257,6 +16271,15 @@ def debug_dispatch():
     lines.append(f"  Now (CT):     {now_ct.isoformat()}")
     lines.append(f"  Today:        {today}")
     lines.append(f"  Webhook:      {'configured (…' + webhook[-20:] + ')' if webhook else 'MISSING — set in /settings'}")
+    _sched_date = sched.get("date")
+    if _sched_date and _sched_date != today:
+        lines.append("")
+        lines.append(f"  !! WARNING: schedule date is {_sched_date}, not {today}.")
+        lines.append(f"     Hit /cron/dispatch to force recompute (or wait for next UptimeRobot tick).")
+    elif not _sched_date:
+        lines.append("")
+        lines.append(f"  !! WARNING: no schedule loaded (local and mirror both empty).")
+        lines.append(f"     Hit /cron/dispatch to initialize today's schedule.")
     lines.append("")
     lines.append("  TODAY'S SCHEDULE")
     lines.append("  " + "-" * 66)
