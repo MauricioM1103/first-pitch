@@ -5246,6 +5246,14 @@ def _apply_fair_prob_blend(p):
         except (TypeError, ValueError):
             push = 0.0
         p["ev_pct"] = (blended * dec - (1 - push)) * 100.0
+        # Also preserve the raw-sim EV so the Signal composite's EV
+        # cushion can use it. Backtest result (2026-10-19): filtering
+        # on blended EV cut 30d units from +13.66u to +1.68u — the
+        # raw-sim EV was the predictive signal, the blend just
+        # dampens it. We show blended fair_prob to the user (honest
+        # consensus) but filter on raw-sim EV to match the historical
+        # 68.8% / +17% ROI.
+        p["raw_ev_pct"] = (sim * dec - (1 - push)) * 100.0
         try:
             from mlb_odds import kelly_fraction as _kf
             p["kelly_pct"] = _kf(blended, dec, cap=0.25) * 100.0
@@ -5277,9 +5285,13 @@ def _signal_score(pick):
     combinations. Alt-line picks start capped at 3 (no prob-floor credit
     because their fair_prob is often sub-50% by construction)."""
     score = 0.0
-    # EV cushion
+    # EV cushion — prefer the RAW-sim EV when available. The blend on
+    # fair_prob/ev_pct is honest for display purposes but structurally
+    # dampens the model's actual edge; backtesting showed filtering on
+    # blended EV cut 30d profit from +13.66u to +1.68u. The raw-sim EV
+    # was what the historical 68.8% / +17% ROI was built on.
     try:
-        ev = float(pick.get("ev_pct") or 0.0)
+        ev = float(pick.get("raw_ev_pct") or pick.get("ev_pct") or 0.0)
     except (TypeError, ValueError):
         ev = 0.0
     if ev >= 6.0:
@@ -5308,9 +5320,13 @@ def _signal_score(pick):
                 score += 1
         except (TypeError, ValueError):
             pass
-    # Prob floor
+    # Prob floor — use RAW model prob (mc_prob) for the same reason
+    # as the EV cushion above. The displayed fair_prob is blended and
+    # pulled toward Pinnacle, so 65-70% raw-prob picks look like
+    # ~58-62% after the blend and lose the point despite the model
+    # having real conviction.
     try:
-        fp = float(pick.get("fair_prob") or 0.0)
+        fp = float(pick.get("mc_prob") or pick.get("fair_prob") or 0.0)
     except (TypeError, ValueError):
         fp = 0.0
     if fp >= 0.60 and pick.get("source") != "alt":
@@ -16461,13 +16477,36 @@ def debug_blend_backtest():
             if fair >= 0.60 and p.get("source") != "alt": s += 1
             return min(5, max(0, s))
 
-        # NEW signal_score: use the live signal_score thresholds.
-        # Pull them from the module-level helper so this backtest
-        # auto-tracks whatever's in production without needing an edit.
+        # NEW signal_score — hybrid: use RAW-sim EV + raw mc_prob
+        # (same thresholds as OLD) because the blend dampens the
+        # exact signal that was predictive. See _apply_fair_prob_blend
+        # comment for context. UI still shows blended fair_prob as
+        # "Model X%" — just the FILTER uses raw-sim EV.
         _EV_HI = 6.0   # +2 bar
         _EV_LO = 3.0   # +1 bar
         _PROB_FLOOR = 0.60
+        # Recompute raw-sim EV for backtest since it may not be stored
+        # on historical picks (which pre-date this change).
+        try:
+            dec_f = float(p.get("decimal") or 0.0)
+            push_f = float(p.get("push_prob") or 0.0)
+            try:
+                sim_f = float(sim)
+            except (TypeError, ValueError):
+                sim_f = 0.0
+            raw_ev = (sim_f * dec_f - (1 - push_f)) * 100.0 if dec_f > 1 else 0.0
+        except (TypeError, ValueError):
+            raw_ev = 0.0
+        try:
+            raw_fair = float(sim) if sim is not None else 0.0
+        except (TypeError, ValueError):
+            raw_fair = 0.0
+
         def _new_sig(fair, ev):
+            # Override `ev` and `fair` with the raw-sim values so the
+            # backtest reflects the hybrid behavior exactly.
+            ev = raw_ev
+            fair = raw_fair
             s = 0
             if ev >= _EV_HI: s += 2
             elif ev >= _EV_LO: s += 1
