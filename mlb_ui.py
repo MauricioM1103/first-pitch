@@ -15846,6 +15846,10 @@ _DISCORD_FIRED_PATH = _settings_os.path.join(
     _settings_os.path.dirname(_settings_os.path.abspath(__file__)),
     "logs", "discord_fired_events.json",
 )
+_DISPATCH_HEARTBEAT_PATH = _settings_os.path.join(
+    _settings_os.path.dirname(_settings_os.path.abspath(__file__)),
+    "logs", "discord_dispatch_heartbeat.json",
+)
 # Serializes dispatcher ticks so concurrent UptimeRobot / manual / GH
 # Actions pings don't race each other into double-posting events.
 _DISPATCH_LOCK = _threading.Lock()
@@ -16178,6 +16182,49 @@ def _compute_today_dispatch_schedule():
 
 
 
+@app.route("/healthz")
+def healthz():
+    """Dispatcher health check for UptimeRobot. Returns 200 only when
+    the Discord dispatcher has ticked within the last 15 minutes. If
+    it hasn't — because UptimeRobot stopped pinging /cron/dispatch,
+    the dispatch lock is stuck, or the instance never came back from
+    spin-down — this returns 500 so UptimeRobot's keyword/HTTP-status
+    monitor fires an SMS alert.
+
+    Threshold is generous (15 min) because UptimeRobot's free plan
+    pings every 5 min; three missed ticks before alerting rules out
+    one-off network blips. Pass ?threshold=N to override (minutes)."""
+    import json as _json
+    import time as _tn
+    try:
+        threshold_min = int(request.args.get("threshold") or "15")
+    except Exception:
+        threshold_min = 15
+    threshold_sec = max(60, threshold_min * 60)
+    try:
+        with open(_DISPATCH_HEARTBEAT_PATH) as _hf:
+            hb = _json.load(_hf) or {}
+    except Exception:
+        hb = {}
+    last_ts = float(hb.get("ts") or 0)
+    age_sec = int(_tn.time() - last_ts) if last_ts else None
+    ok = (age_sec is not None) and (age_sec <= threshold_sec)
+    body = {
+        "ok":                 ok,
+        "last_tick_ct":       hb.get("now_ct"),
+        "age_seconds":        age_sec,
+        "threshold_seconds":  threshold_sec,
+        "note": ("Returns HTTP 200 when the dispatcher ticked within "
+                 "threshold_seconds, else HTTP 500. Point UptimeRobot "
+                 "at this URL to get SMS alerts when the dispatcher "
+                 "stalls — the /cron/dispatch ping itself still runs "
+                 "every 5 min on its own schedule."),
+    }
+    return Response(_json.dumps(body, indent=2),
+                    mimetype="application/json",
+                    status=200 if ok else 500)
+
+
 @app.route("/debug/dispatch")
 def debug_dispatch():
     """Human-readable ops dashboard for the Discord dispatcher. Shows:
@@ -16458,6 +16505,18 @@ def _cron_dispatch_inner(_db, settings, webhook):
     now_ct = datetime.now(CENTRAL)
     today = now_ct.date().isoformat()
     actions = []
+    # Heartbeat: record every tick time so /healthz can tell whether
+    # the dispatcher has stalled (UptimeRobot dropped us, Render spun
+    # down and never came back, lock stuck, etc).
+    try:
+        import time as _tbeat
+        _settings_os.makedirs(_settings_os.path.dirname(
+            _DISPATCH_HEARTBEAT_PATH), exist_ok=True)
+        with open(_DISPATCH_HEARTBEAT_PATH, "w") as _hf:
+            json.dump({"ts": _tbeat.time(),
+                       "now_ct": now_ct.isoformat()}, _hf)
+    except Exception:
+        pass
 
     sched = _load_dispatch_schedule()
     # Reset on date change OR schema upgrade (v1 → v2 slate layout).
@@ -16812,6 +16871,32 @@ def _cron_dispatch_inner(_db, settings, webhook):
                         n = _db.send_result_alerts(webhook, newly)
                         if n:
                             actions.append(f"win_alerts:{n}")
+                    except Exception:
+                        pass
+                    # Also push the win to Pushover for a phone-screen
+                    # alert — only when the Pushover creds are set in
+                    # /settings. Discord already fires the full card;
+                    # Pushover is just a one-line vibration.
+                    try:
+                        pu_user = (settings.get("pushover_user_key") or "").strip()
+                        pu_tok  = (settings.get("pushover_api_token") or "").strip()
+                        if pu_user and pu_tok:
+                            pu_sent = 0
+                            for _p, _lbl in newly:
+                                if _p.get("result") != "W":
+                                    continue
+                                try:
+                                    _u = float(_p.get("profit_u") or 0.0)
+                                except (TypeError, ValueError):
+                                    _u = 0.0
+                                _title = f"WIN · {_lbl}"
+                                _msg = (f"{_p.get('pick') or ''}"
+                                        f"  {_u:+.2f}u"
+                                        f"  ({_p.get('market') or ''})")
+                                if _send_pushover(pu_user, pu_tok, _msg, title=_title):
+                                    pu_sent += 1
+                            if pu_sent:
+                                actions.append(f"pushover_wins:{pu_sent}")
                     except Exception:
                         pass
             _mark_throttle(_grade_throttle_path)

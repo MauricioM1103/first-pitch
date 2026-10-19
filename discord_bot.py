@@ -828,6 +828,29 @@ def send_slate_picks(webhook_url, picks, date_label="", slate=1):
             "bankroll-max tier (short-price, high-prob, confirmed Signal). "
             "Flagged with a cyan WHALE pill in the slide."
         )
+    # Count picks where our model prob diverges >= 10pp from Pinnacle
+    # devigged. These often indicate a model artifact, a stale market
+    # price, or late-breaking info Pinnacle has baked in but we don't.
+    # Not a disqualification — just a warning you can scan for before
+    # placing.
+    def _is_outlier(p):
+        try:
+            fp = float(p.get("fair_prob") or 0.0)
+            pp = float(p.get("pinnacle_prob") or 0.0)
+        except (TypeError, ValueError):
+            return False
+        if fp <= 0 or pp <= 0:
+            return False
+        return abs(fp - pp) * 100 >= 10.0
+    outlier_count = sum(1 for p in top if _is_outlier(p))
+    outlier_line = ""
+    if outlier_count:
+        outlier_line = (
+            f"\n:warning: **{outlier_count} model-outlier pick"
+            f"{'s' if outlier_count != 1 else ''}** — model and Pinnacle "
+            "disagree by >= 10pp on these. Could be a model artifact or "
+            "info Pinnacle has that we don't. Verify the current line."
+        )
     preamble = (
         f"{emoji} **{slate_name} picks — {label}**\n\n"
         f"Top {len(top)} Signal 3.5+ picks for {window_desc} "
@@ -835,6 +858,7 @@ def send_slate_picks(webhook_url, picks, date_label="", slate=1):
         "This list is **locked for the day** — only hard DO NOT BET "
         "reversals or final results will post here until the next slate."
         + whale_line
+        + outlier_line
     )
     # If a prior slate posted earlier today and some of its picks have
     # already graded, surface the running record as context.
