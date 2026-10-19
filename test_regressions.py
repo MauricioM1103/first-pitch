@@ -229,10 +229,13 @@ class TestDispatcherReasonCodes(unittest.TestCase):
         self.assertEqual(r.get("sent"), 0)
         self.assertEqual(r.get("reason"), "no_webhook_or_no_board")
 
-    def test_picks_outside_slate_window_terminal(self):
-        # Pick is an evening game (NHL at 8pm CT), slate 1 is for
-        # games before 12pm CT → window filter drops it, so result
-        # reason should be no_picks_in_slate_window (terminal, no retry)
+    def test_pm_only_board_still_posts_morning_fallback(self):
+        # Pick is an evening game (NHL at 8pm CT). Slate 1's window
+        # is "games before 12pm CT" and the window filter drops it,
+        # but slate 1 is the morning preview — rather than go dark
+        # we fall back to the full day's board. The POST will fail
+        # against this fake webhook, so sent=0, but the reason is
+        # discord_post_failed, NOT no_picks_in_slate_window.
         pick = {
             "id": "x", "pick": "Over 1.5", "market": "1H Total",
             "sport_slug": "nhl", "sport_name": "NHL",
@@ -243,6 +246,23 @@ class TestDispatcherReasonCodes(unittest.TestCase):
             "start_time": "2026-10-19T20:00:00-05:00",
         }
         r = self.db.send_slate_picks("http://example.com", [pick], slate=1)
+        self.assertEqual(r.get("sent"), 0)
+        self.assertEqual(r.get("reason"), "discord_post_failed")
+
+    def test_pm_only_board_still_terminal_for_slate_2_and_3(self):
+        # Slates 2 and 3 don't do the morning fallback — if their
+        # time window is empty they return the terminal reason.
+        pick = {
+            "id": "x", "pick": "Over 1.5", "market": "ML",
+            "sport_slug": "nhl", "sport_name": "NHL",
+            "home_team": "A", "away_team": "B",
+            "signal_score": 4, "ev_pct": 10.0,
+            "fair_prob": 0.72, "pinnacle_prob": 0.57,
+            "decimal": 1.68,
+            # Early-morning game — before slate 2's 12pm start
+            "start_time": "2026-10-19T09:00:00-05:00",
+        }
+        r = self.db.send_slate_picks("http://example.com", [pick], slate=2)
         self.assertEqual(r.get("sent"), 0)
         self.assertEqual(r.get("reason"), "no_picks_in_slate_window")
 

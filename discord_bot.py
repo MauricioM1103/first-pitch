@@ -772,9 +772,21 @@ def send_slate_picks(webhook_url, picks, date_label="", slate=1):
     emoji = _SLATE_EMOJI.get(slate, ":star:")
 
     pool_in_window = _filter_slate(picks, slate)
+    # Morning slate special case: viewers want an early-day preview.
+    # If no games start before 12 PM CT, don't go dark — fall back to
+    # the full day's top-5 so there's always a morning drop. The
+    # preamble below detects this via the `morning_fallback` flag and
+    # relabels the window. For slates 2 and 3, an empty in-window pool
+    # still returns the "no_picks_in_slate_window" terminal reason
+    # since by then the morning slate already showed the day's top-5.
+    morning_fallback = False
     if not pool_in_window:
-        return {"sent": 0, "pick_ids": [],
-                "reason": "no_picks_in_slate_window"}
+        if slate == 1:
+            pool_in_window = list(picks)
+            morning_fallback = True
+        else:
+            return {"sent": 0, "pick_ids": [],
+                    "reason": "no_picks_in_slate_window"}
     # Signal 3.5 gate — Signal 4+ always qualifies, Signal 3 only
     # with EV >= _SIGNAL_3_MIN_EV. _rank_picks drops DNB separately.
     pool = [p for p in pool_in_window if _qualifies_for_discord(p)]
@@ -819,6 +831,9 @@ def send_slate_picks(webhook_url, picks, date_label="", slate=1):
         2: "games starting 12 PM - 6 PM CT",
         3: "games starting 6 PM CT or later",
     }[slate]
+    if morning_fallback:
+        window_desc = ("today's full board — no games before 12 PM CT, "
+                       "so this morning's drop is the full day's top-" + str(_TOP_N))
     whale_count = sum(1 for p in top if p.get("whale"))
     whale_line = ""
     if whale_count:
