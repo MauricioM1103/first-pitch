@@ -47,7 +47,12 @@ _PICKS_PER_PNG = 9
 #     starving the feed on days without many Signal 4+ picks.
 _TOP_N = 5
 _MIN_SIGNAL_FOR_POST = 3
-_SIGNAL_3_MIN_EV = 3.0  # percent
+# Lowered from 3.0 to 2.0 after fair_prob was rewired to use the
+# blended consensus (mw_sport * sim + market_w * pinnacle). The blend
+# shaves ~2pp off typical EV numbers vs the raw-sim path, so the EV
+# bar comes down the same amount to keep the same selectivity on
+# the honest-EV scale.
+_SIGNAL_3_MIN_EV = 2.0  # percent
 
 # EOD summary pagination.
 # 9 cards per PNG mirrors the slate layout, 3 PNG max gives us up to

@@ -5263,17 +5263,24 @@ def _signal_score(pick):
     evidence streams is the right aggregation.
 
     Components (0 or 1 each, EV worth up to 2):
-      EV cushion     ... 0 if ev <= 3%, +1 if 3-6%, +2 if >= 6%
+      EV cushion     ... 0 if ev <= 2%, +1 if 2-4%, +2 if >= 4%
+                         (thresholds were 3%/6% back when ev_pct was
+                         computed against the RAW model prob — now
+                         ev_pct uses the blended consensus, which is
+                         structurally ~2pp lower, so the EV bar comes
+                         down the same amount)
       Line toward me ... +1 when line_move_pp > 0 (Pinnacle devig moved
                          toward our side during our 3-day window; sharp
                          agreement is one of the strongest leading signals)
       Book agreement ... +1 when a cross-book (DK or Kalshi) agrees more
                          than our model does (positive divergence_pp)
-      Prob floor     ... +1 when fair_prob >= 0.60 (model has real conviction,
-                         not a razor-thin coin-flip we're nudging by EV%)
+      Prob floor     ... +1 when fair_prob >= 0.58 (lowered from 0.60
+                         because fair_prob is now the blend pulled
+                         toward Pinnacle — pure model prob of 64-66%
+                         now reads as blended ~58-61%)
 
     Total 0..5. A ★ Strong pick (score >= 4) requires AT LEAST
-    (3%+ EV, favorable move, book agreement, prob floor) OR equivalent
+    (2%+ EV, favorable move, book agreement, prob floor) OR equivalent
     combinations. Alt-line picks start capped at 3 (no prob-floor credit
     because their fair_prob is often sub-50% by construction)."""
     score = 0.0
@@ -5282,9 +5289,9 @@ def _signal_score(pick):
         ev = float(pick.get("ev_pct") or 0.0)
     except (TypeError, ValueError):
         ev = 0.0
-    if ev >= 6.0:
+    if ev >= 4.0:
         score += 2
-    elif ev >= 3.0:
+    elif ev >= 2.0:
         score += 1
     # Line toward me (fraction scale, line_move_pp 0..1)
     try:
@@ -5313,7 +5320,7 @@ def _signal_score(pick):
         fp = float(pick.get("fair_prob") or 0.0)
     except (TypeError, ValueError):
         fp = 0.0
-    if fp >= 0.60 and pick.get("source") != "alt":
+    if fp >= 0.58 and pick.get("source") != "alt":
         score += 1
     return int(min(5, max(0, score)))
 
