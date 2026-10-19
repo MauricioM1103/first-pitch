@@ -338,5 +338,102 @@ class TestFairProbBlend(unittest.TestCase):
                  "weight and returned a different value."))
 
 
+class TestApplyFairProbBlend(unittest.TestCase):
+    """Would have caught: picks constructed by sport-specific pipelines
+    (which bypass picks._apply_consensus) kept their raw sim as
+    fair_prob, so the "Model X%" chip, EV calc, Signal score and
+    whale filter all ignored the Pinnacle blend. The central
+    _apply_fair_prob_blend helper fixes every pick at the board-
+    builder chokepoint. These tests lock the blend math + idempotency
+    + skip rules."""
+
+    def setUp(self):
+        import mlb_ui
+        self.m = mlb_ui
+
+    def test_blend_rewrites_fair_prob_and_ev(self):
+        p = {
+            "sport_slug":   "nhl",
+            "mc_prob":      0.70,
+            "pinnacle_prob": 0.60,
+            "decimal":      1.90,
+        }
+        self.m._apply_fair_prob_blend(p)
+        # NHL mw_sport = 0.35 → 0.35*0.70 + 0.65*0.60 = 0.635
+        self.assertAlmostEqual(p["fair_prob"], 0.635, places=3)
+        self.assertAlmostEqual(p["consensus_prob"], 0.635, places=3)
+        # EV = (0.635 * 1.90 - 1) * 100 = 20.65%
+        self.assertAlmostEqual(p["ev_pct"], (0.635 * 1.90 - 1) * 100, places=2)
+        self.assertTrue(p["_fair_prob_blended"])
+
+    def test_blend_falls_back_to_fair_prob_when_mc_missing(self):
+        # Sport pipelines write fair_prob = sim directly without mc_prob.
+        p = {
+            "sport_slug":   "nfl",
+            "fair_prob":     0.80,  # sim written straight into fair_prob
+            "pinnacle_prob": 0.65,
+            "decimal":      1.50,
+        }
+        self.m._apply_fair_prob_blend(p)
+        # Preserves raw as mc_prob and blends (NFL: 0.30 / 0.70)
+        self.assertAlmostEqual(p["mc_prob"], 0.80, places=6)
+        self.assertAlmostEqual(p["fair_prob"], 0.30 * 0.80 + 0.70 * 0.65, places=3)
+
+    def test_blend_is_idempotent(self):
+        p = {
+            "sport_slug":   "mlb",
+            "mc_prob":      0.70,
+            "pinnacle_prob": 0.60,
+            "decimal":      1.90,
+        }
+        self.m._apply_fair_prob_blend(p)
+        first = p["fair_prob"]
+        self.m._apply_fair_prob_blend(p)  # should be a no-op
+        self.m._apply_fair_prob_blend(p)
+        self.assertAlmostEqual(p["fair_prob"], first, places=6,
+            msg="Repeated calls must not double-blend the fair_prob")
+
+    def test_blend_skips_alt_line_picks(self):
+        p = {
+            "sport_slug":   "nfl",
+            "mc_prob":      0.60,
+            "pinnacle_prob": 0.50,
+            "decimal":      2.00,
+            "alt_line_flag": True,
+        }
+        self.m._apply_fair_prob_blend(p)
+        self.assertNotIn("_fair_prob_blended", p)
+
+    def test_blend_skips_model_only_picks(self):
+        p = {
+            "sport_slug":   "nfl",
+            "mc_prob":      0.60,
+            "pinnacle_prob": 0.50,
+            "model_only":   True,
+        }
+        self.m._apply_fair_prob_blend(p)
+        self.assertNotIn("_fair_prob_blended", p)
+
+    def test_blend_skips_when_no_pinnacle_prob(self):
+        p = {
+            "sport_slug":   "nfl",
+            "mc_prob":      0.60,
+            "decimal":      1.90,
+        }
+        self.m._apply_fair_prob_blend(p)
+        self.assertNotIn("_fair_prob_blended", p)
+
+    def test_blend_recomputes_kelly(self):
+        p = {
+            "sport_slug":   "ufc",
+            "mc_prob":      0.70,
+            "pinnacle_prob": 0.60,
+            "decimal":      1.90,
+        }
+        self.m._apply_fair_prob_blend(p)
+        # UFC mw_sport = 0.50 → 0.65 blend; Kelly should be positive
+        self.assertGreater(p["kelly_pct"], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

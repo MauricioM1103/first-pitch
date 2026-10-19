@@ -5164,6 +5164,98 @@ def _pick_to_kalshi_route(pick, is_home_side):
     return (market_key, is_yes)
 
 
+def _apply_fair_prob_blend(p):
+    """Replace a pick's raw-model `fair_prob` with the single-stage
+    per-sport Model/Pinnacle blend, and recompute `ev_pct` + `kelly_pct`
+    from the new fair_prob so the EV chip, Signal composite, whale
+    filter, Discord qualifier, and Kelly-stake all read the same
+    consensus number.
+
+    Why this exists: sport-specific pipelines (NFL ML, NHL totals,
+    soccer bets, etc) construct picks and set `fair_prob` directly to
+    the raw model/sim output, bypassing picks._apply_consensus. That
+    meant the "Model X%" chip on TODAY, the EV calculation, and the
+    Signal score all used the RAW model view with no Pinnacle blend,
+    even though the _SPORT_MODEL_WEIGHT config implied a per-sport
+    weighted consensus. This helper is the single chokepoint where the
+    documented blend actually gets applied to every pick on the board.
+
+    Rules:
+      - Idempotent via the `_fair_prob_blended` flag — safe to call
+        multiple times across board rebuilds.
+      - Preserves the raw-model prob under `mc_prob` so analytics and
+        calibration can still see what the model said unblended.
+      - Skips alt-line picks (their fair_prob is a bespoke empirical
+        margin probability, not a sim-vs-market comparison).
+      - Skips model-only picks (no decimal price, so no EV to recompute).
+      - Skips picks without a `pinnacle_prob` (no market signal to blend
+        with — bespoke markets like BTTS Yes may fall into this bucket).
+    """
+    if p.get("_fair_prob_blended"):
+        return
+    if p.get("alt_line_flag") or p.get("source") == "alt":
+        return
+    if p.get("model_only"):
+        return
+    try:
+        pin = p.get("pinnacle_prob")
+        if pin is None:
+            return
+        pin = float(pin)
+        if pin <= 0:
+            return
+    except (TypeError, ValueError):
+        return
+    # Source for the raw-model probability. picks._apply_consensus and
+    # mlb_ui's own paths both store a value under mc_prob when a sim
+    # ran; use that as the authoritative sim. If mc_prob is missing,
+    # fall back to the current fair_prob (first time through — sport
+    # pipeline wrote fair_prob = sim).
+    try:
+        sim = p.get("mc_prob")
+        if sim is None:
+            sim = p.get("fair_prob")
+        if sim is None:
+            return
+        sim = float(sim)
+    except (TypeError, ValueError):
+        return
+    # Lock the pre-blend sim so repeat calls use the same base.
+    p["mc_prob"] = sim
+
+    try:
+        import picks as _picks_mod
+        slug = (p.get("sport_slug") or (p.get("sport") or "")).lower()
+        mw_sport = _picks_mod._SPORT_MODEL_WEIGHT.get(slug, _picks_mod.MODEL_WEIGHT)
+    except Exception:
+        mw_sport = 0.35
+    market_w = 1.0 - mw_sport
+    blended = mw_sport * sim + market_w * pin
+    p["fair_prob"]       = blended
+    p["consensus_prob"]  = blended
+    p["_fair_prob_blended"] = True
+
+    # Recompute EV + Kelly from the blended fair_prob.
+    try:
+        dec = float(p.get("decimal") or 0.0)
+    except (TypeError, ValueError):
+        dec = 0.0
+    if dec > 1.0:
+        try:
+            push = float(p.get("push_prob") or 0.0)
+        except (TypeError, ValueError):
+            push = 0.0
+        p["ev_pct"] = (blended * dec - (1 - push)) * 100.0
+        try:
+            from mlb_odds import kelly_fraction as _kf
+            p["kelly_pct"] = _kf(blended, dec, cap=0.25) * 100.0
+        except Exception:
+            b = dec - 1.0
+            q = 1.0 - blended
+            kelly = ((blended * b - q) / b) * 0.25 * 100.0 if b > 0 else 0.0
+            p["kelly_pct"] = max(0.0, kelly)
+
+
 def _signal_score(pick):
     """0..5 composite signal strength for a pick, replacing the binary
     ★ Strong tier. Research-cited: under ~2000-bet samples a 2-of-N hit
@@ -7443,6 +7535,7 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
         # can't currently source. When DK/Kalshi data comes back online,
         # revisit — a healthy 4/5 bar is the eventual target.
         for p in row["picks"]:
+            _apply_fair_prob_blend(p)
             p["signal_score"] = _signal_score(p)
             if p.get("model_only"):
                 p["strong"] = False
