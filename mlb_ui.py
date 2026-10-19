@@ -5263,24 +5263,17 @@ def _signal_score(pick):
     evidence streams is the right aggregation.
 
     Components (0 or 1 each, EV worth up to 2):
-      EV cushion     ... 0 if ev <= 2%, +1 if 2-4%, +2 if >= 4%
-                         (thresholds were 3%/6% back when ev_pct was
-                         computed against the RAW model prob — now
-                         ev_pct uses the blended consensus, which is
-                         structurally ~2pp lower, so the EV bar comes
-                         down the same amount)
+      EV cushion     ... 0 if ev <= 3%, +1 if 3-6%, +2 if >= 6%
       Line toward me ... +1 when line_move_pp > 0 (Pinnacle devig moved
                          toward our side during our 3-day window; sharp
                          agreement is one of the strongest leading signals)
       Book agreement ... +1 when a cross-book (DK or Kalshi) agrees more
                          than our model does (positive divergence_pp)
-      Prob floor     ... +1 when fair_prob >= 0.58 (lowered from 0.60
-                         because fair_prob is now the blend pulled
-                         toward Pinnacle — pure model prob of 64-66%
-                         now reads as blended ~58-61%)
+      Prob floor     ... +1 when fair_prob >= 0.60 (model has real conviction,
+                         not a razor-thin coin-flip we're nudging by EV%)
 
     Total 0..5. A ★ Strong pick (score >= 4) requires AT LEAST
-    (2%+ EV, favorable move, book agreement, prob floor) OR equivalent
+    (3%+ EV, favorable move, book agreement, prob floor) OR equivalent
     combinations. Alt-line picks start capped at 3 (no prob-floor credit
     because their fair_prob is often sub-50% by construction)."""
     score = 0.0
@@ -5289,9 +5282,9 @@ def _signal_score(pick):
         ev = float(pick.get("ev_pct") or 0.0)
     except (TypeError, ValueError):
         ev = 0.0
-    if ev >= 4.0:
+    if ev >= 6.0:
         score += 2
-    elif ev >= 2.0:
+    elif ev >= 3.0:
         score += 1
     # Line toward me (fraction scale, line_move_pp 0..1)
     try:
@@ -5320,7 +5313,7 @@ def _signal_score(pick):
         fp = float(pick.get("fair_prob") or 0.0)
     except (TypeError, ValueError):
         fp = 0.0
-    if fp >= 0.58 and pick.get("source") != "alt":
+    if fp >= 0.60 and pick.get("source") != "alt":
         score += 1
     return int(min(5, max(0, score)))
 
@@ -16388,9 +16381,9 @@ def debug_blend_backtest():
     except Exception:
         min_signal = 3
     try:
-        min_ev = float(request.args.get("min_ev") or "2.0")
+        min_ev = float(request.args.get("min_ev") or "3.0")
     except Exception:
-        min_ev = 2.0
+        min_ev = 3.0
 
     graded_by_date = _pl.grade_all(limit_dates=days) or {}
 
@@ -16468,11 +16461,16 @@ def debug_blend_backtest():
             if fair >= 0.60 and p.get("source") != "alt": s += 1
             return min(5, max(0, s))
 
-        # NEW signal_score was EV 2/4 + 0.58 floor.
+        # NEW signal_score: use the live signal_score thresholds.
+        # Pull them from the module-level helper so this backtest
+        # auto-tracks whatever's in production without needing an edit.
+        _EV_HI = 6.0   # +2 bar
+        _EV_LO = 3.0   # +1 bar
+        _PROB_FLOOR = 0.60
         def _new_sig(fair, ev):
             s = 0
-            if ev >= 4.0: s += 2
-            elif ev >= 2.0: s += 1
+            if ev >= _EV_HI: s += 2
+            elif ev >= _EV_LO: s += 1
             try:
                 mv = float(p.get("line_move_pp") or 0.0)
             except Exception: mv = 0.0
@@ -16486,7 +16484,7 @@ def debug_blend_backtest():
                     if (dk is not None and float(dk) > 0) or (k is not None and float(k) > 0):
                         s += 1
                 except Exception: pass
-            if fair >= 0.58 and p.get("source") != "alt": s += 1
+            if fair >= _PROB_FLOOR and p.get("source") != "alt": s += 1
             return min(5, max(0, s))
 
         old_s = _old_sig(old_fair, old_ev)
