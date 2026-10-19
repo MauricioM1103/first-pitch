@@ -16400,6 +16400,20 @@ def debug_blend_backtest():
         min_ev = float(request.args.get("min_ev") or "3.0")
     except Exception:
         min_ev = 3.0
+    try:
+        # Additional hit-rate filter: require mc_prob (raw model
+        # conviction) >= min_prob. Default 0 = disabled. Useful for
+        # building "high-conviction only" variants where volume
+        # drops but hit rate climbs.
+        min_prob = float(request.args.get("min_prob") or "0.0")
+    except Exception:
+        min_prob = 0.0
+    try:
+        # Decimal cap — restrict to picks with price <= max_dec.
+        # Favorites hit more often. 0 = disabled.
+        max_dec = float(request.args.get("max_dec") or "0.0")
+    except Exception:
+        max_dec = 0.0
 
     graded_by_date = _pl.grade_all(limit_dates=days) or {}
 
@@ -16533,7 +16547,12 @@ def debug_blend_backtest():
             "old_ev":  old_ev, "new_ev": new_ev,
             "old_fair": old_fair, "new_fair": new_fair,
             "old_cleared": old_s >= 3 and p.get("passes_curfilter", False),
-            "new_cleared": new_s >= min_signal and new_ev >= min_ev,
+            "new_cleared": (
+                new_s >= min_signal
+                and raw_ev >= min_ev
+                and raw_fair >= min_prob
+                and (max_dec <= 0 or dec <= max_dec)
+            ),
             "result": p.get("result"),
             "profit_u": p.get("profit_u") or 0.0,
             "ev_delta_pct": new_ev - old_ev,
