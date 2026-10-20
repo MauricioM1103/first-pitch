@@ -16808,6 +16808,17 @@ def debug_dispatch():
     lines.append(f"  Now (CT):     {now_ct.isoformat()}")
     lines.append(f"  Today:        {today}")
     lines.append(f"  Webhook:      {'configured (…' + webhook[-20:] + ')' if webhook else 'MISSING — set in /settings'}")
+    # Rate-limit cooldown (shared across every send_* call in
+    # discord_bot). When a Cloudflare 1015 or Discord 429 hits, all
+    # sends are suspended for 15 min so the limit window doesn't keep
+    # extending.
+    try:
+        import discord_bot as _dbmod
+        _cd = _dbmod.rate_limit_remaining_sec()
+        if _cd > 0:
+            lines.append(f"  RATE LIMIT:   active — {_cd}s remaining before sends resume")
+    except Exception:
+        pass
     _sched_date = sched.get("date")
     if _sched_date and _sched_date != today:
         lines.append("")

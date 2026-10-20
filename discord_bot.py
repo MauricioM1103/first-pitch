@@ -18,6 +18,7 @@ import threading
 import time
 from datetime import date as _date, datetime, time as _time, timedelta
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -469,11 +470,43 @@ def render_picks_png(picks, title="Today's Picks", subtitle=""):
     return buf.getvalue()
 
 
+# Rate-limit cooldown: when Discord (or Cloudflare in front of it)
+# returns 429 we need to STOP sending to that webhook for a while or
+# the limit window keeps renewing and we never recover. Shared across
+# every send_* call via module-level state so a 429 on the slate PNG
+# also stops the agenda text and vice versa. 15 min is generous for a
+# typical Cloudflare 1015 window (usually clears in 1-10 min); if it's
+# still 429 after that, next tick retries and extends again.
+_RATE_LIMIT_COOLDOWN_UNTIL = 0.0
+_RATE_LIMIT_COOLDOWN_SEC = 15 * 60
+
+
+def _rate_limit_active():
+    return time.time() < _RATE_LIMIT_COOLDOWN_UNTIL
+
+
+def _trip_rate_limit(reason=""):
+    global _RATE_LIMIT_COOLDOWN_UNTIL
+    _RATE_LIMIT_COOLDOWN_UNTIL = time.time() + _RATE_LIMIT_COOLDOWN_SEC
+
+
+def rate_limit_remaining_sec():
+    """Expose for /debug/dispatch so operators can see the cooldown."""
+    r = _RATE_LIMIT_COOLDOWN_UNTIL - time.time()
+    return int(r) if r > 0 else 0
+
+
 def send_discord_image(webhook_url, png_bytes, filename, message=""):
     """POST a PNG to a Discord webhook via multipart. Returns True on
     success. Discord webhooks accept files up to ~25MB; our PNGs are
-    typically ~80-120 KB."""
+    typically ~80-120 KB.
+
+    If a shared rate-limit cooldown is active (triggered when a prior
+    call got HTTP 429), returns False without hitting the webhook so
+    we don't extend the Cloudflare 1015 window."""
     if not webhook_url or not png_bytes:
+        return False
+    if _rate_limit_active():
         return False
     try:
         boundary = "----cheeksboundary" + str(int(time.time() * 1000))
@@ -495,8 +528,15 @@ def send_discord_image(webhook_url, png_bytes, filename, message=""):
             # with a 403; always include one.
             "User-Agent": "cheeks-model/1.0 (+https://cheeks-model.onrender.com)",
         })
-        urlopen(req, timeout=15).close()
-        return True
+        try:
+            urlopen(req, timeout=15).close()
+            return True
+        except HTTPError as _he:
+            # HTTPError is raised on 4xx/5xx. Trip the cooldown on 429
+            # so other calls in this process don't hammer the webhook.
+            if getattr(_he, "code", 0) == 429:
+                _trip_rate_limit("send_image_429")
+            return False
     except Exception:
         return False
 
@@ -504,18 +544,26 @@ def send_discord_image(webhook_url, png_bytes, filename, message=""):
 def post_text(webhook_url, message):
     """POST a plain-text message to a Discord webhook. Returns True on
     success. Used for the intro and daily preamble so viewers get the
-    'why' before the slides."""
+    'why' before the slides. Respects the shared 429 cooldown."""
     if not webhook_url or not message:
+        return False
+    if _rate_limit_active():
         return False
     try:
         from urllib.request import Request, urlopen
+        from urllib.error import HTTPError as _HE
         data = json.dumps({"content": message}).encode()
         req = Request(webhook_url, data=data, method="POST", headers={
             "Content-Type": "application/json",
             "User-Agent": "cheeks-model/1.0 (+https://cheeks-model.onrender.com)",
         })
-        urlopen(req, timeout=15).close()
-        return True
+        try:
+            urlopen(req, timeout=15).close()
+            return True
+        except _HE as _he:
+            if getattr(_he, "code", 0) == 429:
+                _trip_rate_limit("post_text_429")
+            return False
     except Exception:
         return False
 
