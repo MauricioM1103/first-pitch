@@ -14771,14 +14771,31 @@ main.logged-page { max-width: 1040px; }
   </section>
   {% endif %}
 
-  <section class="records-section">
-    <h2>Overall Record <span style="color:var(--muted);font-size:13px">lagging indicator</span></h2>
-    <div class="sub">All graded picks across every sport. Research-cited caveat: ROI under ~2,000 bets is dominated by variance; use the CLV number above as the primary skill signal.</div>
+  {# Removed 2026-10-21: "Overall Record" tile — superseded by the
+     Current Filter 2.0 tile right below, which is what the TODAY
+     board actually filters on now. The all_7d / all_30d / all_90d
+     keys remain populated in summary for back-compat with any
+     embedded dashboards or API consumers. #}
+
+  {# PRIMARY RECORD: Current Filter 2.0 (promoted 2026-10-21 to be
+     the first tile on /logged so it matches what TODAY actually
+     recommends). #}
+  <section class="records-section" style="border:2px solid var(--good);border-radius:12px;padding:14px;background:color-mix(in oklab,var(--good) 7%,transparent)">
+    <h2>Current Filter 2.0 <span style="color:var(--good);font-size:13px">live default &mdash; what the TODAY board recommends</span></h2>
+    <div class="sub">
+      The record for picks that would clear <strong>today's live filter</strong>:
+      Signal composite &ge; 3/5 AND EV &ge; 3% (5% for alts) AND not model-only
+      AND decimal &ge; 1.50 (heavy favorites excluded per 2026-10-19 backtest &mdash;
+      they underperformed expectation). Membership rule: a pick counts here only
+      if it was still in the recommended set within 60 min of game start.
+    </div>
     <div class="records-grid">
-      {% for key, label in [('all_7d','Last 7 days'),('all_30d','Last 30 days'),('all_90d','Last 90 days')] %}
+      {% set _cf2_7_settled = (summary['curfilter2_7d'] or {}).settled %}
+      {% for key, label in [('curfilter2_7d','Last 7 days'),('curfilter2_30d','Last 30 days'),('curfilter2_90d','Last 90 days')] %}
       {% set r = summary[key] %}
-      <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
-        <div class="lbl">{{ label }}</div>
+      {% set _dup = (key != 'curfilter2_7d' and r.settled and _cf2_7_settled and r.settled == _cf2_7_settled) %}
+      <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}" style="border-color:var(--good)">
+        <div class="lbl">{{ label }}{% if _dup %} <span style="color:var(--muted-2);font-size:10px;font-weight:400;letter-spacing:0" title="Same settled count as Last 7 days — history doesn't extend further yet.">(insufficient history)</span>{% endif %}</div>
         {% if r.settled %}
         <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
         <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
@@ -14790,7 +14807,6 @@ main.logged-page { max-width: 1040px; }
       </div>
       {% endfor %}
     </div>
-    {{ mini_3d('all', 'all picks') }}
   </section>
 
   <section class="records-section">
@@ -14877,38 +14893,7 @@ main.logged-page { max-width: 1040px; }
     {{ mini_3d('curfilter', 'current filter') }}
   </section>
 
-  <section class="records-section" style="border:1px solid var(--good);border-radius:12px;padding:14px;background:color-mix(in oklab,var(--good) 5%,transparent)">
-    <h2>Current Filter 2.0 <span style="color:var(--good);font-size:13px">live default on today&#39;s board</span></h2>
-    <div class="sub">
-      Same rules as Current Filter above <strong>plus the honest-blend tuning
-      shipped 2026-10-19</strong>: picks with decimal &lt; 1.50 (shorter than
-      ~&minus;200 American) are excluded. 30-day backtest found these heavy
-      favorites consistently underperform expectation on this model &mdash;
-      removing them lifted ROI from +16.2% to +22.1% and units from +13.78u
-      to +15.00u on 20% fewer bets. Alt-line picks and Correct Score are
-      exempt from the decimal floor. This record applies the v2 filter
-      retroactively to the same graded picks, so you can compare directly
-      vs the v1 tile above.
-    </div>
-    <div class="records-grid">
-      {% set _cf2_7_settled = (summary['curfilter2_7d'] or {}).settled %}
-      {% for key, label in [('curfilter2_7d','Last 7 days'),('curfilter2_30d','Last 30 days'),('curfilter2_90d','Last 90 days')] %}
-      {% set r = summary[key] %}
-      {% set _dup = (key != 'curfilter2_7d' and r.settled and _cf2_7_settled and r.settled == _cf2_7_settled) %}
-      <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}" style="border-color:var(--good)">
-        <div class="lbl">{{ label }}{% if _dup %} <span style="color:var(--muted-2);font-size:10px;font-weight:400;letter-spacing:0" title="Same settled count as Last 7 days — history doesn't extend further yet.">(insufficient history)</span>{% endif %}</div>
-        {% if r.settled %}
-        <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
-        <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
-        {% else %}
-        <div class="wl" style="color:var(--muted)">&mdash;</div>
-        <span class="units" style="color:var(--muted)">&mdash;</span>
-        {% endif %}
-        <div class="meta">{{ r.settled }} settled{% if r.pending %} &middot; {{ r.pending }} pending{% endif %}</div>
-      </div>
-      {% endfor %}
-    </div>
-  </section>
+  {# Current Filter 2.0 moved to the top — see first section on this page. #}
 
   {% if by_sport_curfilter %}
   <section class="records-section">
