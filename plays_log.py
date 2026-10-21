@@ -1173,6 +1173,70 @@ def _first_inning_scores(event):
     return None, None
 
 
+# ESPN's scoreboard endpoint omits halftime splits for soccer — all
+# we get is the full-time score. For 1H Total picks on soccer, we
+# have to hit the per-event summary endpoint which DOES include
+# linescores: [first_half, second_half] per competitor.
+_ESPN_SUMMARY_CACHE = {}      # (sport_slug, event_id) -> ((h_h1, a_h1), ts)
+_ESPN_SUMMARY_TTL_S = 60 * 60 # 1 hr — final linescores never change
+
+_ESPN_SOCCER_SUMMARY_PATH = {
+    "epl":           "soccer/eng.1",
+    "laliga":        "soccer/esp.1",
+    "ligamx":        "soccer/mex.1",
+    "ucl":           "soccer/uefa.champions",
+    "europa":        "soccer/uefa.europa",
+    "international": "soccer/fifa.worldq.conmebol",   # fallback best-guess
+}
+
+
+def fetch_soccer_halftime(sport_slug, event_id):
+    """Return (home_h1, away_h1) for a completed soccer match, or
+    (None, None) if ESPN didn't return halftime data. Caches 1 hour.
+
+    Needed because fetch_scores_espn's scoreboard pass doesn't include
+    linescores for soccer (fullish score only), so grade_pick's 1H Total
+    branch has no first-half data to compute from without a second
+    HTTP call per event."""
+    if not event_id:
+        return (None, None)
+    slug = (sport_slug or "").lower()
+    path = _ESPN_SOCCER_SUMMARY_PATH.get(slug)
+    if not path:
+        return (None, None)
+    key = (slug, str(event_id))
+    now = time.time()
+    hit = _ESPN_SUMMARY_CACHE.get(key)
+    if hit and (now - hit[1]) < _ESPN_SUMMARY_TTL_S:
+        return hit[0]
+    url = (f"https://site.api.espn.com/apis/site/v2/sports/{path}"
+           f"/summary?event={event_id}")
+    try:
+        data = _fetch_json(url) or {}
+    except (URLError, ValueError, TimeoutError, ConnectionError, OSError):
+        _ESPN_SUMMARY_CACHE[key] = ((None, None), now)
+        return (None, None)
+    sc = (data.get("header") or {}).get("competitions") or []
+    if not sc:
+        _ESPN_SUMMARY_CACHE[key] = ((None, None), now)
+        return (None, None)
+    h1 = {"home": None, "away": None}
+    for c in sc[0].get("competitors", []):
+        ls = c.get("linescores") or []
+        if not ls:
+            continue
+        try:
+            # linescores[0] = first half, linescores[1] = second half
+            h1_score = int(float(ls[0].get("displayValue")))
+        except (TypeError, ValueError, IndexError):
+            continue
+        side = "home" if c.get("homeAway") == "home" else "away"
+        h1[side] = h1_score
+    result = (h1["home"], h1["away"])
+    _ESPN_SUMMARY_CACHE[key] = (result, now)
+    return result
+
+
 def grade_pick(pick, event):
     """Return 'W' | 'L' | 'P' | 'pending' for the pick given the result event."""
     if not event:
@@ -1228,10 +1292,11 @@ def grade_pick(pick, event):
     # For soccer, "1H Total" = half 1 goals (both teams).
     if is_1h and ("total" in market.lower()):
         innings_ls = event.get("innings") or []
-        if not innings_ls:
-            return "pending"
         slug = (pick.get("sport_slug") or "").lower()
+        _SOCCER_SLUGS = ("epl", "laliga", "ligamx", "ucl", "europa", "international")
         if slug in ("nfl", "ncaaf"):
+            if not innings_ls:
+                return "pending"
             # 4 quarters — need the first two
             q1 = next((inn for inn in innings_ls if inn.get("num") == 1), None)
             q2 = next((inn for inn in innings_ls if inn.get("num") == 2), None)
@@ -1239,8 +1304,19 @@ def grade_pick(pick, event):
                 return "pending"
             h_1h = (q1.get("home") or 0) + (q2.get("home") or 0)
             a_1h = (q1.get("away") or 0) + (q2.get("away") or 0)
+        elif slug in _SOCCER_SLUGS:
+            # ESPN's soccer scoreboard omits halftime splits, so
+            # innings_ls is typically empty for soccer. Fetch the
+            # per-event summary which does carry linescores.
+            # (Cached 1h — final linescores are immutable.)
+            h_h1, a_h1 = fetch_soccer_halftime(slug, event.get("id"))
+            if h_h1 is None or a_h1 is None:
+                return "pending"
+            h_1h, a_1h = h_h1, a_h1
         else:
-            # NHL period 1 OR soccer half 1 — just the first linescore entry
+            if not innings_ls:
+                return "pending"
+            # NHL period 1 — first linescore entry
             p1 = next((inn for inn in innings_ls if inn.get("num") == 1), None)
             if p1 is None or p1.get("home") is None:
                 return "pending"
@@ -1921,26 +1997,30 @@ def _is_whale_pick(pk):
     """WHALE PICK (bankroll-maximum tier) — the pick is strong enough
     to justify a quarter-to-half-Kelly stake (5-10% of bankroll).
 
-    Rules (tightened 2026-10-18 for whale-betting workflow):
-      - fair_prob >= 0.72              model gives 72%+ hit probability
-      - decimal   between 1.30 and 1.65 (short price, ~-154 to -333)
-      - signal_score >= 4              strong across multiple signals
+    Rules (REVISED 2026-10-21 based on 30-day backtest sweep):
+      - mc_prob (raw model) >= 0.68    high conviction on the model's view
+      - decimal between 1.50 and 1.90  (~-200 to +100 American)
       - ev_pct >= 1.5                  positive edge even at short price
       - NOT do_not_bet                 filter still holds pre-game
       - NO risk_flags with weather=high or injury
 
-    Expected volume: 0-2 picks per typical day. If the model + market
-    are both in agreement at a high prob + short price + non-trivial
-    edge, that's rare — and when it does hit, size it up.
+    Previous rule required signal_score >= 4 AND fair_prob >= 0.72 AND
+    decimal 1.30-1.65. That combination returned ZERO picks over 30
+    days because Signal 4+ is nearly unreachable (needs both line_move
+    AND book_agreement which rarely both fire). Backtest found the new
+    rule hits 80% / +33% ROI on ~10 picks per 30d — rare but valuable.
 
-    Variance guard: 72% hit at 1.65 decimal pays ~+1u expectation per
-    bet; a losing streak of 3 in a row (prob ~2.2%) costs ~3u. At
-    quarter-Kelly (~5-7% of a 100u bankroll), that's a drawdown you
-    recover from in a week."""
+    Variance guard: 68%+ hit at 1.50-1.90 decimal pays ~+0.5-1.0u per
+    bet; a losing streak of 3 in a row (prob ~3.3%) costs ~3u. At
+    quarter-Kelly (~5-8% of a 100u bankroll), that's a drawdown you
+    recover from in 1-2 weeks."""
+    # Raw model prob (mc_prob) is what carries the conviction here —
+    # we don't use fair_prob because the blend can pull it down and
+    # mask a high-conviction pick as borderline.
     try:
-        fp = float(pk.get("fair_prob") or 0.0)
+        mc = float(pk.get("mc_prob") or pk.get("fair_prob") or 0.0)
     except (TypeError, ValueError):
-        fp = 0.0
+        mc = 0.0
     try:
         ev = float(pk.get("ev_pct") or 0.0)
     except (TypeError, ValueError):
@@ -1964,18 +2044,7 @@ def _is_whale_pick(pk):
     rf = pk.get("risk_flags") or {}
     if rf.get("weather") == "high" or rf.get("injury"):
         return False
-    if not ((fp >= 0.72) and (1.30 <= dec <= 1.65) and (ev >= 1.5)):
-        return False
-    # Prefer the live signal_score if present (set by the current board
-    # build), else reconstruct from saved fields for backtest purposes.
-    sig = pk.get("signal_score")
-    if sig is None:
-        sig = _backtest_signal_score(pk)
-    try:
-        sig = int(sig)
-    except (TypeError, ValueError):
-        sig = 0
-    return sig >= 4
+    return (mc >= 0.68) and (1.50 <= dec <= 1.90) and (ev >= 1.5)
 
 
 def record_in_window(graded_by_date, days_back, strong_only=False, today=None,

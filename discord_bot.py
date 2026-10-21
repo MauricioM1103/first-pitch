@@ -1227,6 +1227,11 @@ def diff_newly_graded(picks_source, posted_pairs, wins_only=True):
                   Losses and pushes stay quiet; the EOD summary carries
                   them in bulk. Set False to also surface L/P.
 
+    Skips picks that are currently flagged `do_not_bet` — once a pick
+    flips to DNB after posting (signal collapsed or line moved against
+    us) we don't claim the result as ours, since the user was told
+    not to place that bet.
+
     Dedup via logs/discord_result_sent.json so each pick fires exactly
     one result alert per day."""
     sent = _load_result_sent()
@@ -1236,6 +1241,10 @@ def diff_newly_graded(picks_source, posted_pairs, wins_only=True):
     for pid, slate_label in posted_pairs:
         p = pick_by_id.get(pid)
         if not p:
+            continue
+        if p.get("do_not_bet"):
+            # Pick flipped to DNB after posting — don't announce
+            # its result as a win/loss we're owning.
             continue
         r = p.get("result")
         if r in accept and pid not in sent:
