@@ -5164,12 +5164,16 @@ def _pick_to_kalshi_route(pick, is_home_side):
     return (market_key, is_yes)
 
 
-_AI_VERDICT_CACHE_PATH = _settings_os.path.join(
-    _settings_os.path.dirname(_settings_os.path.abspath(__file__)),
-    "logs", "ai_pick_verdicts.json",
-)
 _AI_VERDICT_TTL_S = 24 * 60 * 60   # 24h per pick id
 _AI_VERDICT_CACHE_MEM = {"data": None, "ts": 0.0}
+
+
+def _ai_verdict_cache_path():
+    import os as _os
+    return _os.path.join(
+        _os.path.dirname(_os.path.abspath(__file__)),
+        "logs", "ai_pick_verdicts.json",
+    )
 
 
 def _load_ai_verdict_cache():
@@ -5179,7 +5183,7 @@ def _load_ai_verdict_cache():
         return cached
     data = {}
     try:
-        with open(_AI_VERDICT_CACHE_PATH) as f:
+        with open(_ai_verdict_cache_path()) as f:
             data = json.load(f) or {}
     except Exception:
         data = {}
@@ -5189,10 +5193,11 @@ def _load_ai_verdict_cache():
 
 
 def _save_ai_verdict_cache(data):
+    import os as _os
+    path = _ai_verdict_cache_path()
     try:
-        _settings_os.makedirs(_settings_os.path.dirname(_AI_VERDICT_CACHE_PATH),
-                               exist_ok=True)
-        with open(_AI_VERDICT_CACHE_PATH, "w") as f:
+        _os.makedirs(_os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
             json.dump(data, f)
     except Exception:
         pass
@@ -5212,7 +5217,8 @@ def _ai_verdict_for_pick(pick):
     pid = pick.get("id")
     if not pid:
         return None
-    if not _settings_os.environ.get("ANTHROPIC_API_KEY"):
+    import os as _os
+    if not _os.environ.get("ANTHROPIC_API_KEY"):
         return None
     cache = _load_ai_verdict_cache()
     hit = cache.get(pid)
@@ -5227,7 +5233,7 @@ def _ai_verdict_for_pick(pick):
     except Exception:
         return None
     try:
-        client = Anthropic(api_key=_settings_os.environ["ANTHROPIC_API_KEY"])
+        client = Anthropic(api_key=_os.environ["ANTHROPIC_API_KEY"])
     except Exception:
         return None
     # Compact context — one short paragraph is all the model needs.
