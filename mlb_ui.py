@@ -2018,6 +2018,118 @@ TODAY_TEMPLATE = r"""<!doctype html>
 .today-tally .tally-units.good { color: var(--good); }
 .today-tally .tally-units.bad  { color: #ef4444; }
 .today-tally .tally-pending { color: var(--muted); font-size: 11px; }
+/* AI Picks section (shipped 2026-10-21): Claude Haiku verdicts for
+   Signal 4+ picks surfaced at top of TODAY. Each card is collapsible —
+   click the header to toggle the AI analysis body (same pattern as
+   /ai-analysis's per-pick deep-dive). */
+.ai-picks-section {
+  margin: 10px 0 18px;
+  background: color-mix(in oklab, var(--accent, #8b5cf6) 6%, var(--card));
+  border: 1px solid color-mix(in oklab, var(--accent, #8b5cf6) 35%, var(--rule));
+  border-left: 3px solid var(--accent, #8b5cf6);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.ai-picks-section > .ai-head {
+  display: flex; align-items: baseline; gap: 10px;
+  margin: 0 0 10px;
+}
+.ai-picks-section .ai-head h2 {
+  margin: 0; font-size: 15px; letter-spacing: 0.04em;
+  text-transform: uppercase; font-family: "JetBrains Mono", monospace;
+  color: var(--accent, #8b5cf6);
+}
+.ai-picks-section .ai-head .ai-sub {
+  color: var(--muted); font-size: 12px;
+}
+.ai-picks-section .ai-head .ai-count {
+  margin-left: auto; color: var(--muted-2);
+  font-family: "JetBrains Mono", monospace; font-size: 11px;
+}
+.ai-pick-card {
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--card);
+  margin-top: 8px;
+  overflow: hidden;
+}
+.ai-pick-card .ai-pick-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+}
+.ai-pick-card .ai-pick-head:hover {
+  background: color-mix(in oklab, var(--accent, #8b5cf6) 7%, transparent);
+}
+.ai-pick-card .ai-pick-head .chev {
+  display: inline-block; transition: transform .15s ease;
+  color: var(--muted-2); font-family: "JetBrains Mono", monospace;
+}
+.ai-pick-card.open .ai-pick-head .chev { transform: rotate(90deg); }
+.ai-pick-card .ai-verd {
+  display: inline-flex; align-items: center;
+  padding: 2px 8px; border-radius: 10px;
+  font-family: "JetBrains Mono", monospace; font-size: 10.5px;
+  letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;
+}
+.ai-pick-card .ai-verd.strong {
+  background: color-mix(in oklab, var(--good) 20%, transparent);
+  color: var(--good);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--good) 50%, transparent);
+}
+.ai-pick-card .ai-verd.lean {
+  background: color-mix(in oklab, var(--accent, #8b5cf6) 18%, transparent);
+  color: var(--accent, #8b5cf6);
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent, #8b5cf6) 50%, transparent);
+}
+.ai-pick-card .ai-matchup {
+  color: var(--ink); font-weight: 600; font-size: 13.5px;
+}
+.ai-pick-card .ai-sport {
+  font-family: "JetBrains Mono", monospace; font-size: 10px;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted-2);
+}
+.ai-pick-card .ai-mkt {
+  color: var(--muted); font-size: 12.5px;
+}
+.ai-pick-card .ai-time {
+  margin-left: auto; color: var(--muted-2);
+  font-family: "JetBrains Mono", monospace; font-size: 11px;
+}
+.ai-pick-card .ai-body {
+  display: none;
+  padding: 0 14px 12px;
+  font-size: 13px; color: var(--ink);
+}
+.ai-pick-card.open .ai-body { display: block; }
+.ai-pick-card .ai-body .ai-reason {
+  padding: 10px 12px;
+  border-left: 2px solid var(--accent, #8b5cf6);
+  background: color-mix(in oklab, var(--accent, #8b5cf6) 8%, transparent);
+  border-radius: 0 6px 6px 0;
+  margin-top: 4px;
+  color: var(--ink); line-height: 1.5;
+  font-size: 13px;
+}
+.ai-pick-card .ai-body .ai-reason::before {
+  content: "AI analysis"; display: block;
+  font-family: "JetBrains Mono", monospace; font-size: 9.5px;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--muted-2); margin-bottom: 6px;
+}
+.ai-pick-card .ai-body .ai-stats {
+  display: flex; flex-wrap: wrap; gap: 10px;
+  padding: 10px 0 0;
+  font-family: "JetBrains Mono", monospace; font-size: 11.5px;
+  color: var(--muted);
+}
+.ai-pick-card .ai-body .ai-stats b { color: var(--ink); margin-left: 4px; }
+.ai-pick-card .ai-body .ai-stats .ev-good { color: var(--good); }
+@media (max-width: 640px) {
+  .ai-pick-card .ai-pick-head { flex-wrap: wrap; }
+  .ai-pick-card .ai-time { margin-left: 0; width: 100%; }
+}
 /* Phase 29 (1): streak + 7d pill */
 .streak-pill {
   display: inline-flex; flex-wrap: wrap; align-items: center; gap: 10px;
@@ -4825,6 +4937,52 @@ PICKS_TEMPLATE = r"""<!doctype html>
          title="Show only picks where Pinnacle's devigged prob moved toward our side by ≥ +1pp over the past 3 days (sharp agreement signal)">&uarr; Line toward me</a>
     {% endif %}
   </div>
+
+  {# AI Picks section (shipped 2026-10-21): picks where Claude Haiku
+     endorsed the bet (Strong Take or Lean verdict). Only Signal 4+
+     picks go through the AI gate, so this surfaces the model's
+     highest-confidence calls with a tiebreaker AI opinion. Each card
+     is collapsible — click the header to expand the AI reasoning. #}
+  {% if ai_picks %}
+  <section class="ai-picks-section">
+    <div class="ai-head">
+      <h2>AI Picks</h2>
+      <span class="ai-sub">Claude Haiku endorsed on Signal 4+ picks. Click a card to read the analysis.</span>
+      <span class="ai-count">{{ ai_picks|length }}</span>
+    </div>
+    {% for ap in ai_picks %}
+    <div class="ai-pick-card" data-id="{{ ap.id }}">
+      <div class="ai-pick-head" onclick="this.parentElement.classList.toggle('open')">
+        <span class="chev">&rsaquo;</span>
+        <span class="ai-verd {{ 'strong' if ap.ai_verdict == 'Strong Take' else 'lean' }}">{{ ap.ai_verdict }}</span>
+        <span class="ai-sport">{{ ap.sport_name or ap.sport_slug or '' }}</span>
+        <span class="ai-matchup">{{ ap.away_team }} @ {{ ap.home_team }}</span>
+        <span class="ai-mkt">&middot; {{ ap.market }}: {{ ap.pick }} @ {{ '%.2f'|format(ap.decimal) if ap.decimal else '?' }}</span>
+        <span class="ai-time">{{ ap.time_abs or '' }}</span>
+      </div>
+      <div class="ai-body">
+        <div class="ai-reason">{{ ap.ai_reason or '(no reason returned)' }}</div>
+        <div class="ai-stats">
+          <span>Signal<b>{{ ap.signal_score or 0 }}/5</b></span>
+          {% if ap.ev_pct is not none %}
+            <span>EV<b class="{{ 'ev-good' if (ap.ev_pct or 0) > 0 else '' }}">{{ '%+.1f'|format(ap.ev_pct) }}%</b></span>
+          {% endif %}
+          {% if ap.fair_prob is not none %}
+            <span>Fair prob<b>{{ '%.1f'|format((ap.fair_prob or 0)*100) }}%</b></span>
+          {% endif %}
+          {% if ap.mc_prob is not none %}
+            <span>Model<b>{{ '%.1f'|format((ap.mc_prob or 0)*100) }}%</b></span>
+          {% endif %}
+          {% if ap.pinnacle_prob is not none %}
+            <span>Pinnacle<b>{{ '%.1f'|format((ap.pinnacle_prob or 0)*100) }}%</b></span>
+          {% endif %}
+          {% if ap.whale %}<span style="color:#06b6d4">&#x1F40B; WHALE</span>{% endif %}
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
 
   {% if board_rows %}
   <div class="board-wrap">
@@ -7771,14 +7929,19 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                     p["signal_score"] = max(0, _curr - 1)
                 except Exception:
                     pass
-            # AI verdict gate (shipped 2026-10-21). Signal 3+ picks
-            # only, 24h cache per pick ID — keeps API usage to ~5-10
-            # calls per day on a typical board. Claude verdicts map:
-            #   Avoid / Pass  → force do_not_bet
-            #   Strong Take   → +1 Signal point (clamped to 5)
-            #   Lean          → no change (standard confidence)
-            # Requires ANTHROPIC_API_KEY env var; silent no-op without.
-            if ((p.get("signal_score") or 0) >= 3
+            # AI verdict gate (shipped 2026-10-21, tuned 2026-10-21):
+            #   - Only called on Signal 4+ picks (narrower gate so
+            #     the full board doesn't block on API latency; AI's
+            #     role is tiebreaker on strong picks, not gatekeeper)
+            #   - Only "Avoid" forces do_not_bet (strongest negative)
+            #   - "Pass" is informational only (shown on card as a
+            #     yellow flag, doesn't block the pick) — AI tends to
+            #     say Pass on anything thin, which collapsed the
+            #     entire slate when wired as DNB
+            #   - "Strong Take" still +1 Signal point
+            # 24h cache per pick ID keeps API usage ~1-3 calls/day.
+            # Requires ANTHROPIC_API_KEY; silent no-op without.
+            if ((p.get("signal_score") or 0) >= 4
                     and not p.get("alt_line_flag")
                     and not p.get("model_only")
                     and not p.get("do_not_bet")):
@@ -7790,10 +7953,12 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                     p["ai_verdict"] = _av.get("verdict")
                     p["ai_reason"]  = _av.get("reason")
                     _v = _av.get("verdict")
-                    if _v in ("Avoid", "Pass"):
+                    if _v == "Avoid":
                         p["do_not_bet"] = True
                     elif _v == "Strong Take":
                         p["signal_score"] = min(5, int(p["signal_score"]) + 1)
+                    # "Pass" / "Lean": no behavior change — ai_verdict
+                    # and ai_reason stay on the pick for the UI to show.
             if p.get("model_only"):
                 p["strong"] = False
                 p["whale"]  = False
@@ -8074,6 +8239,24 @@ def today_landing():
                    if (p.get("signal_score") or 0) >= 3
                    or p.get("do_not_bet")]
 
+    # AI Picks subset (shipped 2026-10-21): picks the Claude Haiku
+    # verdict gate (_build_board_rows) endorsed. Only Signal 4+ picks
+    # ever hit the AI call, so this is a hand-picked top-tier set with
+    # a model opinion attached. Pass + Avoid are excluded — the AI
+    # Picks section is only for genuine endorsements. Ranked by
+    # Strong Take first, then by Signal + EV (matching the main
+    # board's primary sort so order feels consistent).
+    _ai_order = {"Strong Take": 0, "Lean": 1}
+    ai_picks = [p for p in star_picks
+                if p.get("ai_verdict") in ("Strong Take", "Lean")
+                and not p.get("do_not_bet")]
+    ai_picks.sort(key=lambda p: (
+        _ai_order.get(p.get("ai_verdict"), 9),
+        -(p.get("signal_score") or 0),
+        -(float(p.get("ev_pct") or 0.0)),
+        p.get("start_time") or "",
+    ))
+
     # Phase 30 (#1): Discord/Pushover webhook for Signal 5/5 LOCK picks.
     # Fires once per pick id; dedupes via logs/lock_webhook_sent.json.
     # Non-blocking spawn so a slow webhook server can't stall the render.
@@ -8176,6 +8359,7 @@ def today_landing():
         shared_style=SHARED_STYLE,
         sport_strip=render_sport_strip("today"),
         star_picks=star_picks,
+        ai_picks=ai_picks,
         also_likes=also_likes,
         total_games=len(board_rows),
         scan_time_ms=scan_time_ms,
