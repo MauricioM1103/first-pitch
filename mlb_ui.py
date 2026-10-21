@@ -5164,6 +5164,123 @@ def _pick_to_kalshi_route(pick, is_home_side):
     return (market_key, is_yes)
 
 
+_AI_VERDICT_CACHE_PATH = _settings_os.path.join(
+    _settings_os.path.dirname(_settings_os.path.abspath(__file__)),
+    "logs", "ai_pick_verdicts.json",
+)
+_AI_VERDICT_TTL_S = 24 * 60 * 60   # 24h per pick id
+_AI_VERDICT_CACHE_MEM = {"data": None, "ts": 0.0}
+
+
+def _load_ai_verdict_cache():
+    now = time.time()
+    cached = _AI_VERDICT_CACHE_MEM.get("data")
+    if cached is not None and (now - _AI_VERDICT_CACHE_MEM["ts"]) < 60:
+        return cached
+    data = {}
+    try:
+        with open(_AI_VERDICT_CACHE_PATH) as f:
+            data = json.load(f) or {}
+    except Exception:
+        data = {}
+    _AI_VERDICT_CACHE_MEM["data"] = data
+    _AI_VERDICT_CACHE_MEM["ts"] = now
+    return data
+
+
+def _save_ai_verdict_cache(data):
+    try:
+        _settings_os.makedirs(_settings_os.path.dirname(_AI_VERDICT_CACHE_PATH),
+                               exist_ok=True)
+        with open(_AI_VERDICT_CACHE_PATH, "w") as f:
+            json.dump(data, f)
+    except Exception:
+        pass
+    _AI_VERDICT_CACHE_MEM["data"] = data
+    _AI_VERDICT_CACHE_MEM["ts"] = time.time()
+
+
+def _ai_verdict_for_pick(pick):
+    """Return {'verdict': str, 'reason': str} for one pick, or None if
+    AI isn't configured / call failed. 24h cache per pick id.
+
+    Verdicts: "Strong Take" | "Lean" | "Pass" | "Avoid"
+    API budget: 1 call per pick per 24h, gated to Signal 3+ picks by
+    the caller. Daily budget on a typical day with 5-10 Signal-3+
+    picks = 5-10 calls, mostly cached after the first scan.
+    """
+    pid = pick.get("id")
+    if not pid:
+        return None
+    if not _settings_os.environ.get("ANTHROPIC_API_KEY"):
+        return None
+    cache = _load_ai_verdict_cache()
+    hit = cache.get(pid)
+    if hit:
+        try:
+            if (time.time() - float(hit.get("ts", 0))) < _AI_VERDICT_TTL_S:
+                return {"verdict": hit.get("verdict"), "reason": hit.get("reason")}
+        except Exception:
+            pass
+    try:
+        from anthropic import Anthropic
+    except Exception:
+        return None
+    try:
+        client = Anthropic(api_key=_settings_os.environ["ANTHROPIC_API_KEY"])
+    except Exception:
+        return None
+    # Compact context — one short paragraph is all the model needs.
+    _dec = pick.get("decimal") or "?"
+    _ev  = pick.get("ev_pct") or 0
+    _mc  = pick.get("mc_prob") or pick.get("fair_prob") or 0
+    _pin = pick.get("pinnacle_prob") or 0
+    _sig = pick.get("signal_score") or 0
+    prompt = (
+        f"You are a sharp sports betting analyst. One pick to evaluate:\n"
+        f"Sport: {pick.get('sport_name') or pick.get('sport_slug') or '?'}\n"
+        f"Game: {pick.get('away_team') or '?'} at {pick.get('home_team') or '?'}\n"
+        f"Market: {pick.get('market') or '?'}\n"
+        f"Pick: {pick.get('pick') or '?'}  @  {_dec}  ({pick.get('book') or '?'})\n"
+        f"Model prob: {float(_mc)*100:.1f}%  Pinnacle devig: {float(_pin)*100:.1f}%\n"
+        f"EV: {float(_ev):+.1f}%  Signal composite: {_sig}/5\n\n"
+        f"Reply with ONE of these verdicts followed by one short reason "
+        f"(<=15 words):\n"
+        f"  STRONG TAKE  — exceptional edge, no concerns\n"
+        f"  LEAN         — real edge, standard confidence\n"
+        f"  PASS         — thin edge or specific red flag, skip\n"
+        f"  AVOID        — clear reason this pick won't hit\n"
+        f"\n"
+        f"Format: VERDICT: <reason>"
+    )
+    try:
+        resp = client.messages.create(
+            model="claude-haiku-5-5",
+            max_tokens=80,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        txt = "".join(b.text for b in resp.content if hasattr(b, "text")).strip()
+    except Exception:
+        return None
+    # Parse verdict (first word) + reason (rest)
+    verdict_map = {"STRONG": "Strong Take", "LEAN": "Lean",
+                   "PASS": "Pass", "AVOID": "Avoid"}
+    first = txt.split(":", 1)[0].strip().upper().split()
+    verdict = None
+    for w in first:
+        if w in verdict_map:
+            verdict = verdict_map[w]
+            break
+    if not verdict:
+        # Model drifted; cache a Pass to avoid retry burn.
+        verdict = "Pass"
+    reason = txt.split(":", 1)[1].strip() if ":" in txt else txt
+    reason = reason.strip()[:200]
+    cache[pid] = {"verdict": verdict, "reason": reason, "ts": time.time()}
+    _save_ai_verdict_cache(cache)
+    return {"verdict": verdict, "reason": reason}
+
+
 def _apply_fair_prob_blend(p):
     """Replace a pick's raw-model `fair_prob` with the single-stage
     per-sport Model/Pinnacle blend, and recompute `ev_pct` + `kelly_pct`
@@ -7591,6 +7708,29 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                     and not p.get("alt_line_flag")
                     and (p.get("market") or "") != "Correct Score"):
                 p["do_not_bet"] = True
+            # AI verdict gate (shipped 2026-10-21). Signal 3+ picks
+            # only, 24h cache per pick ID — keeps API usage to ~5-10
+            # calls per day on a typical board. Claude verdicts map:
+            #   Avoid / Pass  → force do_not_bet
+            #   Strong Take   → +1 Signal point (clamped to 5)
+            #   Lean          → no change (standard confidence)
+            # Requires ANTHROPIC_API_KEY env var; silent no-op without.
+            if ((p.get("signal_score") or 0) >= 3
+                    and not p.get("alt_line_flag")
+                    and not p.get("model_only")
+                    and not p.get("do_not_bet")):
+                try:
+                    _av = _ai_verdict_for_pick(p)
+                except Exception:
+                    _av = None
+                if _av:
+                    p["ai_verdict"] = _av.get("verdict")
+                    p["ai_reason"]  = _av.get("reason")
+                    _v = _av.get("verdict")
+                    if _v in ("Avoid", "Pass"):
+                        p["do_not_bet"] = True
+                    elif _v == "Strong Take":
+                        p["signal_score"] = min(5, int(p["signal_score"]) + 1)
             if p.get("model_only"):
                 p["strong"] = False
                 p["whale"]  = False
