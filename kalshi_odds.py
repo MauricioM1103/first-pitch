@@ -425,6 +425,138 @@ def _orderbook_depth_usd(orderbook, side):
     return total
 
 
+# Kalshi price history for the momentum signal — in-process ring
+# buffer per ticker so we can compute "YES price moved X pp toward
+# our side in the last hour." Writes on every kalshi_signal_data
+# call; sliding window = _KALSHI_HIST_WINDOW_S. Cross-restart
+# persistence is not needed (momentum is a short-horizon signal).
+_KALSHI_PRICE_HIST = {}   # ticker -> [(ts, yes_cents), ...]
+_KALSHI_HIST_WINDOW_S = 3 * 60 * 60   # 3h sliding window
+
+
+def _record_kalshi_price_history(ticker, yes_cents):
+    """Append a (now, yes_cents) sample for `ticker` and trim samples
+    older than _KALSHI_HIST_WINDOW_S."""
+    if not ticker or yes_cents is None:
+        return
+    now = time.time()
+    hist = _KALSHI_PRICE_HIST.setdefault(ticker, [])
+    hist.append((now, float(yes_cents)))
+    cutoff = now - _KALSHI_HIST_WINDOW_S
+    while hist and hist[0][0] < cutoff:
+        hist.pop(0)
+
+
+def _kalshi_hour_old_price(ticker, lookback_s=60 * 60, tolerance_s=15 * 60):
+    """Return the yes_cents sample closest to `lookback_s` ago (within
+    ±tolerance_s), or None if we don't have one."""
+    hist = _KALSHI_PRICE_HIST.get(ticker)
+    if not hist:
+        return None
+    target = time.time() - lookback_s
+    best = None
+    best_dist = None
+    for ts, cents in hist:
+        d = abs(ts - target)
+        if d <= tolerance_s and (best_dist is None or d < best_dist):
+            best = cents
+            best_dist = d
+    return best
+
+
+def kalshi_signal_data(sport_slug, home_team, is_home_pick, our_fair_prob,
+                        market_key=None):
+    """Rich Kalshi read for Signal composite + UI. Returns a dict with:
+      confirmed      bool  → existing kalshi_confirms_pick True-case
+      depth_usd      float → orderbook depth on OUR side (0 if unknown)
+      prob_gap_pp    float → our side's prob vs our fair_prob, in pp
+                             (positive = Kalshi believes MORE than us)
+      momentum_pp    float → change in Kalshi's prob for our side over
+                             the last ~1h (positive = moved toward us)
+      contra         bool  → Kalshi strongly DISAGREES (gap >= 5pp
+                             against us, AND the market has real depth
+                             >= $500 to make the disagreement credible)
+      ticker         str   → the Kalshi market ticker (for debug)
+
+    Returns None if the Kalshi path isn't applicable (bad sport, no
+    quote, exchange down, etc). The caller treats None as "no Kalshi
+    signal" — never contra, never confirmed."""
+    if _cb_open():
+        return None
+    try:
+        if not exchange_is_trading():
+            return None
+        if our_fair_prob is None:
+            return None
+        if market_key is None and sport_slug not in _SERIES_PREFIX:
+            return None
+        if market_key is not None and (sport_slug, market_key) not in _MARKET_SERIES:
+            return None
+        m = _market_for_matchup(sport_slug, home_team, market_key)
+        if not m:
+            return None
+        ticker = m.get("ticker")
+        if not ticker:
+            return None
+        yes_cents = None
+        for key in ("yes_ask", "yes_bid", "last_price"):
+            v = m.get(key)
+            if v is None:
+                continue
+            try:
+                c = float(v)
+            except (TypeError, ValueError):
+                continue
+            if 0 < c < 100:
+                yes_cents = c
+                break
+        if yes_cents is None:
+            return None
+        _record_kalshi_price_history(ticker, yes_cents)
+        kalshi_home_prob = yes_cents / 100.0
+        kalshi_our_prob = kalshi_home_prob if is_home_pick else (1.0 - kalshi_home_prob)
+        prob_gap_pp = (kalshi_our_prob - our_fair_prob) * 100.0
+
+        ob = market_orderbook(ticker)
+        depth = _orderbook_depth_usd(ob, "yes" if is_home_pick else "no")
+
+        last_ts = market_last_trade_ts(ticker)
+        fresh = last_ts is not None and (time.time() - last_ts) <= KALSHI_MAX_TRADE_AGE_S
+
+        # confirmed = SAME as kalshi_confirms_pick: within 5pp AND depth >= $500 AND fresh
+        confirmed = (
+            abs(prob_gap_pp) <= KALSHI_MAX_PROB_GAP * 100.0
+            and depth >= KALSHI_MIN_BOOK_DEPTH_USD
+            and fresh
+        )
+
+        # Momentum — compare Kalshi's prob for OUR side now vs ~1h ago.
+        hour_old_cents = _kalshi_hour_old_price(ticker)
+        if hour_old_cents is not None:
+            old_home_prob = hour_old_cents / 100.0
+            old_our_prob  = old_home_prob if is_home_pick else (1.0 - old_home_prob)
+            momentum_pp = (kalshi_our_prob - old_our_prob) * 100.0
+        else:
+            momentum_pp = 0.0
+
+        # Contra-warning: Kalshi strongly disagrees AGAINST our side,
+        # with enough depth to make the disagreement credible. We don't
+        # block the pick — we flag it so the UI can show a warning.
+        contra = (prob_gap_pp <= -5.0) and (depth >= KALSHI_MIN_BOOK_DEPTH_USD)
+
+        return {
+            "confirmed":   confirmed,
+            "depth_usd":   depth,
+            "prob_gap_pp": prob_gap_pp,
+            "momentum_pp": momentum_pp,
+            "contra":      contra,
+            "ticker":      ticker,
+        }
+    except Exception:
+        _cb_trip()
+        return None
+
+
 def kalshi_confirms_pick(sport_slug, home_team, is_home_pick, our_fair_prob,
                           market_key=None):
     """True iff Kalshi independently confirms our pick with a trustworthy

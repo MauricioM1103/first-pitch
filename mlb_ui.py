@@ -5440,6 +5440,15 @@ def _signal_score(pick):
     # divergence check for sports Kalshi doesn't cover (soccer, UFC).
     if pick.get("kalshi_confirmed"):
         score += 1
+        # Deep-book bonus (added 2026-10-21): when Kalshi's orderbook
+        # on our side is >= $5000, the confirmation is substantially
+        # stronger than a $500-threshold confirmation. +1 extra point.
+        try:
+            _kd = float(pick.get("kalshi_depth_usd") or 0.0)
+        except (TypeError, ValueError):
+            _kd = 0.0
+        if _kd >= 5000.0:
+            score += 1
     else:
         dk = pick.get("dk_divergence_pp")
         k  = pick.get("kalshi_divergence_pp")
@@ -5448,6 +5457,16 @@ def _signal_score(pick):
                 score += 1
         except (TypeError, ValueError):
             pass
+    # Kalshi momentum (added 2026-10-21): Kalshi price moved >= 3pp
+    # toward our side over the last ~1h. Sharp money forming agreement
+    # with the model's view — same direction logic as line_move_pp,
+    # but on the Kalshi orderbook rather than Pinnacle.
+    try:
+        _km = float(pick.get("kalshi_momentum_pp") or 0.0)
+    except (TypeError, ValueError):
+        _km = 0.0
+    if _km >= 3.0:
+        score += 1
     # Prob floor — use RAW model prob (mc_prob) for the same reason
     # as the EV cushion above. The displayed fair_prob is blended and
     # pulled toward Pinnacle, so 65-70% raw-prob picks look like
@@ -7355,6 +7374,9 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
         # Signal >= 4 also skip it (already strong). This cuts Kalshi
         # API volume ~70% vs calling it on every ML pick.
         kalshi_confirmed = False
+        kalshi_depth_usd = None
+        kalshi_momentum  = None
+        kalshi_contra    = False
         try:
             # Phase 25: DNB picks route to Kalshi's OPPOSITE-team ML
             # market, taking the NO side (DNB-on-A ≡ NO-on-B's ML).
@@ -7385,12 +7407,31 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                     _market_key, _is_yes = _kalshi_route
                     if _pre_score is not None and 2 <= _pre_score <= 3:
                         import kalshi_odds as _ko
-                        kalshi_confirmed = _ko.kalshi_confirms_pick(
-                            p.get("sport_slug"), p.get("home_team"),
-                            is_home_pick=_is_yes,
-                            our_fair_prob=float(_fair),
-                            market_key=_market_key,
-                        )
+                        # Rich signal data: confirmed + depth +
+                        # momentum + contra flag. Falls back to
+                        # the plain confirmer if the rich path
+                        # isn't available on this build.
+                        try:
+                            _ksd = _ko.kalshi_signal_data(
+                                p.get("sport_slug"), p.get("home_team"),
+                                is_home_pick=_is_yes,
+                                our_fair_prob=float(_fair),
+                                market_key=_market_key,
+                            )
+                        except AttributeError:
+                            _ksd = None
+                        if _ksd is not None:
+                            kalshi_confirmed  = _ksd.get("confirmed", False)
+                            kalshi_depth_usd  = _ksd.get("depth_usd")
+                            kalshi_momentum   = _ksd.get("momentum_pp")
+                            kalshi_contra     = _ksd.get("contra", False)
+                        else:
+                            kalshi_confirmed = _ko.kalshi_confirms_pick(
+                                p.get("sport_slug"), p.get("home_team"),
+                                is_home_pick=_is_yes,
+                                our_fair_prob=float(_fair),
+                                market_key=_market_key,
+                            )
         except Exception:
             kalshi_confirmed = False
         row["picks"].append({
@@ -7408,6 +7449,9 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
             "kalshi_fair_prob":   kalshi_fair,
             "kalshi_divergence_pp": kalshi_divergence_pp,
             "kalshi_confirmed":   kalshi_confirmed,
+            "kalshi_depth_usd":   locals().get("kalshi_depth_usd"),
+            "kalshi_momentum_pp": locals().get("kalshi_momentum"),
+            "kalshi_contra":      locals().get("kalshi_contra", False),
         })
         # Overlay score if this pick graded with a final score
         gp = graded_by_id.get(p.get("id"))
@@ -7714,6 +7758,19 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                     and not p.get("alt_line_flag")
                     and (p.get("market") or "") != "Correct Score"):
                 p["do_not_bet"] = True
+            # Kalshi contra-warning (shipped 2026-10-21): Kalshi's own
+            # price for OUR side is >= 5pp WORSE than our fair_prob,
+            # AND the Kalshi orderbook has real depth ($500+) to back
+            # the disagreement. This is sharp money saying our model's
+            # wrong on this pick. We don't force DNB — just surface
+            # the warning so the UI can flag it and the Signal shaves
+            # a point off to reflect the contra signal.
+            if p.get("kalshi_contra"):
+                try:
+                    _curr = int(p.get("signal_score") or 0)
+                    p["signal_score"] = max(0, _curr - 1)
+                except Exception:
+                    pass
             # AI verdict gate (shipped 2026-10-21). Signal 3+ picks
             # only, 24h cache per pick ID — keeps API usage to ~5-10
             # calls per day on a typical board. Claude verdicts map:
