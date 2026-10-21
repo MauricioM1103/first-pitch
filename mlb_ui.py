@@ -5270,7 +5270,7 @@ def _signal_score(pick):
     rule is dominated by variance; a weighted vote across INDEPENDENT
     evidence streams is the right aggregation.
 
-    Components (0 or 1 each, EV worth up to 2):
+    Components (0 or 1 each, EV worth up to 2 — raw sum clamped to 5):
       EV cushion     ... 0 if ev <= 3%, +1 if 3-6%, +2 if >= 6%
       Line toward me ... +1 when line_move_pp > 0 (Pinnacle devig moved
                          toward our side during our 3-day window; sharp
@@ -5279,11 +5279,16 @@ def _signal_score(pick):
                          than our model does (positive divergence_pp)
       Prob floor     ... +1 when fair_prob >= 0.60 (model has real conviction,
                          not a razor-thin coin-flip we're nudging by EV%)
+      Persistence    ... +1 when the pick has >= 3 anchor snapshots in its
+                         history (survived multiple sharp-money cycles). New
+                         picks start at 0 anchors; this bonus accrues over
+                         the day. Research: ephemeral +EV windows are mostly
+                         market errors that get corrected within hours.
 
-    Total 0..5. A ★ Strong pick (score >= 4) requires AT LEAST
+    Total clamped at 5. A ★ Strong pick (score >= 4) requires AT LEAST
     (3%+ EV, favorable move, book agreement, prob floor) OR equivalent
-    combinations. Alt-line picks start capped at 3 (no prob-floor credit
-    because their fair_prob is often sub-50% by construction)."""
+    combinations. Alt-line picks start capped at 3 (no prob-floor or
+    persistence credit because alt lines are informational companions)."""
     score = 0.0
     # EV cushion — prefer the RAW-sim EV when available. The blend on
     # fair_prob/ev_pct is honest for display purposes but structurally
@@ -5331,6 +5336,21 @@ def _signal_score(pick):
         fp = 0.0
     if fp >= 0.60 and pick.get("source") != "alt":
         score += 1
+    # Multi-snapshot persistence bonus (added 2026-10-21). Picks
+    # saved to the plays_log carry an `anchors` dict with one entry
+    # per anchor time the pick survived to (00:15 / 03:00 / 12:00 /
+    # 16:00 / 23:00 CT buckets). A pick that persisted across >=3
+    # anchors has withstood multiple sharp-money cycles — much more
+    # trustworthy than a pop-and-fade pick that only cleared the bar
+    # for one scan. Research: ephemeral +EV windows almost always
+    # resolve to market errors that get corrected within hours.
+    try:
+        _anchors = pick.get("anchors") or {}
+        _n_anchors = sum(1 for k in _anchors.keys() if k != "zz_first_save")
+        if _n_anchors >= 3 and pick.get("source") != "alt":
+            score += 1
+    except Exception:
+        pass
     return int(min(5, max(0, score)))
 
 
@@ -17409,8 +17429,16 @@ def _cron_dispatch_inner(_db, settings, webhook):
                     star.append(p)
             dnb_alerts = _db.diff_posted_hard_dnb(star, posted_by_slate)
             if dnb_alerts:
+                # Flatten already-posted ids so the replacement picker
+                # doesn't offer a pick that's already in a slate.
+                _posted_ids = set()
+                for _sl, _ids in (posted_by_slate or {}).items():
+                    for _i in (_ids or []):
+                        _posted_ids.add(_i)
                 n = _db.send_change_alert(webhook, entrants=[],
-                                           dnb_alerts=dnb_alerts)
+                                           dnb_alerts=dnb_alerts,
+                                           star_picks=star,
+                                           exclude_ids=_posted_ids)
                 if n:
                     actions.append(f"hard_dnb:{n}")
             _mark_throttle(_dnb_throttle_path)

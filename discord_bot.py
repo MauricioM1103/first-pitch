@@ -1403,38 +1403,106 @@ def diff_posted_dnb(star_picks, posted_half1, posted_half2):
 _ENTRANT_MAX_PER_ALERT = 2
 
 
-def send_change_alert(webhook_url, entrants=None, dnb_alerts=None):
-    """Post live updates. Entrants (new picks that could join the top
-    10 later today) are capped at _ENTRANT_MAX_PER_ALERT and rate-
-    limited to one message every _LIVE_ALERT_COOLDOWN_SEC. DNB alerts
-    for picks that were in a posted top-10 fire whenever they happen —
-    dedup is per pick ID in diff_posted_dnb — and the caption names
-    which half the pick belonged to."""
+def _pick_replacement_for(dnb_pick, star_picks, exclude_ids):
+    """Find the highest-signal upcoming pick on today's live board
+    that could step in for a posted pick that just flipped to DNB.
+
+    Rules:
+      - must clear the Discord qualification bar (_qualifies_for_discord)
+      - must NOT be do_not_bet itself
+      - must NOT already be in a posted slate (exclude_ids)
+      - must NOT be an alt-line pick (replacements are standalone bets)
+      - game must not have started yet (_row_status upcoming OR absent)
+      - sort by signal_score desc, then EV desc, pick top one
+      - returns None if nothing qualifies — caller falls back to plain
+        DNB alert without a replacement.
+    """
+    if not star_picks:
+        return None
+    candidates = []
+    for p in star_picks:
+        pid = p.get("id")
+        if not pid or pid in exclude_ids or pid == dnb_pick.get("id"):
+            continue
+        if p.get("do_not_bet") or p.get("model_only"):
+            continue
+        if p.get("alt_line_flag") or p.get("source") == "alt":
+            continue
+        if p.get("_row_status") and p.get("_row_status") != "upcoming":
+            continue
+        if not _qualifies_for_discord(p):
+            continue
+        candidates.append(p)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: (
+        -(int(p.get("signal_score") or 0)),
+        -_safe_float(p.get("ev_pct")),
+    ))
+    return candidates[0]
+
+
+def send_change_alert(webhook_url, entrants=None, dnb_alerts=None,
+                      star_picks=None, exclude_ids=None):
+    """Post live updates.
+
+    DNB alerts fire with a REPLACEMENT: for each posted pick that
+    flipped to DO NOT BET we find the highest-signal upcoming pick
+    on today's live board that isn't already in a posted slate, and
+    send ONE combined message naming the dropped pick and the
+    replacement. If no replacement qualifies, we fall back to the
+    plain DNB message so the user still knows the pick is dead.
+
+    Entrants (new picks that could join the top N later today) are
+    capped at _ENTRANT_MAX_PER_ALERT and rate-limited to one message
+    every _LIVE_ALERT_COOLDOWN_SEC.
+    """
     if not webhook_url:
         return 0
     sent = 0
     stamp = datetime.utcnow().strftime("%H:%M UTC")
+    star_picks = star_picks or []
+    exclude_ids = set(exclude_ids or [])
 
-    # --- DNB alerts (always fire; per-pick-id dedup upstream) ---
+    # --- DNB alerts WITH REPLACEMENT (per-pick-id dedup upstream) ---
     dnb_alerts = dnb_alerts or []
-    if dnb_alerts:
-        picks  = [p for p, _ in dnb_alerts]
-        labels = [lab for _, lab in dnb_alerts]
-        from_label = ", ".join(sorted(set(labels)))
-        png = render_picks_png_tall(
-            picks,
-            title=f"X {len(picks)} pick{'s' if len(picks) > 1 else ''} → DO NOT BET",
-            subtitle=f"From the {from_label} list — {stamp}",
-        )
-        if png:
-            if len(picks) == 1:
-                msg = (f":no_entry: **{labels[0]} pick flipped to DO NOT BET** — "
-                       "removed from the posted top 10")
-            else:
-                msg = (f":no_entry: **{len(picks)} posted picks flipped to "
-                       f"DO NOT BET** ({from_label})")
-            if send_discord_image(webhook_url, png, "dnb.png", msg):
-                sent += 1
+    for dnb_pick, label in dnb_alerts:
+        replacement = _pick_replacement_for(
+            dnb_pick, star_picks,
+            exclude_ids | {p.get("id") for p, _ in dnb_alerts if p.get("id")})
+        # Build the one combined PNG. If we have a replacement we
+        # stack both picks on the card (dropped on top, replacement
+        # below). If no replacement, just the dropped pick.
+        if replacement:
+            pngs_payload = [dnb_pick, replacement]
+            title = f"DNB: {dnb_pick.get('pick') or ''}  →  REPLACEMENT"
+            subtitle = (f"{label} slate pick dropped; "
+                        f"replacement is the strongest upcoming pick on today's live board — {stamp}")
+            fname = "dnb_with_replacement.png"
+            try:
+                _r_sig = int(replacement.get("signal_score") or 0)
+                _r_ev  = float(replacement.get("ev_pct") or 0.0)
+            except Exception:
+                _r_sig, _r_ev = 0, 0.0
+            msg = (f":no_entry: **{label} pick → DO NOT BET**  "
+                   f"({dnb_pick.get('pick') or ''})\n"
+                   f":arrow_right: **Replacement**: {replacement.get('pick') or ''}  "
+                   f"(Signal {_r_sig}/5, "
+                   f"{'+' if _r_ev >= 0 else ''}{_r_ev:.1f}% EV, "
+                   f"@ {replacement.get('decimal') or '?'}, "
+                   f"{replacement.get('book') or '?'})")
+        else:
+            pngs_payload = [dnb_pick]
+            title = f"DNB: {dnb_pick.get('pick') or ''}"
+            subtitle = (f"{label} slate pick dropped; "
+                        f"no eligible replacement on today's live board — {stamp}")
+            fname = "dnb.png"
+            msg = (f":no_entry: **{label} pick → DO NOT BET**  "
+                   f"({dnb_pick.get('pick') or ''})\n"
+                   f"No replacement available from today's live board.")
+        png = render_picks_png_tall(pngs_payload, title=title, subtitle=subtitle)
+        if png and send_discord_image(webhook_url, png, fname, msg):
+            sent += 1
 
     # --- Entrant alerts (once per day, capped at 2 picks per message)
     entrants = (entrants or [])[:_ENTRANT_MAX_PER_ALERT]
