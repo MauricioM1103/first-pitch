@@ -5324,6 +5324,12 @@ def _pick_to_kalshi_route(pick, is_home_side):
 
 _AI_VERDICT_TTL_S = 24 * 60 * 60   # 24h per pick id
 _AI_VERDICT_CACHE_MEM = {"data": None, "ts": 0.0}
+# Pick ids currently being verdicted by a background thread. Prevents
+# multiple page loads from firing duplicate API calls for the same
+# pick (board-build races).
+_AI_INFLIGHT = set()
+import threading as _ai_threading
+_AI_INFLIGHT_LOCK = _ai_threading.Lock()
 
 
 def _ai_verdict_cache_path():
@@ -5335,6 +5341,11 @@ def _ai_verdict_cache_path():
 
 
 def _load_ai_verdict_cache():
+    """Load AI verdict cache with fallback to log_persist (encrypted
+    mirror isn't needed — verdict text is not sensitive, so we mirror
+    plain). The log_persist read happens only on first process boot
+    when the local file is empty; subsequent calls use the in-memory
+    cache."""
     now = time.time()
     cached = _AI_VERDICT_CACHE_MEM.get("data")
     if cached is not None and (now - _AI_VERDICT_CACHE_MEM["ts"]) < 60:
@@ -5345,6 +5356,24 @@ def _load_ai_verdict_cache():
             data = json.load(f) or {}
     except Exception:
         data = {}
+    # If the local file was empty (Render just wiped logs/ on deploy),
+    # try pulling the mirror from log_persist on the data branch.
+    if not data:
+        try:
+            import log_persist
+            text, _sha = log_persist.read_file("logs/ai_pick_verdicts.json")
+            if text:
+                data = json.loads(text) or {}
+                # Rehydrate the local file so later saves don't blow it away.
+                try:
+                    import os as _os2
+                    _os2.makedirs(_os2.path.dirname(_ai_verdict_cache_path()), exist_ok=True)
+                    with open(_ai_verdict_cache_path(), "w") as f:
+                        json.dump(data, f)
+                except Exception:
+                    pass
+        except Exception:
+            pass
     _AI_VERDICT_CACHE_MEM["data"] = data
     _AI_VERDICT_CACHE_MEM["ts"] = now
     return data
@@ -5361,88 +5390,125 @@ def _save_ai_verdict_cache(data):
         pass
     _AI_VERDICT_CACHE_MEM["data"] = data
     _AI_VERDICT_CACHE_MEM["ts"] = time.time()
+    # Mirror to log_persist so deploys don't wipe the cache. Non-blocking.
+    try:
+        import log_persist
+        log_persist.write_file("logs/ai_pick_verdicts.json",
+                                 json.dumps(data))
+    except Exception:
+        pass
 
 
 def _ai_verdict_for_pick(pick):
-    """Return {'verdict': str, 'reason': str} for one pick, or None if
-    AI isn't configured / call failed. 24h cache per pick id.
+    """Cache-only lookup. Returns {verdict, reason} on a fresh cache
+    hit, else None. NEVER calls the Anthropic API inline — API calls
+    happen in background threads via _queue_ai_verdict_fill. Blocking
+    the main render path on 10+ synchronous Haiku calls was taking
+    the server past Render's 60s request budget, killing workers.
 
     Verdicts: "Strong Take" | "Lean" | "Pass" | "Avoid"
-    API budget: 1 call per pick per 24h, gated to Signal 3+ picks by
-    the caller. Daily budget on a typical day with 5-10 Signal-3+
-    picks = 5-10 calls, mostly cached after the first scan.
     """
     pid = pick.get("id")
     if not pid:
         return None
-    import os as _os
-    if not _os.environ.get("ANTHROPIC_API_KEY"):
-        return None
     cache = _load_ai_verdict_cache()
     hit = cache.get(pid)
-    if hit:
+    if not hit:
+        return None
+    try:
+        if (time.time() - float(hit.get("ts", 0))) >= _AI_VERDICT_TTL_S:
+            return None  # stale
+    except Exception:
+        return None
+    v = hit.get("verdict")
+    if not v:
+        return None
+    return {"verdict": v, "reason": hit.get("reason")}
+
+
+def _queue_ai_verdict_fill(pick):
+    """Spawn a background thread that calls Claude Haiku for this pick
+    and writes the verdict to the cache. Idempotent — if a thread is
+    already in flight for this pick, no-op. Caller fires this for
+    every Signal 3+ pick that `_ai_verdict_for_pick` returned None on;
+    the next page load picks up the cached verdict and renders it."""
+    pid = pick.get("id")
+    if not pid:
+        return
+    import os as _os
+    if not _os.environ.get("ANTHROPIC_API_KEY"):
+        return
+    with _AI_INFLIGHT_LOCK:
+        if pid in _AI_INFLIGHT:
+            return
+        _AI_INFLIGHT.add(pid)
+    def _work():
         try:
-            if (time.time() - float(hit.get("ts", 0))) < _AI_VERDICT_TTL_S:
-                return {"verdict": hit.get("verdict"), "reason": hit.get("reason")}
-        except Exception:
-            pass
+            try:
+                from anthropic import Anthropic
+            except Exception:
+                return
+            try:
+                client = Anthropic(api_key=_os.environ["ANTHROPIC_API_KEY"])
+            except Exception:
+                return
+            _dec = pick.get("decimal") or "?"
+            _ev  = pick.get("ev_pct") or 0
+            _mc  = pick.get("mc_prob") or pick.get("fair_prob") or 0
+            _pin = pick.get("pinnacle_prob") or 0
+            _sig = pick.get("signal_score") or 0
+            prompt = (
+                f"You are a sharp sports betting analyst. One pick to evaluate:\n"
+                f"Sport: {pick.get('sport_name') or pick.get('sport_slug') or '?'}\n"
+                f"Game: {pick.get('away_team') or '?'} at {pick.get('home_team') or '?'}\n"
+                f"Market: {pick.get('market') or '?'}\n"
+                f"Pick: {pick.get('pick') or '?'}  @  {_dec}  ({pick.get('book') or '?'})\n"
+                f"Model prob: {float(_mc)*100:.1f}%  Pinnacle devig: {float(_pin)*100:.1f}%\n"
+                f"EV: {float(_ev):+.1f}%  Signal composite: {_sig}/5\n\n"
+                f"Reply with ONE of these verdicts followed by one short reason "
+                f"(<=15 words):\n"
+                f"  STRONG TAKE  — exceptional edge, no concerns\n"
+                f"  LEAN         — real edge, standard confidence\n"
+                f"  PASS         — thin edge or specific red flag, skip\n"
+                f"  AVOID        — clear reason this pick won't hit\n"
+                f"\n"
+                f"Format: VERDICT: <reason>"
+            )
+            try:
+                resp = client.messages.create(
+                    model="claude-haiku-5-5",
+                    max_tokens=80,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                txt = "".join(b.text for b in resp.content if hasattr(b, "text")).strip()
+            except Exception:
+                return
+            verdict_map = {"STRONG": "Strong Take", "LEAN": "Lean",
+                           "PASS": "Pass", "AVOID": "Avoid"}
+            first = txt.split(":", 1)[0].strip().upper().split()
+            verdict = None
+            for w in first:
+                if w in verdict_map:
+                    verdict = verdict_map[w]
+                    break
+            if not verdict:
+                verdict = "Pass"
+            reason = txt.split(":", 1)[1].strip() if ":" in txt else txt
+            reason = reason.strip()[:200]
+            # Reload cache (another thread may have written since we
+            # started), merge, and save.
+            cache = _load_ai_verdict_cache()
+            cache[pid] = {"verdict": verdict, "reason": reason, "ts": time.time()}
+            _save_ai_verdict_cache(cache)
+        finally:
+            with _AI_INFLIGHT_LOCK:
+                _AI_INFLIGHT.discard(pid)
     try:
-        from anthropic import Anthropic
+        t = _ai_threading.Thread(target=_work, daemon=True)
+        t.start()
     except Exception:
-        return None
-    try:
-        client = Anthropic(api_key=_os.environ["ANTHROPIC_API_KEY"])
-    except Exception:
-        return None
-    # Compact context — one short paragraph is all the model needs.
-    _dec = pick.get("decimal") or "?"
-    _ev  = pick.get("ev_pct") or 0
-    _mc  = pick.get("mc_prob") or pick.get("fair_prob") or 0
-    _pin = pick.get("pinnacle_prob") or 0
-    _sig = pick.get("signal_score") or 0
-    prompt = (
-        f"You are a sharp sports betting analyst. One pick to evaluate:\n"
-        f"Sport: {pick.get('sport_name') or pick.get('sport_slug') or '?'}\n"
-        f"Game: {pick.get('away_team') or '?'} at {pick.get('home_team') or '?'}\n"
-        f"Market: {pick.get('market') or '?'}\n"
-        f"Pick: {pick.get('pick') or '?'}  @  {_dec}  ({pick.get('book') or '?'})\n"
-        f"Model prob: {float(_mc)*100:.1f}%  Pinnacle devig: {float(_pin)*100:.1f}%\n"
-        f"EV: {float(_ev):+.1f}%  Signal composite: {_sig}/5\n\n"
-        f"Reply with ONE of these verdicts followed by one short reason "
-        f"(<=15 words):\n"
-        f"  STRONG TAKE  — exceptional edge, no concerns\n"
-        f"  LEAN         — real edge, standard confidence\n"
-        f"  PASS         — thin edge or specific red flag, skip\n"
-        f"  AVOID        — clear reason this pick won't hit\n"
-        f"\n"
-        f"Format: VERDICT: <reason>"
-    )
-    try:
-        resp = client.messages.create(
-            model="claude-haiku-5-5",
-            max_tokens=80,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        txt = "".join(b.text for b in resp.content if hasattr(b, "text")).strip()
-    except Exception:
-        return None
-    # Parse verdict (first word) + reason (rest)
-    verdict_map = {"STRONG": "Strong Take", "LEAN": "Lean",
-                   "PASS": "Pass", "AVOID": "Avoid"}
-    first = txt.split(":", 1)[0].strip().upper().split()
-    verdict = None
-    for w in first:
-        if w in verdict_map:
-            verdict = verdict_map[w]
-            break
-    if not verdict:
-        # Model drifted; cache a Pass to avoid retry burn.
-        verdict = "Pass"
-    reason = txt.split(":", 1)[1].strip() if ":" in txt else txt
-    reason = reason.strip()[:200]
-    cache[pid] = {"verdict": verdict, "reason": reason, "ts": time.time()}
-    _save_ai_verdict_cache(cache)
-    return {"verdict": verdict, "reason": reason}
+        with _AI_INFLIGHT_LOCK:
+            _AI_INFLIGHT.discard(pid)
 
 
 def _apply_fair_prob_blend(p):
@@ -7964,6 +8030,16 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                         p["signal_score"] = min(5, int(p["signal_score"]) + 1)
                     # "Pass" / "Lean": no behavior change — ai_verdict
                     # and ai_reason stay on the pick for the UI to show.
+                else:
+                    # Cache miss — fire a background thread to populate
+                    # for the NEXT page load. Blocking inline on 10+
+                    # synchronous Haiku calls took the server past
+                    # Render's 60s request budget this morning and
+                    # killed workers (UptimeRobot DOWN alerts).
+                    try:
+                        _queue_ai_verdict_fill(p)
+                    except Exception:
+                        pass
             if p.get("model_only"):
                 p["strong"] = False
                 p["whale"]  = False
