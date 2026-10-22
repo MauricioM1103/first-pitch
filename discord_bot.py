@@ -992,6 +992,15 @@ def send_eod_summary(webhook_url, picks_by_slate, date_label=""):
 
     # Flatten + dedup by id in case the same pick appears on multiple
     # slate pick_id lists (shouldn't happen, defensive).
+    #
+    # Skip picks flagged do_not_bet. These are picks that WERE posted to
+    # Discord earlier but have since been retracted (signal collapse,
+    # decimal < 1.50 after move, AI Avoid verdict, line move adverse,
+    # etc.). The user already got a DNB alert for them, so including
+    # them in the day summary would double-count: once as a loss/win in
+    # the record and once as "wait, you told me not to bet that."
+    # Shipped 2026-10-22 after a Liverpool 1H Under flip-to-DNB got
+    # shown as a win in the EOD summary even though it was retracted.
     all_picks = []
     seen = set()
     per_slate_rec = {}
@@ -1003,6 +1012,8 @@ def send_eod_summary(webhook_url, picks_by_slate, date_label=""):
         for p in picks:
             pid = p.get("id")
             if pid and pid in seen:
+                continue
+            if p.get("do_not_bet"):
                 continue
             if pid:
                 seen.add(pid)

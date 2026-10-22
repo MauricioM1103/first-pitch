@@ -16329,7 +16329,13 @@ def _send_slate_png(slate):
             if (p.get("signal_score") or 0) >= 3 and not p.get("do_not_bet"):
                 flat.append(p)
     if not flat:
-        return {"sent": 0, "picks": 0, "slate": slate, "pick_ids": []}
+        # Terminal reason — the dispatcher must NOT retry forever when
+        # the board legitimately has no qualifying picks. Previously
+        # this returned no `reason` field, which fell through the
+        # dispatcher's _TERMINAL_REASONS check and kept retrying up to
+        # _MAX_SLATE_ATTEMPTS (burning 6 ticks before giving up).
+        return {"sent": 0, "picks": 0, "slate": slate, "pick_ids": [],
+                "reason": "no_webhook_or_no_board"}
     date_label = datetime.now(CENTRAL).strftime("%A, %B %d")
     r = _db.send_slate_picks(webhook, flat, date_label=date_label, slate=slate)
     if r.get("sent") and r.get("pick_ids"):
@@ -17557,7 +17563,18 @@ def _cron_dispatch_inner(_db, settings, webhook):
     # retried on subsequent ticks, up to _MAX_SLATE_ATTEMPTS. Previous
     # behavior marked sent=True unconditionally, which silently buried
     # Discord drops when the webhook or network failed.
-    _MAX_SLATE_ATTEMPTS = 6   # ~30 min across 5-min ticks before giving up
+    _MAX_SLATE_ATTEMPTS = 10  # ~50 min across 5-min ticks before giving up
+    # When the rate-limit cooldown is active, _send_slate_png's downstream
+    # send_discord_image / post_text short-circuit without hitting
+    # Discord. Those ticks shouldn't count as "attempts" — they're
+    # waiting-out-cooldown ticks, not real tries. Previously we were
+    # eating 5 of 6 attempts just waiting for a 15-min cooldown to
+    # clear, leaving only 1 real attempt before giving up.
+    try:
+        import discord_bot as _db_rl
+        _rl_remaining = _db_rl.rate_limit_remaining_sec()
+    except Exception:
+        _rl_remaining = 0
     for s in (1, 2, 3):
         meta = slates.get(str(s)) or {}
         post_at = _parse(meta.get("post_at_iso"))
@@ -17570,6 +17587,12 @@ def _cron_dispatch_inner(_db, settings, webhook):
                 slates[str(s)] = meta
                 changed = True
                 actions.append(f"slate{s}_dedup_skip")
+                continue
+            # Rate-limit cooldown active: skip without consuming an
+            # attempt. Dispatcher will retry on the next tick after
+            # cooldown clears.
+            if _rl_remaining > 0:
+                actions.append(f"slate{s}_cooldown_wait_{_rl_remaining}s")
                 continue
             r = _send_slate_png(s)
             # Always update pick_ids so the EOD summary can grade the
