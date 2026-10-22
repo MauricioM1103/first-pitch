@@ -7929,19 +7929,24 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                     p["signal_score"] = max(0, _curr - 1)
                 except Exception:
                     pass
-            # AI verdict gate (shipped 2026-10-21, tuned 2026-10-21):
-            #   - Only called on Signal 4+ picks (narrower gate so
-            #     the full board doesn't block on API latency; AI's
-            #     role is tiebreaker on strong picks, not gatekeeper)
-            #   - Only "Avoid" forces do_not_bet (strongest negative)
-            #   - "Pass" is informational only (shown on card as a
-            #     yellow flag, doesn't block the pick) — AI tends to
-            #     say Pass on anything thin, which collapsed the
-            #     entire slate when wired as DNB
-            #   - "Strong Take" still +1 Signal point
-            # 24h cache per pick ID keeps API usage ~1-3 calls/day.
+            # AI verdict gate (shipped 2026-10-21, re-tuned 2026-10-22):
+            #   - Called on Signal 3+ picks. Earlier narrowing to
+            #     Signal 4+ meant the AI Picks section was always
+            #     empty because today's board had 0 picks at Signal
+            #     4+ (that bar needs ≥4 of EV + line move + prob
+            #     floor + book agreement + persistence + Kalshi
+            #     depth — hard to clear organically).
+            #   - 24h cache per pick keeps the API bill flat: 8–15
+            #     calls on the first scan after midnight CT, then
+            #     every subsequent page load reads cache.
+            #   - Only "Avoid" forces do_not_bet (strongest negative).
+            #   - "Pass" and "Lean" are informational: ai_verdict and
+            #     ai_reason stay on the pick card, but the pick is
+            #     NOT blocked. AI tends to Pass on anything thin,
+            #     which previously collapsed the entire slate.
+            #   - "Strong Take" still +1 Signal point.
             # Requires ANTHROPIC_API_KEY; silent no-op without.
-            if ((p.get("signal_score") or 0) >= 4
+            if ((p.get("signal_score") or 0) >= 3
                     and not p.get("alt_line_flag")
                     and not p.get("model_only")
                     and not p.get("do_not_bet")):
