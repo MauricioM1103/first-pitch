@@ -16138,6 +16138,7 @@ def _mirror_sensitive_settings(d):
     user has to opt in by generating a key and setting it on Render.
     This is deliberate: without the key, mirroring would leak the
     webhook URL to the PUBLIC data branch on GitHub."""
+    global _RESTORED_CACHE, _RESTORED_ATTEMPTED
     cipher = _settings_fernet()
     if cipher is None:
         return False
@@ -16151,9 +16152,23 @@ def _mirror_sensitive_settings(d):
         enc = cipher.encrypt(payload).decode()  # ascii-safe
         import log_persist
         log_persist.write_file(_SETTINGS_SYNC_PATH, enc)
+        # Keep the process-lifetime cache in sync with what we just
+        # wrote. Future _load_settings calls in this process see the
+        # fresh values without another GitHub read.
+        _RESTORED_CACHE = sensitive
+        _RESTORED_ATTEMPTED = True
         return True
     except Exception:
         return False
+
+
+# Process-lifetime cache for the decrypted mirror. Populated the first
+# time _restore_sensitive_settings succeeds; cleared whenever the user
+# saves /settings (that save triggers a fresh encrypt+push). Keeps
+# every _load_settings call from hitting GitHub (log_persist does an
+# HTTPS roundtrip per read).
+_RESTORED_CACHE = None  # None = not yet attempted; {} = tried, nothing
+_RESTORED_ATTEMPTED = False
 
 
 def _restore_sensitive_settings(d):
@@ -16161,26 +16176,37 @@ def _restore_sensitive_settings(d):
     merge them into d (only for fields d doesn't already have). Called
     from _load_settings when the local plain file is missing/empty
     (eg right after a Render deploy wiped logs/). No-op without
-    SETTINGS_SYNC_KEY."""
+    SETTINGS_SYNC_KEY.
+
+    Caches across the lifetime of the process so we only hit GitHub
+    once per boot — _load_settings is called on every page load and
+    every dispatcher tick, so uncached we would exhaust GitHub's rate
+    limit and add 300-500ms to every request."""
+    global _RESTORED_CACHE, _RESTORED_ATTEMPTED
     cipher = _settings_fernet()
     if cipher is None:
         return False
-    try:
-        import log_persist
-        enc, _sha = log_persist.read_file(_SETTINGS_SYNC_PATH)
-        if not enc:
-            return False
-        import json as _j
-        plain = cipher.decrypt(enc.encode()).decode()
-        restored = _j.loads(plain) or {}
-        changed = False
-        for k, v in restored.items():
-            if v and not d.get(k):
-                d[k] = v
-                changed = True
-        return changed
-    except Exception:
+    if not _RESTORED_ATTEMPTED:
+        _RESTORED_ATTEMPTED = True
+        try:
+            import log_persist
+            enc, _sha = log_persist.read_file(_SETTINGS_SYNC_PATH)
+            if enc:
+                import json as _j
+                plain = cipher.decrypt(enc.encode()).decode()
+                _RESTORED_CACHE = _j.loads(plain) or {}
+            else:
+                _RESTORED_CACHE = {}
+        except Exception:
+            _RESTORED_CACHE = {}
+    if not _RESTORED_CACHE:
         return False
+    changed = False
+    for k, v in _RESTORED_CACHE.items():
+        if v and not d.get(k):
+            d[k] = v
+            changed = True
+    return changed
 
 
 def _save_settings(d):
