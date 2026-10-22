@@ -16041,9 +16041,17 @@ _SETTINGS_ENV_KEYS = {
 
 
 def _load_settings():
-    """Load user settings from logs/user_settings.json, with env-var
-    fallback for sensitive fields so they survive Render's ephemeral
-    filesystem (logs/ is wiped on every spin-down / deploy)."""
+    """Load user settings from logs/user_settings.json, with fallback
+    chain for sensitive fields so they survive Render's ephemeral
+    filesystem (logs/ is wiped on every spin-down / deploy).
+
+    Fallback order for each sensitive field:
+      1. Plain-text local file (logs/user_settings.json)
+      2. Encrypted mirror via log_persist (logs/user_settings.enc on
+         the data branch, decrypted with SETTINGS_SYNC_KEY env var)
+      3. Render env var (DAILY_PICKS_WEBHOOK_URL, etc.)
+      4. Render Secret File (/etc/secrets/<NAME>)
+    """
     defaults = {
         "bankroll": 1000,
         "kelly_fraction": 0.25,
@@ -16060,14 +16068,18 @@ def _load_settings():
     except Exception:
         d = {}
     out = {**defaults, **d}
-    # Env-var fallback: if a sensitive field is blank in the saved
-    # file, read it from Render. Supports both:
-    #   1. Environment Variables (os.environ)
-    #   2. Secret Files mounted at /etc/secrets/<name> (Render's
-    #      preferred way to inject secrets — the file name matches the
-    #      env-var name, and its contents are the value).
-    # Set either in Render's service dashboard → Environment or Secret
-    # Files to survive spin-downs.
+    # Encrypted-mirror fallback (shipped 2026-10-22): any sensitive
+    # field blank in the local file gets filled from the Fernet-
+    # encrypted copy on the data branch via log_persist. This fires
+    # right after Render wipes logs/ on a deploy and restores the
+    # webhook URL + other secrets automatically, without the operator
+    # having to re-save /settings. Requires SETTINGS_SYNC_KEY env
+    # var; no-op without.
+    try:
+        _restore_sensitive_settings(out)
+    except Exception:
+        pass
+    # Env-var + Secret File fallback — unchanged behavior.
     for key, env_name in _SETTINGS_ENV_KEYS.items():
         if out.get(key):
             continue
@@ -16089,15 +16101,104 @@ def _load_settings():
     return out
 
 
+_SETTINGS_SYNC_PATH = "logs/user_settings.enc"  # path INSIDE the data branch
+_SETTINGS_SYNC_FIELDS = (
+    "discord_webhook_url",
+    "daily_picks_webhook_url",
+    "pushover_user_key",
+    "pushover_api_token",
+    "cron_secret",
+)
+
+
+def _settings_fernet():
+    """Return a Fernet cipher if SETTINGS_SYNC_KEY is set, else None.
+    The key is a 32-byte url-safe base64 string generated with
+    `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
+    and stored as a Render env var (NOT in Secret Files, which would
+    defeat the purpose — the point is to NOT need Secret Files)."""
+    k = _settings_os.environ.get("SETTINGS_SYNC_KEY", "").strip()
+    if not k:
+        return None
+    try:
+        from cryptography.fernet import Fernet
+        return Fernet(k.encode() if isinstance(k, str) else k)
+    except Exception:
+        return None
+
+
+def _mirror_sensitive_settings(d):
+    """Encrypt sensitive-only settings and mirror through log_persist so
+    they survive deploys (Render wipes logs/ on each deploy, blanking
+    the plain-text user_settings.json file). Non-sensitive settings
+    like bankroll and kelly_fraction are left in the plain file —
+    those don't need protection and reconstruct fine from defaults.
+
+    No-op (safe fallback) when SETTINGS_SYNC_KEY env var isn't set —
+    user has to opt in by generating a key and setting it on Render.
+    This is deliberate: without the key, mirroring would leak the
+    webhook URL to the PUBLIC data branch on GitHub."""
+    cipher = _settings_fernet()
+    if cipher is None:
+        return False
+    try:
+        import json as _j
+        sensitive = {k: d.get(k) for k in _SETTINGS_SYNC_FIELDS
+                     if d.get(k)}
+        if not sensitive:
+            return False
+        payload = _j.dumps(sensitive).encode()
+        enc = cipher.encrypt(payload).decode()  # ascii-safe
+        import log_persist
+        log_persist.write_file(_SETTINGS_SYNC_PATH, enc)
+        return True
+    except Exception:
+        return False
+
+
+def _restore_sensitive_settings(d):
+    """Pull encrypted-mirror sensitive settings from log_persist and
+    merge them into d (only for fields d doesn't already have). Called
+    from _load_settings when the local plain file is missing/empty
+    (eg right after a Render deploy wiped logs/). No-op without
+    SETTINGS_SYNC_KEY."""
+    cipher = _settings_fernet()
+    if cipher is None:
+        return False
+    try:
+        import log_persist
+        enc, _sha = log_persist.read_file(_SETTINGS_SYNC_PATH)
+        if not enc:
+            return False
+        import json as _j
+        plain = cipher.decrypt(enc.encode()).decode()
+        restored = _j.loads(plain) or {}
+        changed = False
+        for k, v in restored.items():
+            if v and not d.get(k):
+                d[k] = v
+                changed = True
+        return changed
+    except Exception:
+        return False
+
+
 def _save_settings(d):
     try:
         import json
         _settings_os.makedirs(_settings_os.path.dirname(_SETTINGS_PATH), exist_ok=True)
         with open(_SETTINGS_PATH, "w") as f:
             json.dump(d, f)
-        return True
     except Exception:
         return False
+    # Mirror sensitive fields through log_persist (encrypted). Non-
+    # blocking — if the mirror fails or no SETTINGS_SYNC_KEY is set,
+    # the local save still succeeded.
+    try:
+        _mirror_sensitive_settings(d)
+    except Exception:
+        pass
+    return True
 
 
 # Phase 30 (#1): webhook alerts for Signal 5/5 LOCK picks. Dedupe via a
@@ -17889,6 +17990,11 @@ def settings_page():
         + '<main class="wrap" style="max-width:620px">'
         + '<h1>Settings</h1>'
         + '<p class="sub" style="color:var(--muted);font-size:13.5px">Local preferences. Stored on this instance only; survives Render restarts via the mirrored logs dir.</p>'
+        + (lambda:
+           '<div style="padding:10px 14px;background:color-mix(in oklab,var(--accent,#8b5cf6) 12%,transparent);border:1px solid var(--accent,#8b5cf6);border-radius:8px;color:var(--accent,#8b5cf6);margin:12px 0;font-size:13px"><b>Deploys wipe this file.</b> Secrets below are mirrored encrypted to the data branch via log_persist and auto-restored on load &mdash; but only when the <code>SETTINGS_SYNC_KEY</code> env var is set on Render. Without it, you&rsquo;ll have to re-paste these fields after each deploy. Generate a key with:<br><code style="display:block;margin-top:6px;padding:4px 8px;background:var(--card);border:1px solid var(--rule);border-radius:4px;font-size:11.5px">python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"</code>Paste it into Render → Environment Variables as <code>SETTINGS_SYNC_KEY</code>. The encrypted mirror file at <code>logs/user_settings.enc</code> is unreadable without this key.</div>'
+           if not _settings_fernet() else
+           '<div style="padding:10px 14px;background:color-mix(in oklab,var(--good) 10%,transparent);border:1px solid var(--good);border-radius:8px;color:var(--good);margin:12px 0;font-size:13px">Encrypted mirror active. Secrets below survive Render deploys automatically.</div>'
+          )()
         + ('<div style="padding:10px 14px;background:color-mix(in oklab,var(--good) 15%,transparent);border:1px solid var(--good);border-radius:8px;color:var(--good);margin:12px 0">Saved.</div>' if saved else '')
         + '<form method="post" style="display:flex;flex-direction:column;gap:18px;margin-top:16px">'
         + '<fieldset style="border:1px solid var(--rule);border-radius:10px;padding:14px"><legend style="padding:0 6px;color:var(--muted);font-size:12px;letter-spacing:0.1em;text-transform:uppercase">Bankroll</legend>'
