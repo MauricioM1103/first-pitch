@@ -5423,6 +5423,11 @@ def _ai_verdict_for_pick(pick):
     v = hit.get("verdict")
     if not v:
         return None
+    # Legacy-bad entries: "Pass" with empty reason came from an earlier
+    # bug where empty-text responses got cached as default-Pass. Treat
+    # these as cache miss so the next scan retries.
+    if v == "Pass" and not (hit.get("reason") or "").strip():
+        return None
     return {"verdict": v, "reason": hit.get("reason")}
 
 
@@ -5477,11 +5482,19 @@ def _queue_ai_verdict_fill(pick):
             try:
                 resp = client.messages.create(
                     model="claude-haiku-5-5",
-                    max_tokens=80,
+                    max_tokens=160,
                     messages=[{"role": "user", "content": prompt}],
                 )
                 txt = "".join(b.text for b in resp.content if hasattr(b, "text")).strip()
             except Exception:
+                return
+            # Don't cache empty responses — the Haiku API occasionally
+            # returns an empty TextBlock (safety filter, rate-limit
+            # throttle, or model drift). Caching the empty response
+            # with a default "Pass" verdict and no reason polluted the
+            # whole cache on an earlier run; now we skip entirely and
+            # let the next scan retry.
+            if not txt:
                 return
             verdict_map = {"STRONG": "Strong Take", "LEAN": "Lean",
                            "PASS": "Pass", "AVOID": "Avoid"}
@@ -5492,6 +5505,9 @@ def _queue_ai_verdict_fill(pick):
                     verdict = verdict_map[w]
                     break
             if not verdict:
+                # Model drifted off the format but at least gave text.
+                # Treat as "Pass" but keep the raw text as the reason so
+                # the operator can see what the model actually said.
                 verdict = "Pass"
             reason = txt.split(":", 1)[1].strip() if ":" in txt else txt
             reason = reason.strip()[:200]
