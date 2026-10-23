@@ -11171,7 +11171,20 @@ def picks_landing():
                     _RENDER_CACHE.pop(_k, None)
     except Exception:
         pass
-    return rendered
+    # Edge cache headers (shipped 2026-10-24). Cloudflare sits in front
+    # of Render; letting it cache the HTML for 30s means visitors near
+    # a CF edge get <50ms responses on cache hits regardless of what
+    # the origin is doing. stale-while-revalidate=120 lets CF serve
+    # the stale copy for 2 min while fetching a fresh one in the
+    # background, so the user NEVER waits on a slow origin.
+    try:
+        from flask import make_response as _make_response
+        resp = _make_response(rendered)
+        resp.headers["Cache-Control"] = "public, max-age=30, stale-while-revalidate=120"
+        resp.headers["Vary"] = "Accept-Encoding"
+        return resp
+    except Exception:
+        return rendered
 
 
 @app.route("/picks/api/analyze")
@@ -19532,6 +19545,49 @@ def cron_send_slate():
         pass
     return Response(_json.dumps({"ok": True, "slate": s, "result": r}, indent=2),
                     mimetype="application/json")
+
+
+@app.route("/cron/prebuild")
+def cron_prebuild():
+    """Keep the response cache warm so users always hit a hot entry.
+    Hits the most-trafficked URLs internally via Flask's test
+    request context and lets picks_landing() populate _RENDER_CACHE.
+    Run this every 45-55 seconds (just before the 60s cache TTL
+    expires) via UptimeRobot or Render cron.
+
+    URLs covered (in order of expected traffic):
+      /                 — default landing, no filters
+      /?strongest=1     — Strongest filter
+      /?ai=1            — AI only filter
+      /?strong=1        — Filter 2.0
+
+    Each sport-chip variant isn't pre-built; they're built on first
+    click (board cache helps) and then cached per the normal flow.
+    """
+    import json as _json
+    import time as _tm
+    results = []
+    hot_urls = [
+        ("/",             {}),
+        ("/",             {"strongest": "1"}),
+        ("/",             {"ai":        "1"}),
+        ("/",             {"strong":    "1"}),
+    ]
+    for path, args in hot_urls:
+        t0 = _tm.time()
+        try:
+            with app.test_request_context(path, query_string=args):
+                _ = picks_landing()
+            results.append({"url": path, "args": args,
+                             "ok": True, "ms": int((_tm.time() - t0) * 1000)})
+        except Exception as e:
+            results.append({"url": path, "args": args,
+                             "ok": False, "err": f"{type(e).__name__}: {str(e)[:120]}"})
+    return Response(_json.dumps({
+        "ok":       all(r["ok"] for r in results),
+        "cached":   len(_RENDER_CACHE),
+        "results":  results,
+    }, indent=2), mimetype="application/json")
 
 
 @app.route("/cron/dispatch")
