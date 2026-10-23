@@ -2086,9 +2086,12 @@ TODAY_TEMPLATE = r"""<!doctype html>
 .pnl-tile.ai { border-color: color-mix(in oklab, #38bdf8 40%, var(--rule)); }
 .pnl-tile.discord .pnl-rate, .pnl-tile.discord .pnl-tier { color: #7289da; }
 .pnl-tile.discord { border-color: color-mix(in oklab, #7289da 50%, var(--rule)); }
+.pnl-tile.filter2 .pnl-rate, .pnl-tile.filter2 .pnl-tier { color: #f59e0b; }
+.pnl-tile.filter2 { border-color: color-mix(in oklab, #f59e0b 50%, var(--rule)); }
 .pnl-table .pnl-row-tier.strongest { color: #ef4444; }
 .pnl-table .pnl-row-tier.ai { color: #38bdf8; }
 .pnl-table .pnl-row-tier.discord { color: #7289da; }
+.pnl-table .pnl-row-tier.filter2 { color: #f59e0b; }
 @media (max-width: 1000px) {
   .pnl-tiles { grid-template-columns: repeat(3, 1fr); }
 }
@@ -3056,19 +3059,22 @@ details.also-wrap .today-card { opacity: 0.88; }
       <span class="pnl-sub">{{ date_pretty }} &middot; flat 1u stake per bet &middot; model-only + DNB excluded</span>
     </div>
     <div class="pnl-tiles">
-      {% for tier in ['strongest', 'ai', 5, 4, 3, 'discord', 'overall'] %}
+      {% for tier in ['strongest', 'filter2', 'ai', 5, 4, 3, 'discord', 'overall'] %}
       {% set b = tier_tally[tier] %}
       <div class="pnl-tile {{
         'strongest' if tier == 'strongest' else (
-          'ai' if tier == 'ai' else (
-            'discord' if tier == 'discord' else (
-              'overall' if tier == 'overall' else ('t' ~ tier)
+          'filter2' if tier == 'filter2' else (
+            'ai' if tier == 'ai' else (
+              'discord' if tier == 'discord' else (
+                'overall' if tier == 'overall' else ('t' ~ tier)
+              )
             )
           )
         )
       }}">
         <div class="pnl-tier">
           {% if tier == 'strongest' %}&#x1F525; Strongest
+          {% elif tier == 'filter2' %}&#9733; Filter 2.0
           {% elif tier == 'ai' %}&#x1F916; AI Picks
           {% elif tier == 'discord' %}&#x1F4E2; Discord Sent
           {% elif tier == 'overall' %}&#x1F3C6; Overall
@@ -3112,19 +3118,22 @@ details.also-wrap .today-card { opacity: 0.88; }
         </tr>
       </thead>
       <tbody>
-        {% for tier in ['strongest', 'ai', 5, 4, 3, 'discord', 'overall'] %}
+        {% for tier in ['strongest', 'filter2', 'ai', 5, 4, 3, 'discord', 'overall'] %}
         {% set b = tier_tally[tier] %}
         <tr>
           <td class="pnl-row-tier {{
             'strongest' if tier == 'strongest' else (
-              'ai' if tier == 'ai' else (
-                'discord' if tier == 'discord' else (
-                  'overall' if tier == 'overall' else ('t' ~ tier)
+              'filter2' if tier == 'filter2' else (
+                'ai' if tier == 'ai' else (
+                  'discord' if tier == 'discord' else (
+                    'overall' if tier == 'overall' else ('t' ~ tier)
+                  )
                 )
               )
             )
           }}">
             {% if tier == 'strongest' %}&#x1F525; STRONGEST
+            {% elif tier == 'filter2' %}&#9733; FILTER 2.0
             {% elif tier == 'ai' %}&#x1F916; AI
             {% elif tier == 'discord' %}&#x1F4E2; DISCORD
             {% elif tier == 'overall' %}ALL
@@ -4989,9 +4998,12 @@ PICKS_TEMPLATE = r"""<!doctype html>
 .pnl-tile.ai { border-color: color-mix(in oklab, #38bdf8 40%, var(--rule)); }
 .pnl-tile.discord .pnl-rate, .pnl-tile.discord .pnl-tier { color: #7289da; }
 .pnl-tile.discord { border-color: color-mix(in oklab, #7289da 50%, var(--rule)); }
+.pnl-tile.filter2 .pnl-rate, .pnl-tile.filter2 .pnl-tier { color: #f59e0b; }
+.pnl-tile.filter2 { border-color: color-mix(in oklab, #f59e0b 50%, var(--rule)); }
 .pnl-table .pnl-row-tier.strongest { color: #ef4444; }
 .pnl-table .pnl-row-tier.ai { color: #38bdf8; }
 .pnl-table .pnl-row-tier.discord { color: #7289da; }
+.pnl-table .pnl-row-tier.filter2 { color: #f59e0b; }
 @media (max-width: 1000px) {
   .pnl-tiles { grid-template-columns: repeat(3, 1fr); }
 }
@@ -5610,20 +5622,23 @@ PICKS_TEMPLATE = r"""<!doctype html>
        then AI, then individual tiers, then Overall at the end. #}
     {% if tier_tally and tier_tally.overall.picks %}
     <div class="day-record-row">
-      {% for tier in ['strongest', 'ai', 5, 4, 3, 'discord', 'overall'] %}
+      {% for tier in ['strongest', 'filter2', 'ai', 5, 4, 3, 'discord', 'overall'] %}
       {% set b = tier_tally[tier] %}
       {% if b.picks %}
       <span class="drr-pill drr-{{
         'strongest' if tier == 'strongest' else (
-          'ai' if tier == 'ai' else (
-            'discord' if tier == 'discord' else (
-              'overall' if tier == 'overall' else ('t' ~ tier)
+          'filter2' if tier == 'filter2' else (
+            'ai' if tier == 'ai' else (
+              'discord' if tier == 'discord' else (
+                'overall' if tier == 'overall' else ('t' ~ tier)
+              )
             )
           )
         )
       }}">
         <span class="drr-label">
           {% if tier == 'strongest' %}&#x1F525; Strongest
+          {% elif tier == 'filter2' %}&#9733; Filter 2.0
           {% elif tier == 'ai' %}&#x1F916; AI
           {% elif tier == 'discord' %}&#x1F4E2; Discord
           {% elif tier == 'overall' %}Today
@@ -6256,19 +6271,22 @@ PICKS_TEMPLATE = r"""<!doctype html>
       <span class="pnl-sub">{{ date_pretty }} &middot; flat 1u stake per bet &middot; model-only + DNB excluded</span>
     </div>
     <div class="pnl-tiles">
-      {% for tier in ['strongest', 'ai', 5, 4, 3, 'discord', 'overall'] %}
+      {% for tier in ['strongest', 'filter2', 'ai', 5, 4, 3, 'discord', 'overall'] %}
       {% set b = tier_tally[tier] %}
       <div class="pnl-tile {{
         'strongest' if tier == 'strongest' else (
-          'ai' if tier == 'ai' else (
-            'discord' if tier == 'discord' else (
-              'overall' if tier == 'overall' else ('t' ~ tier)
+          'filter2' if tier == 'filter2' else (
+            'ai' if tier == 'ai' else (
+              'discord' if tier == 'discord' else (
+                'overall' if tier == 'overall' else ('t' ~ tier)
+              )
             )
           )
         )
       }}">
         <div class="pnl-tier">
           {% if tier == 'strongest' %}&#x1F525; Strongest
+          {% elif tier == 'filter2' %}&#9733; Filter 2.0
           {% elif tier == 'ai' %}&#x1F916; AI Picks
           {% elif tier == 'discord' %}&#x1F4E2; Discord Sent
           {% elif tier == 'overall' %}&#x1F3C6; Overall
@@ -6312,19 +6330,22 @@ PICKS_TEMPLATE = r"""<!doctype html>
         </tr>
       </thead>
       <tbody>
-        {% for tier in ['strongest', 'ai', 5, 4, 3, 'discord', 'overall'] %}
+        {% for tier in ['strongest', 'filter2', 'ai', 5, 4, 3, 'discord', 'overall'] %}
         {% set b = tier_tally[tier] %}
         <tr>
           <td class="pnl-row-tier {{
             'strongest' if tier == 'strongest' else (
-              'ai' if tier == 'ai' else (
-                'discord' if tier == 'discord' else (
-                  'overall' if tier == 'overall' else ('t' ~ tier)
+              'filter2' if tier == 'filter2' else (
+                'ai' if tier == 'ai' else (
+                  'discord' if tier == 'discord' else (
+                    'overall' if tier == 'overall' else ('t' ~ tier)
+                  )
                 )
               )
             )
           }}">
             {% if tier == 'strongest' %}&#x1F525; STRONGEST
+            {% elif tier == 'filter2' %}&#9733; FILTER 2.0
             {% elif tier == 'ai' %}&#x1F916; AI
             {% elif tier == 'discord' %}&#x1F4E2; DISCORD
             {% elif tier == 'overall' %}ALL
@@ -11266,6 +11287,7 @@ def picks_landing():
         4:            _blank_tier(),
         3:            _blank_tier(),
         "strongest":  _blank_tier(),
+        "filter2":    _blank_tier(),  # Filter 2.0 — primary betting filter
         "ai":         _blank_tier(),
         "discord":    _blank_tier(),  # Agent #8 moderator posted picks
         "overall":    _blank_tier(),
@@ -11317,6 +11339,11 @@ def picks_landing():
     def _is_ai_pick(p):
         return (p.get("ai_verdict") or "") in ("Strong Take", "Lean")
 
+    def _is_filter2_pick(p):
+        """Filter 2.0 — the primary betting filter: strong tag set
+        (Signal >= 3 AND decimal >= 1.50), not DNB, not model-only."""
+        return bool(p.get("strong")) and not p.get("do_not_bet") and not p.get("model_only")
+
     for row in board_rows:
         for p in row.get("picks", []):
             if p.get("model_only") or p.get("do_not_bet"):
@@ -11343,6 +11370,8 @@ def picks_landing():
                 buckets.append(tier_tally[sig])
             if _is_strongest(p):
                 buckets.append(tier_tally["strongest"])
+            if _is_filter2_pick(p):
+                buckets.append(tier_tally["filter2"])
             if _is_ai_pick(p):
                 buckets.append(tier_tally["ai"])
             if p.get("id") in _discord_posted_ids:
