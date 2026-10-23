@@ -6369,6 +6369,18 @@ def _ai_verdict_for_pick(pick):
     # these as cache miss so the next scan retries.
     if v == "Pass" and not (hit.get("reason") or "").strip():
         return None
+    # Pre-2026-10-24 prompt purge: the prompt was reframed to default
+    # Lean (prior version made Sonnet return Pass on 100% of real picks).
+    # Invalidate every Pass verdict cached BEFORE the fix so the new
+    # prompt gets exercised on the next page visit. 1792742400 UTC =
+    # roughly when commit ea5affe9 (prompt fix) deployed.
+    _PROMPT_FIX_TS = 1792742400
+    if v == "Pass":
+        try:
+            if float(hit.get("ts", 0)) < _PROMPT_FIX_TS:
+                return None  # treat as miss → re-fires with new prompt
+        except Exception:
+            return None
     return {"verdict": v, "reason": hit.get("reason")}
 
 
