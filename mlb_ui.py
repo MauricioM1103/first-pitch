@@ -8613,7 +8613,22 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
 # calls into this), but long enough that two tabs opened within 30s of
 # each other share the heavy compute instead of each paying 10-30s.
 _BOARD_CACHE = {}  # key_tuple -> (ts, (board_rows, all_picks))
-_BOARD_CACHE_TTL_S = 30
+_BOARD_CACHE_TTL_S = 120  # bumped 30→120 (2026-10-24) — rebuild still runs
+                           # within 2 min of any upstream line move; most
+                           # repeat page loads happen inside this window
+                           # and benefit instantly.
+
+# Rendered-HTML response cache for /today (2026-10-24). Keyed by the
+# full query string so sport-chip + filter clicks each get their own
+# entry; TTL 60s so live scores + countdowns stay reasonably fresh.
+# This is the biggest page-load win we can ship without rewriting
+# the whole template to streaming: TTFB drops from 50s+ (full
+# rebuild) to <1s on a cache hit. The cache key explicitly excludes
+# session/user-specific data; everything on this app is public so
+# every visitor sees the same HTML.
+_RENDER_CACHE = {}  # key_str -> (ts, html_bytes)
+_RENDER_CACHE_TTL_S = 60
+_RENDER_CACHE_MAX = 40
 
 
 # ----- Background grading backfill -----
@@ -10713,6 +10728,25 @@ def picks_landing_games_redirect():
 
 
 def picks_landing():
+    # Response cache check (shipped 2026-10-24). Return a cached HTML
+    # response when one exists for this exact URL within the TTL.
+    # Skips the entire render pipeline — board build, template render,
+    # per-tier tally — so a repeat visit from the same URL within 60s
+    # TTFB's in <1s instead of 50s+. Request.full_path includes the
+    # query string so sport/filter chip clicks each get their own
+    # cache entry. The _cb= cache-buster query param is stripped so
+    # curl probes don't fragment the cache.
+    try:
+        _cache_key = request.full_path
+        if "_cb=" in _cache_key:
+            import re as _re
+            _cache_key = _re.sub(r"[?&]_cb=\d+", "", _cache_key)
+        _rc_hit = _RENDER_CACHE.get(_cache_key)
+        if _rc_hit and (time.time() - _rc_hit[0]) < _RENDER_CACHE_TTL_S:
+            return _rc_hit[1]
+    except Exception:
+        _cache_key = None
+
     date_str = request.args.get("date") or datetime.now(CENTRAL).date().isoformat()
     sport_filter = (request.args.get("sport") or "all").lower()
     # Filter params:
@@ -11088,7 +11122,7 @@ def picks_landing():
         )),
     }
 
-    return render_template_string(
+    rendered = render_template_string(
         PICKS_TEMPLATE,
         fonts_link=FONTS_LINK,
         shared_style=SHARED_STYLE,
@@ -11124,6 +11158,20 @@ def picks_landing():
         board_status_counts=board_status_counts,
         ai_billing_mtd=_ai_billing_mtd(),
     )
+    # Stash the rendered response in the per-URL cache. Future
+    # requests for the exact same URL within the TTL skip the whole
+    # pipeline. Capacity-cap evicts the oldest entries when the
+    # cache gets full.
+    try:
+        if _cache_key:
+            _RENDER_CACHE[_cache_key] = (time.time(), rendered)
+            if len(_RENDER_CACHE) > _RENDER_CACHE_MAX:
+                for _k, _ in sorted(_RENDER_CACHE.items(),
+                                     key=lambda kv: kv[1][0])[:10]:
+                    _RENDER_CACHE.pop(_k, None)
+    except Exception:
+        pass
+    return rendered
 
 
 @app.route("/picks/api/analyze")
