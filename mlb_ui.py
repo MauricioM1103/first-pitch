@@ -19559,6 +19559,51 @@ def cron_send_slate():
                     mimetype="application/json")
 
 
+@app.route("/cron/model-tune")
+def cron_model_tune():
+    """Agent #7 — weekly self-critiquing model tuner. Reads last 7 days
+    of logged Signal 3+ picks, asks Sonnet for a per-sport/market
+    read + suggested consensus weight nudges. Writes to
+    logs/analyzer_suggestions.json for operator review. Set up as a
+    weekly cron (e.g. Sunday 03:00 CT) via UptimeRobot or Render Cron.
+    ~$0.50/mo at one call per week."""
+    import json as _json
+    try:
+        import agents
+        out = agents.model_tune_weekly()
+        return Response(_json.dumps({"ok": True,
+                                       "ran_at": out.get("ran_at"),
+                                       "analysis": out.get("analysis"),
+                                       "data_sample": out.get("record_data")[:800] if out.get("record_data") else ""},
+                                      indent=2),
+                        mimetype="application/json")
+    except Exception as e:
+        return Response(_json.dumps({"ok": False,
+                                       "error": f"{type(e).__name__}: {e}"}),
+                        status=500, mimetype="application/json")
+
+
+@app.route("/cron/eod-recap")
+def cron_eod_recap():
+    """Agent #4 — daily EOD recap composer. Builds a 2-3 paragraph
+    human-readable summary of today's picks + results. Pass ?post=1
+    to also send it to the daily-picks Discord webhook. Pass ?date=
+    to override today. Haiku-backed, ~$0.03/call. Set up as a daily
+    cron at 02:30 CT (after the dispatcher's 02:00 EOD runs)."""
+    import json as _json
+    date_str = request.args.get("date")
+    post = request.args.get("post") in ("1", "true", "on", "yes")
+    try:
+        import agents
+        out = agents.compose_eod_recap(date_str=date_str, post_to_discord=post)
+        return Response(_json.dumps(out, indent=2),
+                        mimetype="application/json")
+    except Exception as e:
+        return Response(_json.dumps({"ok": False,
+                                       "error": f"{type(e).__name__}: {e}"}),
+                        status=500, mimetype="application/json")
+
+
 @app.route("/cron/prebuild")
 def cron_prebuild():
     """Keep the response cache warm so users always hit a hot entry.
