@@ -995,7 +995,7 @@ def _fmt_bullets(items, emoji):
     return "\n".join(lines)
 
 
-def post_individual_pick(pick, webhook_url=None):
+def post_individual_pick(pick, webhook_url=None, allow_replay=False):
     """Compose + send one pick to Discord. Returns {ok, posted_text}.
 
     Builds a full Discord post with:
@@ -1007,12 +1007,27 @@ def post_individual_pick(pick, webhook_url=None):
       - Best US-book price chip (if a book beats Pinnacle by >=1%)
 
     Called by the moderator when a pick clears its evidence bar,
-    or on-demand via /pick/force-post?id=<pid>."""
+    or on-demand via /pick/force-post?id=<pid>.
+
+    Idempotent: if the pick id is already in today's posted state,
+    returns {ok:false, dedup:true, ...} without hitting Discord
+    unless allow_replay=True. This is the belt-and-suspenders guard
+    against double-posts across concurrent moderator ticks and
+    deploy-wipe-then-restore races."""
     try:
         import mlb_ui
         import discord_bot
     except Exception:
         return {"ok": False, "error": "mlb_ui / discord_bot import failed"}
+
+    # Idempotence check — don't post the same pick twice in one day.
+    pid = pick.get("id")
+    if pid and not allow_replay:
+        posted_state = _load_posted_state()
+        if pid in posted_state:
+            return {"ok": False, "dedup": True,
+                    "error": "pick already posted today",
+                    "posted_at": posted_state[pid].get("posted_at")}
 
     if not webhook_url:
         try:
@@ -1073,6 +1088,22 @@ def post_individual_pick(pick, webhook_url=None):
     if len(body) > 1900:
         body = body[:1897] + "..."
     ok = discord_bot.post_text(webhook_url, body)
+    # Record immediately so a concurrent tick (UptimeRobot + manual
+    # curl + Render internal) can't double-post. The moderator loop
+    # also records, but doing it here closes the race entirely.
+    if ok and pid:
+        try:
+            posted_state = _load_posted_state()
+            posted_state[pid] = {
+                "posted_at": datetime.utcnow().isoformat() + "Z",
+                "score":     score,
+                "reasons":   reasons,
+                "mins":      mins,
+                "day":       datetime.utcnow().date().isoformat(),
+            }
+            _save_posted_state(posted_state)
+        except Exception:
+            pass
     return {"ok": bool(ok), "posted_text": body, "score": score,
             "reasons": reasons, "mins_to_tip": mins}
 

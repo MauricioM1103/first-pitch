@@ -520,7 +520,7 @@ body {
   font-size: 14.5px; line-height: 1.5;
   -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
 }
-.wrap { max-width: 1280px; margin: 0 auto; padding: 0 24px; }
+.wrap { max-width: 1440px; margin: 0 auto; padding: 0 24px; }
 
 header {
   position: sticky; top: 0; z-index: 10;
@@ -19754,19 +19754,11 @@ def pick_force_post():
                                            "error": "pick not found on today's board"}),
                             status=404, mimetype="application/json")
         import agents
-        r = agents.post_individual_pick(found)
-        if r.get("ok"):
-            # Record so the next moderator tick doesn't repost
-            posted = agents._load_posted_state()
-            posted[pid] = {
-                "posted_at": datetime.utcnow().isoformat() + "Z",
-                "score":     r.get("score"),
-                "reasons":   r.get("reasons"),
-                "mins":      r.get("mins_to_tip"),
-                "day":       today.isoformat(),
-                "forced":    True,
-            }
-            agents._save_posted_state(posted)
+        # Default is idempotent — refuses if the pick was already
+        # posted today. Pass ?replay=1 to force a repost (e.g. the
+        # user wants an updated version re-sent after lineup news).
+        allow_replay = (request.args.get("replay") or "") in ("1", "true", "yes")
+        r = agents.post_individual_pick(found, allow_replay=allow_replay)
         return Response(_json.dumps(r, indent=2),
                         mimetype="application/json")
     except Exception as e:
