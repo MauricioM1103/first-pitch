@@ -482,6 +482,74 @@ def _todays_sports():
         return list(ESPN_INJURY_URLS.keys())
 
 
+# Pre-game window (shipped 2026-10-24): LLM analysis fires only when
+# the player's team has a game within this many minutes. Late news is
+# what actually moves lines — anything 2+ hours out is already priced
+# into Pinnacle. The user specifically asked for this cut because
+# lineup/scratch news often drops close to tip.
+_PREGAME_WINDOW_MIN = 120     # 2 hours — safe default across sports
+_PREGAME_URGENT_MIN = 30      # inside 30 min, treat as very high priority
+
+
+def _upcoming_games_by_team(sport_slugs=None):
+    """Return {sport|team-slug: minutes_to_tipoff} for games on today's
+    board that are UPCOMING (not live/final). Used by the news watcher
+    to decide whether a given injury item is worth an LLM call."""
+    try:
+        import mlb_ui
+        today = datetime.now(mlb_ui.CENTRAL).date()
+        now = datetime.now(mlb_ui.CENTRAL)
+        board, _ = mlb_ui._build_board_rows(today.isoformat(), today, "all",
+                                              strong_only=False)
+    except Exception:
+        return {}
+    out = {}
+    for r in board:
+        if sport_slugs and r.get("sport_slug") not in sport_slugs:
+            continue
+        if (r.get("status") or "") != "upcoming":
+            continue
+        try:
+            from datetime import datetime as _dt
+            start = _dt.fromisoformat(
+                (r.get("start_time") or "").replace("Z", "+00:00")
+            ).astimezone(mlb_ui.CENTRAL)
+        except Exception:
+            continue
+        mins = max(0, int((start - now).total_seconds() / 60))
+        for team_name in (r.get("home") or "", r.get("away") or ""):
+            if not team_name:
+                continue
+            key = f"{r.get('sport_slug')}|{team_name.lower()}"
+            prev = out.get(key)
+            if prev is None or mins < prev:
+                out[key] = mins
+    return out
+
+
+def _minutes_to_team_tipoff(sport, team_name, upcoming_games):
+    """Match an ESPN injury's team name against our board's team
+    names. ESPN uses full display names ('New York Knicks'); our
+    board uses variations from Pinnacle/ESPN. Match by substring
+    overlap on normalized tokens — if any 4+char token from the
+    injury's team matches a token from a board team, consider it
+    the same team. Returns minutes to tipoff, or None if no game
+    today or already live/final."""
+    if not team_name:
+        return None
+    inj_tokens = set(t for t in team_name.lower().split() if len(t) >= 4)
+    best = None
+    for key, mins in upcoming_games.items():
+        key_sport, _, board_team = key.partition("|")
+        if key_sport != sport:
+            continue
+        board_tokens = set(t for t in board_team.split() if len(t) >= 4)
+        if inj_tokens & board_tokens:
+            if best is None or mins < best:
+                best = mins
+    return best
+
+
 def run_news_watcher():
     """Agent #1 main loop. Poll ESPN injuries per active sport,
     diff, flag NEW + WORSENED items affecting today's teams, and
@@ -523,35 +591,49 @@ def run_news_watcher():
             })
             seen[key] = {"status": curr_status, "ts": time.time()}
 
-    # Only new-or-worsened items trigger LLM analysis, and we cap
-    # LLM calls per day. Items are sorted by severity so the cap
-    # eats the highest-impact ones first.
-    worth_llm = [c for c in changes if c["change"] in ("new", "worsened")]
-    worth_llm.sort(key=lambda c: -_STATUS_RANK.get((c["status"] or "").lower(), 1))
+    # Pre-game window gate (shipped 2026-10-24). LLM analysis only
+    # fires for items whose team has a game starting in the next
+    # _PREGAME_WINDOW_MIN minutes. Earlier news is already priced
+    # into Pinnacle lines; later news (post-tip) can't drive a
+    # pre-game bet decision. Also sort within-window items so the
+    # most-urgent (closest to tipoff) burn the daily cap first.
+    upcoming = _upcoming_games_by_team()
+    worth_llm = []
+    for c in changes:
+        if c["change"] not in ("new", "worsened"):
+            continue
+        if _STATUS_RANK.get((c["status"] or "").lower(), 0) < 2:
+            continue  # less-than-Questionable not worth an LLM call
+        mins = _minutes_to_team_tipoff(c["sport"], c["team"], upcoming)
+        c["mins_to_tip"] = mins
+        if mins is None or mins > _PREGAME_WINDOW_MIN:
+            continue  # team not playing today, or game is 2+ hours out
+        worth_llm.append(c)
+
+    # Sort: closest-to-tipoff first, then by severity. Urgent news
+    # inside _PREGAME_URGENT_MIN gets guaranteed cap room.
+    worth_llm.sort(key=lambda c: (
+        c["mins_to_tip"],
+        -_STATUS_RANK.get((c["status"] or "").lower(), 1),
+    ))
 
     analyzed = []
     remaining = _NEWS_LLM_DAILY_CAP - int(daily.get("llm_calls") or 0)
     for item in worth_llm[:max(0, remaining)]:
-        # Only summarize for status at Questionable or worse
-        if _STATUS_RANK.get((item["status"] or "").lower(), 0) < 2:
-            continue
         prompt = (
-            f"One-sentence (<=25 words) impact assessment for today's bets:\n"
+            f"One-sentence (<=25 words) impact assessment for THIS game.\n"
             f"Sport: {item['sport'].upper()}\n"
-            f"Team: {item['team']}\n"
+            f"Team: {item['team']} (plays in {item['mins_to_tip']} min)\n"
             f"Player: {item['player']}\n"
             f"Status change: {item['prev_status']} → {item['status']}\n"
             f"Details: {item['desc'] or '(none)'}\n\n"
             f"Reply with ONE sentence focused on how this affects "
-            f"betting lines on their next game (if at all). Be specific; "
-            f"name the market most affected (ML / spread / total / "
-            f"team total / props). If low impact, say so plainly."
+            f"the upcoming game's betting lines. Name the market "
+            f"most moved (ML / spread / total / team total / props). "
+            f"If this is a role player with low impact, say so plainly."
         )
         reply = _call_claude(prompt, model="claude-haiku-5-5",
                                max_tokens=120)
-        # Only count a call toward the daily cap when the API actually
-        # returned text (not None from a missing key / SDK import fail,
-        # and not a __ERROR__ placeholder from a caught exception).
         if not reply or reply.startswith("__ERROR__"):
             continue
         item["summary"] = reply
@@ -565,15 +647,17 @@ def run_news_watcher():
     _save_news_state(state)
 
     return {
-        "ok":           True,
-        "ran_at":       state["last_run"],
-        "sports_checked": _todays_sports(),
-        "changes_total":  len(changes),
-        "worsened":       len([c for c in changes if c["change"] == "worsened"]),
-        "new":            len([c for c in changes if c["change"] == "new"]),
-        "llm_calls_today":daily["llm_calls"],
-        "llm_cap":        _NEWS_LLM_DAILY_CAP,
-        "analyzed":       analyzed,
+        "ok":              True,
+        "ran_at":          state["last_run"],
+        "sports_checked":  _todays_sports(),
+        "changes_total":   len(changes),
+        "worsened":        len([c for c in changes if c["change"] == "worsened"]),
+        "new":             len([c for c in changes if c["change"] == "new"]),
+        "worth_llm_eligible": len(worth_llm),  # passed severity + pregame gates
+        "llm_calls_today": daily["llm_calls"],
+        "llm_cap":         _NEWS_LLM_DAILY_CAP,
+        "pregame_window_min": _PREGAME_WINDOW_MIN,
+        "analyzed":        analyzed,
     }
 
 
