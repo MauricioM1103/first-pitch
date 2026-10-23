@@ -17587,6 +17587,48 @@ def debug_ai():
         }
     except Exception as e:
         out["api_error"] = f"{type(e).__name__}: {e}"
+    # Also exercise the full background-thread flow with a dummy pick so
+    # we can confirm _queue_ai_verdict_fill actually writes to cache.
+    try:
+        import time as _tm
+        dummy_pid = f"debug-probe-{int(_tm.time())}"
+        dummy_pick = {
+            "id":            dummy_pid,
+            "sport_name":    "NHL",
+            "away_team":     "Dallas Stars",
+            "home_team":     "Winnipeg Jets",
+            "market":        "Team Total",
+            "pick":          "Over 2.5",
+            "decimal":       1.95,
+            "book":          "Pinnacle",
+            "mc_prob":       0.553,
+            "pinnacle_prob": 0.512,
+            "ev_pct":        8.2,
+            "signal_score":  3,
+        }
+        pre_cache = _load_ai_verdict_cache()
+        pre_count = len(pre_cache)
+        _queue_ai_verdict_fill(dummy_pick)
+        # Give the background thread up to 30s to finish and write.
+        import time as _tm2
+        deadline = _tm2.time() + 30
+        got = None
+        while _tm2.time() < deadline:
+            _tm2.sleep(1)
+            cache = _load_ai_verdict_cache()
+            if dummy_pid in cache:
+                got = cache[dummy_pid]
+                break
+        out["bg_thread_test"] = {
+            "pre_cache_size": pre_count,
+            "post_cache_size": len(_load_ai_verdict_cache()),
+            "dummy_pid":       dummy_pid,
+            "wrote_entry":     got is not None,
+            "entry":           got,
+            "waited_sec":      30 - int(deadline - _tm2.time()),
+        }
+    except Exception as e:
+        out["bg_thread_test_error"] = f"{type(e).__name__}: {e}"
     return Response(_json.dumps(out, indent=2), mimetype="application/json")
 
 
