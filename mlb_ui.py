@@ -5480,9 +5480,16 @@ def _queue_ai_verdict_fill(pick):
                 f"Format: VERDICT: <reason>"
             )
             try:
+                # max_tokens=2048 (was 160) because Sonnet 5.5 runs
+                # extended thinking by default and burned the whole
+                # 160-token budget on hidden reasoning before writing
+                # the TextBlock. /debug/ai showed stop_reason=max_tokens
+                # with only a thinking block, text="". 2048 leaves
+                # plenty of room for thinking + the 15-word verdict.
+                # Still ~$0.03 per call × 15 calls/day ≈ $0.45/day.
                 resp = client.messages.create(
                     model="claude-sonnet-5-5",
-                    max_tokens=160,
+                    max_tokens=2048,
                     system=(
                         "You are a sharp sports betting analyst. Reply "
                         "ONLY with the verdict word followed by a short "
@@ -17555,7 +17562,7 @@ def debug_ai():
         )
         resp = client.messages.create(
             model="claude-sonnet-5-5",
-            max_tokens=160,
+            max_tokens=2048,
             system=(
                 "You are a sharp sports betting analyst. Reply ONLY "
                 "with the verdict word followed by a short reason, in "
