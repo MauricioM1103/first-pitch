@@ -4665,6 +4665,8 @@ PICKS_TEMPLATE = r"""<!doctype html>
 .pick-conf-inline.c1 { background: color-mix(in oklab, var(--muted-2) 15%, transparent); color: var(--muted-2); }
 .collapse-ev summary .aie-icon { color: var(--good); }
 .collapse-models summary .aie-icon { color: #38bdf8; }
+.collapse-filters summary .aie-icon { color: #ef4444; }
+.collapse-filters { margin-top: 12px; }
 
 .model-explain {
   margin-top: 10px;
@@ -5494,13 +5496,17 @@ PICKS_TEMPLATE = r"""<!doctype html>
       <a class="chip strongest-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ whale_suffix }}{{ linemove_suffix }}&strongest=1"
          title="Show only Strongest picks — the union of Signal 3+ AND Whale AND favorable line-movement picks, DNB excluded. One click to see every premium signal on the board.">&#x1F525; Strongest</a>
     {% endif %}
-    {# ★ Signal ≥ 3 toggle: picks worth placing (TODAY's 'star picks' set) #}
+    {# ★ Filter 2.0 (Signal ≥ 3) toggle. This is the live default —
+       picks worth placing — and corresponds to the "Current Filter
+       2.0" record on /logged. Rules: Signal composite >= 3/5 AND
+       decimal >= 1.50 (shorter prices auto-DNB) AND not model_only
+       AND not do_not_bet. #}
     {% if strong_only %}
       <a class="chip strong-chip active" href="/?date={{ date_str }}{{ sport_suffix }}{{ whale_suffix }}{{ linemove_suffix }}"
-         title="Showing only Signal ≥ 3/5 picks. Click to clear.">&#9733; Signal &ge; 3 ({{ strong_count }})</a>
+         title="Filter 2.0 — Signal >= 3 AND decimal >= 1.50 AND not DNB AND not model-only. The current primary betting filter. Click to clear.">&#9733; Filter 2.0 ({{ strong_count }})</a>
     {% else %}
       <a class="chip strong-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ whale_suffix }}{{ linemove_suffix }}&strong=1"
-         title="Show only Signal ≥ 3/5 picks — EV cushion + favorable line move + prob floor + (soon) cross-book agreement. These are the picks worth placing today.">&#9733; Signal &ge; 3</a>
+         title="Filter 2.0 — Signal composite >= 3/5 (EV cushion + line move + prob floor + book agreement + persistence + Kalshi depth) AND decimal >= 1.50 AND not DNB AND not model-only. The current primary betting filter.">&#9733; Filter 2.0</a>
     {% endif %}
     {# 🐋 WHALE picks — bankroll-maximum tier. Fresh criteria
        (2026-10-18): fp ≥ 0.72, dec 1.30–1.65, Signal ≥ 4, EV ≥ 1.5%,
@@ -5524,6 +5530,45 @@ PICKS_TEMPLATE = r"""<!doctype html>
          title="Show only picks where Pinnacle's devigged prob moved toward our side by ≥ +1pp over the past 3 days (sharp agreement signal)">&uarr; Line toward me</a>
     {% endif %}
   </div>
+
+  {# Filter guide (shipped 2026-10-23). Collapsible explainer that
+     spells out what each chip and each P&L bucket means, and marks
+     Filter 2.0 explicitly. Same visual as the AI Picks explainer. #}
+  <details class="ai-picks-explainer collapse-filters">
+    <summary>
+      <span class="aie-icon">&#x1F50D;</span>
+      <span class="aie-title">What each filter means</span>
+      <span class="chev">&rsaquo;</span>
+    </summary>
+    <div class="aie-body">
+      <ul class="models-list">
+        <li>
+          <b style="color:#ef4444">&#x1F525; Strongest</b> &mdash; the headline combined filter. UNION of (Signal 3+) OR (Whale) OR (favorable line move &ge; +0.5pp). DNB excluded. Use this to see every premium signal in one view.
+        </li>
+        <li>
+          <b style="color:#f59e0b">&#9733; Filter 2.0</b> &mdash; <b>the current primary betting filter.</b> Signal composite &ge; 3/5 AND decimal &ge; 1.50 AND not DNB AND not model-only. This is what the TODAY board recommends and what the <a href="/logged" style="color:var(--good)">Current Filter 2.0</a> record on /logged tracks.
+        </li>
+        <li>
+          <b style="color:#38bdf8">&#x1F916; AI Picks</b> &mdash; picks where Claude Sonnet verdicted <i>Strong Take</i> or <i>Lean</i> after reviewing the matchup + model prob + Pinnacle devig + EV + Signal. Shown in the right-hand AI Picks column; tracked as its own record so AI's own hit rate is visible.
+        </li>
+        <li>
+          <b style="color:#38bdf8">&#x1F40B; Whale picks</b> &mdash; bankroll-max tier. Rules: model prob &ge; 68%, decimal 1.50&ndash;1.90, EV &ge; +1.5%, not DNB, no weather/injury risk flags. Rare but high-conviction &mdash; size at quarter-to-half Kelly (5&ndash;10% of bankroll).
+        </li>
+        <li>
+          <b style="color:#06b6d4">&uarr; Line toward me</b> &mdash; picks where Pinnacle's devigged probability for our side moved &ge; +1pp toward us over the past 3 days. Sharp money agreeing with our model is one of the strongest independent EV signals in the research.
+        </li>
+        <li>
+          <b>5/5 &middot; 4/5 &middot; 3/5 Signal</b> &mdash; buckets by Signal composite score. The composite adds +1 pt for each of: EV cushion &ge; 3% (and +2 for &ge; 6%), favorable line move, prob floor cleared, cross-book agreement, 3+ persistence anchors, Kalshi depth &ge; $5K. 5/5 is the top tier (very rare, ~1 per week).
+        </li>
+        <li>
+          <b style="color:var(--accent, #8b5cf6)">&#x1F3C6; Overall</b> &mdash; every bet-able pick on today's board (model-only + DNB still excluded). Shows the broadest hit rate so you can compare how much the filters actually improved on the baseline.
+        </li>
+      </ul>
+      <p class="aie-foot">
+        <b>DNB (DO NOT BET) picks</b> are excluded from every record. A pick flipped to DNB after posting (signal collapse, decimal &lt; 1.50 after move, AI Avoid verdict, Kalshi contra, etc.) no longer counts against any filter's win rate.
+      </p>
+    </div>
+  </details>
 
   {# AI Picks section (shipped 2026-10-21): picks where Claude Haiku
      endorsed the bet (Strong Take or Lean verdict). Only Signal 4+
