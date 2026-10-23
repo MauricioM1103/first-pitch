@@ -19583,6 +19583,51 @@ def cron_model_tune():
                         status=500, mimetype="application/json")
 
 
+@app.route("/cron/news-watcher")
+def cron_news_watcher():
+    """Agent #1 — news/injury watcher with cost-optimized cadence.
+    Set up as a 10-min UptimeRobot cron. Detection step is pure HTTP
+    (free); LLM analysis fires only on NEW or WORSENED injury items
+    for players on today's teams, hard-capped at 15 Haiku calls/day.
+    Expected cost: $2-4/mo vs $8-15/mo at prior design.
+
+    Returns JSON with: ok, ran_at, sports_checked, changes_total,
+    worsened, new, llm_calls_today / cap, analyzed[] (LLM summaries
+    of the day's highest-severity items)."""
+    import json as _json
+    try:
+        import agents
+        out = agents.run_news_watcher()
+        return Response(_json.dumps(out, indent=2),
+                        mimetype="application/json")
+    except Exception as e:
+        return Response(_json.dumps({"ok": False,
+                                       "error": f"{type(e).__name__}: {e}"}),
+                        status=500, mimetype="application/json")
+
+
+@app.route("/pick/analog")
+def pick_analog():
+    """Agent #6 — historical analog finder. Pass ?id=<pick_id>.
+    Returns up to 3 comparable past settled picks + a one-line
+    Haiku pattern read. Called on-demand from the pick-detail
+    expand panel. ~$0.02 per invocation."""
+    import json as _json
+    pick_id = (request.args.get("id") or "").strip()
+    if not pick_id:
+        return Response(_json.dumps({"ok": False, "error": "?id= required"}),
+                        status=400, mimetype="application/json")
+    try:
+        import agents
+        out = agents.find_pick_analogs(pick_id, n=3)
+        return Response(_json.dumps(out, indent=2),
+                        mimetype="application/json")
+    except Exception as e:
+        return Response(_json.dumps({"ok": False,
+                                       "error": f"{type(e).__name__}: {e}"}),
+                        status=500, mimetype="application/json")
+
+
 @app.route("/cron/eod-recap")
 def cron_eod_recap():
     """Agent #4 — daily EOD recap composer. Builds a 2-3 paragraph
