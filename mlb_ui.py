@@ -5481,11 +5481,34 @@ def _queue_ai_verdict_fill(pick):
             )
             try:
                 resp = client.messages.create(
-                    model="claude-haiku-5-5",
+                    model="claude-sonnet-5-5",
                     max_tokens=160,
+                    system=(
+                        "You are a sharp sports betting analyst. Reply "
+                        "ONLY with the verdict word followed by a short "
+                        "reason, in the exact format the user requests. "
+                        "Do not add preamble or caveats."
+                    ),
                     messages=[{"role": "user", "content": prompt}],
                 )
-                txt = "".join(b.text for b in resp.content if hasattr(b, "text")).strip()
+                # Claude 5 returns ThinkingBlock + TextBlock; pick ONLY
+                # the text block by type (haiku's ThinkingBlock has no
+                # .text; sonnet's does, but it's empty — the real reply
+                # is in the type=="text" block, same pattern analyst.py
+                # uses for /ai-analysis).
+                txt = ""
+                for block in (resp.content or []):
+                    if getattr(block, "type", None) == "text":
+                        txt = (getattr(block, "text", "") or "").strip()
+                        if txt:
+                            break
+                if not txt:
+                    # Last-ditch: any block exposing non-empty .text
+                    for block in (resp.content or []):
+                        t = (getattr(block, "text", "") or "").strip()
+                        if t:
+                            txt = t
+                            break
             except Exception:
                 return
             # Don't cache empty responses — the Haiku API occasionally
