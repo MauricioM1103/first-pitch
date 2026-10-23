@@ -2125,6 +2125,23 @@ TODAY_TEMPLATE = r"""<!doctype html>
 @media (max-width: 720px) {
   .pnl-tiles { grid-template-columns: repeat(2, 1fr); }
 }
+/* Mobile: let the 8-column P&L table scroll horizontally within its
+   own box instead of pushing the whole page. Also shrink the font
+   so most rows fit without needing to scroll on typical phones. */
+@media (max-width: 600px) {
+  .pnl-panel .pnl-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .pnl-table { font-size: 11px; min-width: 420px; }
+  .pnl-table th { padding: 6px 7px; font-size: 9px; }
+  .pnl-table td { padding: 7px; }
+  /* Hide the Push + Win rate columns on narrow screens — ROI covers
+     performance and the Push count is almost always zero. */
+  .pnl-table th:nth-child(5), .pnl-table td:nth-child(5),
+  .pnl-table th:nth-child(6), .pnl-table td:nth-child(6) { display: none; }
+}
+@media (max-width: 420px) {
+  .pnl-tiles { grid-template-columns: 1fr; }
+  .pnl-tile { padding: 10px 12px; }
+}
 
 /* AI Picks section (shipped 2026-10-21): Claude Haiku verdicts for
    Signal 4+ picks surfaced at top of TODAY. Each card is collapsible —
@@ -3081,7 +3098,7 @@ details.also-wrap .today-card { opacity: 0.88; }
       </div>
       {% endfor %}
     </div>
-    <table class="pnl-table">
+    <div class="pnl-table-wrap"><table class="pnl-table">
       <thead>
         <tr>
           <th>Filter</th>
@@ -3127,7 +3144,7 @@ details.also-wrap .today-card { opacity: 0.88; }
         </tr>
         {% endfor %}
       </tbody>
-    </table>
+    </table></div>
   </section>
   {% endif %}
 
@@ -5011,6 +5028,23 @@ PICKS_TEMPLATE = r"""<!doctype html>
 @media (max-width: 720px) {
   .pnl-tiles { grid-template-columns: repeat(2, 1fr); }
 }
+/* Mobile: let the 8-column P&L table scroll horizontally within its
+   own box instead of pushing the whole page. Also shrink the font
+   so most rows fit without needing to scroll on typical phones. */
+@media (max-width: 600px) {
+  .pnl-panel .pnl-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .pnl-table { font-size: 11px; min-width: 420px; }
+  .pnl-table th { padding: 6px 7px; font-size: 9px; }
+  .pnl-table td { padding: 7px; }
+  /* Hide the Push + Win rate columns on narrow screens — ROI covers
+     performance and the Push count is almost always zero. */
+  .pnl-table th:nth-child(5), .pnl-table td:nth-child(5),
+  .pnl-table th:nth-child(6), .pnl-table td:nth-child(6) { display: none; }
+}
+@media (max-width: 420px) {
+  .pnl-tiles { grid-template-columns: 1fr; }
+  .pnl-tile { padding: 10px 12px; }
+}
 
 .board-wrap {
   background: var(--card); border: 1px solid var(--rule); border-radius: 10px;
@@ -5591,6 +5625,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
         <span class="drr-label">
           {% if tier == 'strongest' %}&#x1F525; Strongest
           {% elif tier == 'ai' %}&#x1F916; AI
+          {% elif tier == 'discord' %}&#x1F4E2; Discord
           {% elif tier == 'overall' %}Today
           {% else %}{{ tier }}/5{% endif %}
         </span>
@@ -6264,7 +6299,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
       </div>
       {% endfor %}
     </div>
-    <table class="pnl-table">
+    <div class="pnl-table-wrap"><table class="pnl-table">
       <thead>
         <tr>
           <th>Filter</th>
@@ -6310,7 +6345,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
         </tr>
         {% endfor %}
       </tbody>
-    </table>
+    </table></div>
   </section>
   {% endif %}
 
@@ -14653,23 +14688,52 @@ def _mc_fetch_games(sport_slug, date_str):
         if not sport or sport.get("dedicated"):
             _MC_GAMES_CACHE[key] = (out, now)
             return out
+        # Source parity with the main board (fixes AI tab under-counting
+        # games — e.g. 4 NBA games showing when the main board had 11).
+        # _sport_games_for_hub() is what the TODAY/PICKS board uses, and
+        # it covers pre-game, live, and final games alike. We still need
+        # a `ctx` payload for the AI prompt builder, so we also pull the
+        # richer per-game dict from build_sport_games and join on the
+        # (home, away) key — any game present in the hub view that's
+        # missing from build_sport_games gets a minimal ctx fallback.
         try:
-            # MC/AI unified dropdown — skip Odds API; the Pinnacle game list
-            # is all we need to render the sport's games for the date.
-            games = generic_odds.build_sport_games(sport, use_us_books=False)
+            d_obj_filter = datetime.strptime(date_str, "%Y-%m-%d").date()
+            hub_games = _sport_games_for_hub(sport, d_obj_filter)
         except Exception:
-            games = []
-        for g in games:
-            st = g.get("start_time") or ""
-            if not _in_eastern_date(st, date_str):
-                continue
-            gid = g.get("matchup_id") or f"{g.get('home_name','')}vs{g.get('away_name','')}"
+            hub_games = []
+        try:
+            rich_games = generic_odds.build_sport_games(sport, use_us_books=False)
+        except Exception:
+            rich_games = []
+        rich_by_key = {}
+        for g in rich_games:
+            k = ((g.get("home_name") or "").lower(),
+                 (g.get("away_name") or "").lower())
+            rich_by_key[k] = g
+        for g in hub_games:
+            home = g.get("home", "")
+            away = g.get("away", "")
+            k = (home.lower(), away.lower())
+            # Prefer the rich ctx (has bets, fair, markets, etc.);
+            # fall back to the hub dict when AI-tab-only games slipped
+            # out of build_sport_games (e.g. live games Pinnacle moved
+            # to the in-play feed).
+            ctx = rich_by_key.get(k) or {
+                "home_name":  home,
+                "away_name":  away,
+                "start_time": g.get("start_time"),
+                "ml":         g.get("ml"),
+                "spread":     g.get("spread"),
+                "total":      g.get("total"),
+            }
+            gid = (ctx.get("matchup_id")
+                   or f"{home}vs{away}")
             out.append({
-                "id": str(gid),
-                "home": g.get("home_name", ""),
-                "away": g.get("away_name", ""),
-                "start_time": st,
-                "ctx": g,
+                "id":         str(gid),
+                "home":       home,
+                "away":       away,
+                "start_time": g.get("start_time"),
+                "ctx":        ctx,
             })
     _MC_GAMES_CACHE[key] = (out, now)
     return out
