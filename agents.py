@@ -995,24 +995,55 @@ def run_moderator_tick():
     today_str    = today.isoformat()
     posted_today = []
     eligible     = []
+    # Diagnostic counters — surfaced in the response so the operator
+    # can tell at a glance whether an empty eligible list means "no
+    # picks on the board" vs "picks exist but none cleared the bar"
+    # vs "picks cleared the bar but none are in-window yet".
+    board_total   = 0
+    evaluated     = 0
+    dnb_or_model  = 0
+    already_posted = 0
+    score_hist    = {i: 0 for i in range(11)}
+    below_thresh  = []
+    window_blocked = []
+    live_or_done  = 0
 
     for row in board:
         for p in row.get("picks") or []:
+            board_total += 1
             if p.get("do_not_bet") or p.get("model_only"):
+                dnb_or_model += 1
                 continue
             pid = p.get("id")
             if not pid or pid in posted_state:
+                if pid:
+                    already_posted += 1
                 continue
             score, reasons = compute_evidence_score(p, news_state=news_state)
+            evaluated += 1
+            score_hist[max(0, min(10, int(score)))] += 1
             if score < _EVIDENCE_POST_THRESHOLD:
+                # Keep the top of the "almost-cleared" list visible so
+                # the operator can see what's just below the gate.
+                if len(below_thresh) < 10:
+                    below_thresh.append({"pid": pid, "score": score,
+                                          "pick": p.get("pick"),
+                                          "sport": p.get("sport_slug")})
                 continue
             mins = _minutes_to_game_start(p.get("start_time") or "")
             if mins is None or mins < 0:
+                live_or_done += 1
                 continue  # game live or finished
             lo, hi = _pick_sport_pregame_window(p.get("sport_slug") or "")
             eligible.append({"pid": pid, "score": score, "mins": mins,
-                              "window": [lo, hi], "pick": p.get("pick")})
+                              "window": [lo, hi], "pick": p.get("pick"),
+                              "sport": p.get("sport_slug")})
             if not (lo <= mins <= hi):
+                window_blocked.append({"pid": pid, "score": score,
+                                        "mins_to_start": mins,
+                                        "window": [lo, hi],
+                                        "pick": p.get("pick"),
+                                        "sport": p.get("sport_slug")})
                 continue  # not in pre-game window yet
             # Post + record
             r = post_individual_pick(p)
@@ -1043,6 +1074,16 @@ def run_moderator_tick():
         "posted_count":    len(posted_today),
         "eligible":        eligible[:20],
         "posted":          posted_today,
+        # Diagnostic snapshot of what the moderator saw this tick
+        "board_total_picks":    board_total,
+        "dnb_or_model_only":    dnb_or_model,
+        "already_posted_today": already_posted,
+        "evaluated":            evaluated,
+        "live_or_done":         live_or_done,
+        "window_blocked_count": len(window_blocked),
+        "window_blocked":       window_blocked[:10],
+        "below_threshold":      below_thresh,
+        "score_histogram":      score_hist,
     }
 
 
