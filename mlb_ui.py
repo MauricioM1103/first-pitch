@@ -10743,7 +10743,19 @@ def picks_landing():
             _cache_key = _re.sub(r"[?&]_cb=\d+", "", _cache_key)
         _rc_hit = _RENDER_CACHE.get(_cache_key)
         if _rc_hit and (time.time() - _rc_hit[0]) < _RENDER_CACHE_TTL_S:
-            return _rc_hit[1]
+            # Wrap cached HTML in a Response + edge-cache headers so
+            # Cloudflare caches it at the edge. The cache stores the
+            # raw rendered HTML (string), so we rebuild the Response
+            # on each hit — cheap, keeps the cache small.
+            try:
+                from flask import make_response as _mkr
+                _r = _mkr(_rc_hit[1])
+                _r.headers["Cache-Control"] = "public, max-age=30, stale-while-revalidate=120"
+                _r.headers["Vary"] = "Accept-Encoding"
+                _r.headers["X-Render-Cache"] = "HIT"
+                return _r
+            except Exception:
+                return _rc_hit[1]
     except Exception:
         _cache_key = None
 
