@@ -5021,6 +5021,27 @@ PICKS_TEMPLATE = r"""<!doctype html>
   vertical-align: top;
 }
 .board-table tr.row-main:first-child td { border-top: none; }
+/* Filter icon strip (shipped 2026-10-24): row of tiny filter
+   icons at the start of each pick card so the user can see which
+   filters would include the pick at a glance. Deliberately small
+   so they don't dominate the pick label; each icon is tooltipped
+   with its filter name. Priority color per icon matches the chip
+   bar + the day-record pills. */
+.filter-icons { display: inline-flex; align-items: center; gap: 2px; margin-right: 6px; }
+.filter-icons .fi {
+  display: inline-block;
+  width: 14px; height: 14px; line-height: 14px;
+  text-align: center;
+  font-size: 10px;
+  border-radius: 3px;
+  cursor: help;
+}
+.filter-icons .fi-strongest { color: #ef4444; }
+.filter-icons .fi-filter2   { color: #f59e0b; }
+.filter-icons .fi-whale     { color: #38bdf8; }
+.filter-icons .fi-ai        { color: #0ea5e9; }
+.filter-icons .fi-linemove  { color: #a855f7; }
+.filter-icons .fi-dnb       { color: color-mix(in oklab, #ef4444 60%, var(--muted-2)); }
 /* Row hover + LIVE pulse (shipped 2026-10-23). Subtle hover
    highlight so the user can track their cursor's row across the
    wide table, plus a pulsing left-border on LIVE games to draw
@@ -5925,6 +5946,19 @@ PICKS_TEMPLATE = r"""<!doctype html>
                        (['linemove']  if _is_linemove else [])
                      }}"
                      title="{{ 'Model-only preference (no EV filter)' if p.model_only else ('🐋 WHALE pick — bankroll-maximum tier: fp ≥ 72%, dec 1.30–1.65, Signal ≥ 4, EV ≥ 1.5%, no risk flags. Size at quarter-to-half Kelly (5–10% of bankroll).' if p.whale else ('High-signal pick (Signal ≥ 3/5): EV cushion + favorable line move + prob floor' if p.strong else 'EV-verified pick')) }}">
+                  {# Filter icon strip (shipped 2026-10-24): one small
+                     icon per filter the pick qualifies for. Hover
+                     any icon for its name. Mirrors the chip row at
+                     the top so the user can see at a glance which
+                     filters would include this pick. #}
+                  <span class="filter-icons">
+                    {% if _is_strongest_pick %}<span class="fi fi-strongest" title="Strongest filter">&#x1F525;</span>{% endif %}
+                    {% if _is_filter2 %}<span class="fi fi-filter2" title="Filter 2.0 (primary betting filter)">&#9733;</span>{% endif %}
+                    {% if p.whale %}<span class="fi fi-whale" title="Whale pick (bankroll max tier)">&#x1F40B;</span>{% endif %}
+                    {% if _is_ai_endorsed %}<span class="fi fi-ai" title="AI endorsed ({{ p.ai_verdict }})">&#x1F916;</span>{% endif %}
+                    {% if _is_linemove %}<span class="fi fi-linemove" title="Line toward us ≥ +1pp">&uarr;</span>{% endif %}
+                    {% if p.do_not_bet %}<span class="fi fi-dnb" title="DO NOT BET — pick retracted">&#x26D4;</span>{% endif %}
+                  </span>
                   <span class="pick-ico {{ p.icon_cls }}">{{ p.icon }}</span>
                   <span class="pick-lbl">{{ p.pick_short }}</span>
                   <span class="pick-conf c{{ p.conf }}">{{ p.conf }}/5</span>
@@ -5974,7 +6008,17 @@ PICKS_TEMPLATE = r"""<!doctype html>
           <td class="col-ai-picks">
             {% set _ai_endorsed = [] %}
             {% for p in row.picks %}
-              {% if p.ai_verdict in ('Strong Take', 'Lean') and not p.do_not_bet %}
+              {# Only show AI picks that have real structured content.
+                 User requirement: every AI pick should have matchup,
+                 key factors, risks. We require AT LEAST matchup OR
+                 factors to prevent empty cards. Picks whose AI
+                 verdict came from the old prompt (legacy ai_reason
+                 only) still render via the legacy fallback. Picks
+                 missing all three sections AND the legacy reason
+                 are dropped — Sonnet will re-populate them on the
+                 next cycle. #}
+              {% if p.ai_verdict in ('Strong Take', 'Lean') and not p.do_not_bet
+                    and (p.ai_matchup or p.ai_factors or p.ai_risks or p.ai_reason) %}
                 {% set _ = _ai_endorsed.append(p) %}
               {% endif %}
             {% endfor %}
@@ -6838,6 +6882,17 @@ def _queue_ai_verdict_fill(pick):
                     summary = (txt.split(":", 1)[1].strip() if ":" in txt else txt).strip()[:200]
             # Legacy field: reason = summary (older code paths read p.ai_reason).
             reason = summary or (matchup[0] if matchup else "")
+            # Quality gate (shipped 2026-10-24): for picks AI endorsed
+            # (Strong Take / Lean) we REQUIRE at least a matchup bullet
+            # so the AI column never shows empty cards. If Sonnet
+            # dropped the bullets but kept the verdict, skip the cache
+            # write — the next scan retries and may get a complete
+            # response. Pass / Avoid verdicts (negatives) are allowed
+            # to be bullet-light since they don't surface in the UI.
+            if verdict in ("Strong Take", "Lean") and not matchup and not factors:
+                _AI_COUNTERS["thread_empty_txt"] += 1
+                _AI_COUNTERS["last_err"] = "endorsed verdict with no matchup/factors bullets — not caching"
+                return
             try:
                 cache = _load_ai_verdict_cache()
                 cache[pid] = {
