@@ -1219,9 +1219,30 @@ def run_moderator_tick():
         pass
     _save_posted_state(posted_state)
 
+    # Housekeeping: once we've gone through posts for this tick, sweep
+    # the channel for any accidental duplicates (two of the same pick
+    # that slipped through a dedup race in the past, or anything a
+    # retry sent twice). Needs a bot token; no-op without. Capped at
+    # 100 recent messages per tick so it's cheap.
+    dedup_sweep = None
+    try:
+        import mlb_ui
+        settings = mlb_ui._load_settings()
+        bot = (settings.get("discord_bot_token") or "").strip()
+        hook = _resolve_discord_webhook(settings)
+        if bot and hook:
+            import discord_bot
+            channel_id = discord_bot._channel_id_from_webhook(hook)
+            if channel_id:
+                dedup_sweep = discord_bot.delete_duplicate_messages(
+                    bot, channel_id, scan_limit=100)
+    except Exception as e:
+        dedup_sweep = {"ok": False, "error": f"sweep failed: {e}"}
+
     return {
         "ok":              True,
         "ran_at":          datetime.utcnow().isoformat() + "Z",
+        "dedup_sweep":     dedup_sweep,
         "threshold":       _EVIDENCE_POST_THRESHOLD,
         "eligible_count":  len(eligible),
         "posted_count":    len(posted_today),

@@ -2084,8 +2084,11 @@ TODAY_TEMPLATE = r"""<!doctype html>
 .pnl-tile.strongest { border-color: color-mix(in oklab, #ef4444 40%, var(--rule)); }
 .pnl-tile.ai .pnl-rate, .pnl-tile.ai .pnl-tier { color: #38bdf8; }
 .pnl-tile.ai { border-color: color-mix(in oklab, #38bdf8 40%, var(--rule)); }
+.pnl-tile.discord .pnl-rate, .pnl-tile.discord .pnl-tier { color: #7289da; }
+.pnl-tile.discord { border-color: color-mix(in oklab, #7289da 50%, var(--rule)); }
 .pnl-table .pnl-row-tier.strongest { color: #ef4444; }
 .pnl-table .pnl-row-tier.ai { color: #38bdf8; }
+.pnl-table .pnl-row-tier.discord { color: #7289da; }
 @media (max-width: 1000px) {
   .pnl-tiles { grid-template-columns: repeat(3, 1fr); }
 }
@@ -3036,18 +3039,21 @@ details.also-wrap .today-card { opacity: 0.88; }
       <span class="pnl-sub">{{ date_pretty }} &middot; flat 1u stake per bet &middot; model-only + DNB excluded</span>
     </div>
     <div class="pnl-tiles">
-      {% for tier in ['strongest', 'ai', 5, 4, 3, 'overall'] %}
+      {% for tier in ['strongest', 'ai', 5, 4, 3, 'discord', 'overall'] %}
       {% set b = tier_tally[tier] %}
       <div class="pnl-tile {{
         'strongest' if tier == 'strongest' else (
           'ai' if tier == 'ai' else (
-            'overall' if tier == 'overall' else ('t' ~ tier)
+            'discord' if tier == 'discord' else (
+              'overall' if tier == 'overall' else ('t' ~ tier)
+            )
           )
         )
       }}">
         <div class="pnl-tier">
           {% if tier == 'strongest' %}&#x1F525; Strongest
           {% elif tier == 'ai' %}&#x1F916; AI Picks
+          {% elif tier == 'discord' %}&#x1F4E2; Discord Sent
           {% elif tier == 'overall' %}&#x1F3C6; Overall
           {% else %}{{ tier }}/5 Signal{% endif %}
         </div>
@@ -3089,18 +3095,21 @@ details.also-wrap .today-card { opacity: 0.88; }
         </tr>
       </thead>
       <tbody>
-        {% for tier in ['strongest', 'ai', 5, 4, 3, 'overall'] %}
+        {% for tier in ['strongest', 'ai', 5, 4, 3, 'discord', 'overall'] %}
         {% set b = tier_tally[tier] %}
         <tr>
           <td class="pnl-row-tier {{
             'strongest' if tier == 'strongest' else (
               'ai' if tier == 'ai' else (
-                'overall' if tier == 'overall' else ('t' ~ tier)
+                'discord' if tier == 'discord' else (
+                  'overall' if tier == 'overall' else ('t' ~ tier)
+                )
               )
             )
           }}">
             {% if tier == 'strongest' %}&#x1F525; STRONGEST
             {% elif tier == 'ai' %}&#x1F916; AI
+            {% elif tier == 'discord' %}&#x1F4E2; DISCORD
             {% elif tier == 'overall' %}ALL
             {% else %}{{ tier }}/5{% endif %}
           </td>
@@ -4961,8 +4970,11 @@ PICKS_TEMPLATE = r"""<!doctype html>
 .pnl-tile.strongest { border-color: color-mix(in oklab, #ef4444 40%, var(--rule)); }
 .pnl-tile.ai .pnl-rate, .pnl-tile.ai .pnl-tier { color: #38bdf8; }
 .pnl-tile.ai { border-color: color-mix(in oklab, #38bdf8 40%, var(--rule)); }
+.pnl-tile.discord .pnl-rate, .pnl-tile.discord .pnl-tier { color: #7289da; }
+.pnl-tile.discord { border-color: color-mix(in oklab, #7289da 50%, var(--rule)); }
 .pnl-table .pnl-row-tier.strongest { color: #ef4444; }
 .pnl-table .pnl-row-tier.ai { color: #38bdf8; }
+.pnl-table .pnl-row-tier.discord { color: #7289da; }
 @media (max-width: 1000px) {
   .pnl-tiles { grid-template-columns: repeat(3, 1fr); }
 }
@@ -5564,13 +5576,15 @@ PICKS_TEMPLATE = r"""<!doctype html>
        then AI, then individual tiers, then Overall at the end. #}
     {% if tier_tally and tier_tally.overall.picks %}
     <div class="day-record-row">
-      {% for tier in ['strongest', 'ai', 5, 4, 3, 'overall'] %}
+      {% for tier in ['strongest', 'ai', 5, 4, 3, 'discord', 'overall'] %}
       {% set b = tier_tally[tier] %}
       {% if b.picks %}
       <span class="drr-pill drr-{{
         'strongest' if tier == 'strongest' else (
           'ai' if tier == 'ai' else (
-            'overall' if tier == 'overall' else ('t' ~ tier)
+            'discord' if tier == 'discord' else (
+              'overall' if tier == 'overall' else ('t' ~ tier)
+            )
           )
         )
       }}">
@@ -6208,18 +6222,21 @@ PICKS_TEMPLATE = r"""<!doctype html>
       <span class="pnl-sub">{{ date_pretty }} &middot; flat 1u stake per bet &middot; model-only + DNB excluded</span>
     </div>
     <div class="pnl-tiles">
-      {% for tier in ['strongest', 'ai', 5, 4, 3, 'overall'] %}
+      {% for tier in ['strongest', 'ai', 5, 4, 3, 'discord', 'overall'] %}
       {% set b = tier_tally[tier] %}
       <div class="pnl-tile {{
         'strongest' if tier == 'strongest' else (
           'ai' if tier == 'ai' else (
-            'overall' if tier == 'overall' else ('t' ~ tier)
+            'discord' if tier == 'discord' else (
+              'overall' if tier == 'overall' else ('t' ~ tier)
+            )
           )
         )
       }}">
         <div class="pnl-tier">
           {% if tier == 'strongest' %}&#x1F525; Strongest
           {% elif tier == 'ai' %}&#x1F916; AI Picks
+          {% elif tier == 'discord' %}&#x1F4E2; Discord Sent
           {% elif tier == 'overall' %}&#x1F3C6; Overall
           {% else %}{{ tier }}/5 Signal{% endif %}
         </div>
@@ -6261,18 +6278,21 @@ PICKS_TEMPLATE = r"""<!doctype html>
         </tr>
       </thead>
       <tbody>
-        {% for tier in ['strongest', 'ai', 5, 4, 3, 'overall'] %}
+        {% for tier in ['strongest', 'ai', 5, 4, 3, 'discord', 'overall'] %}
         {% set b = tier_tally[tier] %}
         <tr>
           <td class="pnl-row-tier {{
             'strongest' if tier == 'strongest' else (
               'ai' if tier == 'ai' else (
-                'overall' if tier == 'overall' else ('t' ~ tier)
+                'discord' if tier == 'discord' else (
+                  'overall' if tier == 'overall' else ('t' ~ tier)
+                )
               )
             )
           }}">
             {% if tier == 'strongest' %}&#x1F525; STRONGEST
             {% elif tier == 'ai' %}&#x1F916; AI
+            {% elif tier == 'discord' %}&#x1F4E2; DISCORD
             {% elif tier == 'overall' %}ALL
             {% else %}{{ tier }}/5{% endif %}
           </td>
@@ -6774,16 +6794,24 @@ def _queue_ai_verdict_fill(pick):
                 f"write '- none' and the parser will drop it."
             )
             try:
-                # max_tokens=2048 (was 160) because Sonnet 5.5 runs
-                # extended thinking by default and burned the whole
-                # 160-token budget on hidden reasoning before writing
-                # the TextBlock. /debug/ai showed stop_reason=max_tokens
-                # with only a thinking block, text="". 2048 leaves
-                # plenty of room for thinking + the 15-word verdict.
-                # Still ~$0.03 per call × 15 calls/day ≈ $0.45/day.
+                # Cost-tune (2026-10-23):
+                #   - Signal 5 picks (Discord-worthy top tier) use
+                #     Sonnet with a 1500-token budget — the extra
+                #     ~$0.02/call is worth it on the few picks that
+                #     actually land in the public feed.
+                #   - Signal 3-4 picks use Haiku with 1024 tokens.
+                #     Haiku handles the structured output fine and
+                #     is ~4x cheaper per token than Sonnet.
+                #   - Caller already filters out Signal<3 picks, so
+                #     the volume per day is naturally capped.
+                #   Headline savings vs flat-Sonnet: ~70% on days
+                #   dominated by Signal 3-4 picks (the usual case).
+                is_top_tier = int(_sig or 0) >= 5
+                _model_used = "claude-sonnet-5-5" if is_top_tier else "claude-haiku-5-5"
+                _max_tok    = 1500 if is_top_tier else 1024
                 resp = client.messages.create(
-                    model="claude-sonnet-5-5",
-                    max_tokens=2048,
+                    model=_model_used,
+                    max_tokens=_max_tok,
                     system=(
                         "You are a sharp sports betting analyst. Reply "
                         "ONLY with the verdict word followed by a short "
@@ -6797,7 +6825,7 @@ def _queue_ai_verdict_fill(pick):
                 try:
                     _usage = getattr(resp, "usage", None)
                     _record_ai_usage(
-                        "claude-sonnet-5-5",
+                        _model_used,
                         int(getattr(_usage, "input_tokens", 0) or 0),
                         int(getattr(_usage, "output_tokens", 0) or 0),
                     )
@@ -9455,7 +9483,12 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
             #   - Only "Avoid" forces do_not_bet.
             #   - "Pass" / "Lean" are informational on the card.
             #   - "Strong Take" still +1 Signal point.
-            if ((p.get("signal_score") or 0) >= 2
+            # Cost-tune: only call AI for Signal 3+ picks. Signal 2
+            # picks almost never clear the display filter and burning
+            # a Haiku call per Signal-2 pick costs ~$3-5/mo on busy
+            # days. The AI-only filter (?ai=1) still works since AI
+            # is informed by picks that cleared Signal 3.
+            if ((p.get("signal_score") or 0) >= 3
                     and (p.get("decimal") or 0)
                     and not p.get("model_only")):
                 try:
@@ -11115,8 +11148,33 @@ def picks_landing():
         3:            _blank_tier(),
         "strongest":  _blank_tier(),
         "ai":         _blank_tier(),
+        "discord":    _blank_tier(),  # Agent #8 moderator posted picks
         "overall":    _blank_tier(),
     }
+
+    # Discord posted set — pulled once per build. We treat posted_state's
+    # keys as "picks sent to Discord this run of entries". The grader
+    # fills in W/L/P as games end. Includes historical picks (prior
+    # days up to 14 cutoff from the moderator's state).
+    _discord_posted_ids = set()
+    try:
+        import json as _json_dp
+        import os as _os_dp
+        _dp_path = _os_dp.path.join(_os_dp.path.dirname(_os_dp.path.abspath(__file__)),
+                                     "logs", "discord_posted_individual.json")
+        try:
+            with open(_dp_path) as _f_dp:
+                _discord_posted_ids = set((_json_dp.load(_f_dp) or {}).keys())
+        except Exception:
+            try:
+                import log_persist as _lp_dp
+                _dp_text, _ = _lp_dp.read_file("logs/discord_posted_individual.json")
+                if _dp_text:
+                    _discord_posted_ids = set((_json_dp.loads(_dp_text) or {}).keys())
+            except Exception:
+                pass
+    except Exception:
+        pass
 
     def _is_strongest(p):
         """A pick is in the Strongest bucket if it clears ANY of the
@@ -11158,6 +11216,8 @@ def picks_landing():
                 buckets.append(tier_tally["strongest"])
             if _is_ai_pick(p):
                 buckets.append(tier_tally["ai"])
+            if p.get("id") in _discord_posted_ids:
+                buckets.append(tier_tally["discord"])
             for b in buckets:
                 b["picks"] += 1
                 if r in ("W", "L", "P"):
@@ -19716,6 +19776,54 @@ def cron_line_shop_scan():
     except Exception as e:
         return Response(_json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}),
                         status=500, mimetype="application/json")
+
+
+@app.route("/discord/dedup-sweep")
+def discord_dedup_sweep():
+    """Scan the Discord channel's recent history and delete any
+    duplicate posts (same content prefix). Keeps the OLDEST message
+    in each duplicate group. Requires a bot token with Manage
+    Messages. Pass ?dry=1 to see what WOULD be deleted without
+    actually deleting."""
+    import json as _json
+    s = _load_settings()
+    hook = _resolve_discord_webhook_mlb(s)
+    bot  = (s.get("discord_bot_token") or "").strip()
+    if not hook:
+        return Response(_json.dumps({"ok": False,
+                                       "error": "no webhook configured"}),
+                        status=400, mimetype="application/json")
+    if not bot:
+        return Response(_json.dumps({"ok": False,
+                                       "error": "no bot token — add discord_bot_token in /settings"}),
+                        status=400, mimetype="application/json")
+    try:
+        import discord_bot
+        channel_id = discord_bot._channel_id_from_webhook(hook)
+        if not channel_id:
+            return Response(_json.dumps({"ok": False,
+                                           "error": "could not resolve channel_id from webhook"}),
+                            status=500, mimetype="application/json")
+        dry = (request.args.get("dry") or "") in ("1", "true", "yes")
+        out = discord_bot.delete_duplicate_messages(bot, channel_id,
+                                                     scan_limit=100,
+                                                     dry_run=dry)
+        return Response(_json.dumps(out, indent=2),
+                        mimetype="application/json")
+    except Exception as e:
+        return Response(_json.dumps({"ok": False,
+                                       "error": f"{type(e).__name__}: {e}"}),
+                        status=500, mimetype="application/json")
+
+
+def _resolve_discord_webhook_mlb(settings):
+    """Local copy of agents._resolve_discord_webhook so routes in
+    mlb_ui don't have to round-trip through the agents module just
+    for a webhook lookup."""
+    url = (settings.get("daily_picks_webhook_url") or "").strip()
+    if url:
+        return url
+    return (settings.get("discord_webhook_url") or "").strip()
 
 
 @app.route("/pick/force-post")

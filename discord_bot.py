@@ -736,6 +736,76 @@ def clear_channel_history(bot_token, channel_id, max_batches=20):
             "total_deleted": total_bulk + total_single}
 
 
+def delete_duplicate_messages(bot_token, channel_id, scan_limit=100,
+                                content_prefix_chars=120, dry_run=False):
+    """Scan the channel's recent history, group by content prefix,
+    delete every duplicate but the OLDEST message in each group.
+
+    Discord webhook messages are considered duplicates when their
+    first `content_prefix_chars` characters match exactly — same pick
+    posted twice ends up with the same header (sport, pick, price,
+    evidence breakdown), so a prefix compare catches dupes without
+    false-matching unrelated posts whose later bullets differ.
+
+    Requires a Bot token with Manage Messages in the channel; without
+    one this is a no-op. Returns a result dict with per-group counts.
+
+    `dry_run=True` reports what WOULD be deleted without hitting
+    Discord — useful for the first run after enabling the sweep."""
+    if not bot_token or not channel_id:
+        return {"ok": False, "error": "bot_token + channel_id required",
+                "dry_run": dry_run}
+    try:
+        msgs = _discord_api("GET",
+                             f"/channels/{channel_id}/messages?limit={min(100, scan_limit)}",
+                             bot_token=bot_token)
+    except Exception as e:
+        return {"ok": False, "error": f"list failed: {e}", "dry_run": dry_run}
+
+    groups = {}  # content_prefix → list[(ts_ms, msg_id)]
+    for m in msgs or []:
+        mid = m.get("id")
+        content = (m.get("content") or "")
+        if not mid or not content:
+            continue
+        try:
+            ts_ms = (int(mid) >> 22) + 1420070400000
+        except Exception:
+            continue
+        key = content[:content_prefix_chars].strip()
+        groups.setdefault(key, []).append((ts_ms, mid))
+
+    deleted = []
+    kept = []
+    for key, items in groups.items():
+        if len(items) < 2:
+            continue
+        # Keep the OLDEST (smallest ts) — that's the "first" post
+        items.sort(key=lambda t: t[0])
+        kept.append({"preview": key[:60], "message_id": items[0][1]})
+        for ts, mid in items[1:]:
+            if dry_run:
+                deleted.append({"preview": key[:60], "message_id": mid,
+                                 "would_delete": True})
+                continue
+            try:
+                _discord_api("DELETE",
+                              f"/channels/{channel_id}/messages/{mid}",
+                              bot_token=bot_token)
+                deleted.append({"preview": key[:60], "message_id": mid})
+            except Exception as e:
+                deleted.append({"preview": key[:60], "message_id": mid,
+                                 "error": str(e)})
+            time.sleep(0.25)  # polite pacing
+
+    return {"ok": True, "dry_run": dry_run,
+            "scanned_count":  len(msgs or []),
+            "dup_groups":     len([g for g in groups.values() if len(g) >= 2]),
+            "deleted_count":  len([d for d in deleted if not d.get("error")]),
+            "deleted":        deleted,
+            "kept":           kept}
+
+
 def reset_channel_and_reintro(webhook_url, bot_token=None):
     """Full reset: wipe channel history (if bot_token supplied), then
     post the fresh intro via the webhook. Returns a result dict the
