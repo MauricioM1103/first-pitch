@@ -4493,6 +4493,102 @@ PICKS_TEMPLATE = r"""<!doctype html>
   font-weight: 600;
 }
 
+/* Board stats line (shipped 2026-10-22): small game-count summary
+   above the main board table — "14 games · 0 upcoming · 14 final ·
+   14 AI debated." Matches the reference layout. */
+.board-stats-line {
+  display: flex; flex-wrap: wrap; gap: 14px;
+  padding: 10px 2px 12px;
+  font-family: "JetBrains Mono", monospace; font-size: 11.5px;
+  color: var(--muted);
+}
+.board-stats-line .bsl-item b { color: var(--ink); font-weight: 600; }
+.board-stats-line .bsl-item.upcoming b { color: var(--good); }
+.board-stats-line .bsl-item.live b { color: #ef4444; }
+.board-stats-line .bsl-item.final b { color: var(--muted-2); }
+.board-stats-line .bsl-item.debated b { color: var(--accent, #8b5cf6); }
+
+/* Daily P&L Summary panel (shipped 2026-10-22): per-Signal-tier
+   record breakdown shown at the bottom of TODAY. Four big tiles
+   (5/5, 4/5, 3/5, Overall) each showing hit rate + record + units
+   + ROI. Below the tiles, a compact table repeats the same cuts. */
+.pnl-panel {
+  margin: 24px 0 32px;
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  padding: 18px 20px;
+}
+.pnl-panel .pnl-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  margin: 0 0 14px;
+}
+.pnl-panel .pnl-head h2 {
+  margin: 0; font-size: 15px;
+  font-family: "JetBrains Mono", monospace; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--ink); font-weight: 500;
+}
+.pnl-panel .pnl-head .pnl-sub { color: var(--muted); font-size: 12px; }
+.pnl-tiles {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+}
+.pnl-tile {
+  background: color-mix(in oklab, var(--bg) 60%, var(--card));
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 14px 12px;
+  text-align: center;
+}
+.pnl-tile .pnl-tier {
+  font-family: "JetBrains Mono", monospace; font-size: 10.5px;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--muted-2); margin: 0 0 6px;
+}
+.pnl-tile .pnl-rate {
+  font-family: "JetBrains Mono", monospace; font-weight: 700;
+  font-size: 28px; line-height: 1.1;
+}
+.pnl-tile .pnl-record { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+.pnl-tile .pnl-units  { font-family: "JetBrains Mono", monospace; font-size: 14px; font-weight: 700; margin-top: 10px; }
+.pnl-tile .pnl-roi    { font-family: "JetBrains Mono", monospace; font-size: 11.5px; margin-top: 2px; }
+.pnl-tile.t5 .pnl-rate, .pnl-tile.t5 .pnl-tier { color: #f59e0b; }
+.pnl-tile.t4 .pnl-rate, .pnl-tile.t4 .pnl-tier { color: var(--good); }
+.pnl-tile.t3 .pnl-rate, .pnl-tile.t3 .pnl-tier { color: #fbbf24; }
+.pnl-tile.overall .pnl-rate, .pnl-tile.overall .pnl-tier { color: var(--accent, #8b5cf6); }
+.pnl-tile .pnl-units.good { color: var(--good); }
+.pnl-tile .pnl-units.bad  { color: #ef4444; }
+.pnl-tile .pnl-roi.good   { color: var(--good); }
+.pnl-tile .pnl-roi.bad    { color: #ef4444; }
+.pnl-tile .pnl-pending {
+  color: var(--muted-2); font-size: 11px; margin-top: 6px;
+  font-family: "JetBrains Mono", monospace;
+}
+.pnl-table {
+  width: 100%; border-collapse: collapse; margin-top: 18px;
+  font-size: 12.5px;
+}
+.pnl-table th {
+  text-align: left; padding: 8px 10px;
+  font-family: "JetBrains Mono", monospace; font-weight: 500;
+  font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--muted-2); border-bottom: 1px solid var(--rule);
+}
+.pnl-table td {
+  padding: 10px; border-top: 1px solid var(--rule);
+  font-family: "JetBrains Mono", monospace;
+}
+.pnl-table .pnl-row-tier { font-weight: 600; color: var(--ink); }
+.pnl-table .pnl-row-tier.t5 { color: #f59e0b; }
+.pnl-table .pnl-row-tier.t4 { color: var(--good); }
+.pnl-table .pnl-row-tier.t3 { color: #fbbf24; }
+.pnl-table .pnl-row-tier.overall { color: var(--accent, #8b5cf6); }
+.pnl-table td.num { text-align: right; }
+.pnl-table td.good { color: var(--good); }
+.pnl-table td.bad  { color: #ef4444; }
+@media (max-width: 720px) {
+  .pnl-tiles { grid-template-columns: repeat(2, 1fr); }
+}
+
 .board-wrap {
   background: var(--card); border: 1px solid var(--rule); border-radius: 10px;
   overflow: hidden;
@@ -4985,6 +5081,15 @@ PICKS_TEMPLATE = r"""<!doctype html>
   {% endif %}
 
   {% if board_rows %}
+  {% if board_status_counts %}
+  <div class="board-stats-line">
+    <span class="bsl-item"><b>{{ board_status_counts.games }}</b> games</span>
+    {% if board_status_counts.upcoming %}<span class="bsl-item upcoming"><b>{{ board_status_counts.upcoming }}</b> upcoming</span>{% endif %}
+    {% if board_status_counts.live %}<span class="bsl-item live"><b>{{ board_status_counts.live }}</b> live</span>{% endif %}
+    {% if board_status_counts.final %}<span class="bsl-item final"><b>{{ board_status_counts.final }}</b> final</span>{% endif %}
+    {% if board_status_counts.debated %}<span class="bsl-item debated"><b>{{ board_status_counts.debated }}</b> AI debated</span>{% endif %}
+  </div>
+  {% endif %}
   <div class="board-wrap">
     <table class="board-table">
       <thead>
@@ -4995,7 +5100,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
           <th class="col-score">Score</th>
           <th class="col-line">Line</th>
           <th class="col-close">Close</th>
-          <th class="col-picks">Picks</th>
+          <th class="col-picks">AI Debate</th>
           <th class="col-view"></th>
         </tr>
       </thead>
@@ -5172,6 +5277,86 @@ PICKS_TEMPLATE = r"""<!doctype html>
     <h2>No games scheduled.</h2>
     <p>No tracked sport has a game on this date. Try another date, or check back later.</p>
   </div>
+  {% endif %}
+
+  {# Daily P&L Summary panel (shipped 2026-10-22). Matches the
+     reference layout: per-Signal-tier tiles (5/5, 4/5, 3/5, Overall)
+     up top, each with hit rate + record + units P&L + ROI. Compact
+     table below repeats the same cuts in rows. #}
+  {% if tier_tally and tier_tally.overall.picks %}
+  <section class="pnl-panel">
+    <div class="pnl-head">
+      <h2>&#x1F4CA; Daily P&amp;L Summary</h2>
+      <span class="pnl-sub">{{ date_pretty }} &middot; flat 1u stake per bet &middot; model-only + DNB excluded</span>
+    </div>
+    <div class="pnl-tiles">
+      {% for tier in [5, 4, 3, 'overall'] %}
+      {% set b = tier_tally[tier] %}
+      <div class="pnl-tile {{ 't' ~ tier if tier != 'overall' else 'overall' }}">
+        <div class="pnl-tier">
+          {% if tier == 'overall' %}&#x1F3C6; Overall
+          {% else %}{{ tier }}/5 Signal{% endif %}
+        </div>
+        <div class="pnl-rate">
+          {% if b.win_rate is not none %}{{ '%.0f'|format(b.win_rate) }}%{% else %}&mdash;{% endif %}
+        </div>
+        <div class="pnl-record">
+          {{ b.W }}W &middot; {{ b.L }}L{% if b.P %} &middot; {{ b.P }}P{% endif %}
+          ({{ b.picks }} pick{{ 's' if b.picks != 1 else '' }})
+        </div>
+        {% if b.settled %}
+        <div class="pnl-units {{ 'good' if b.units > 0 else ('bad' if b.units < 0 else '') }}">
+          {{ '%+.2f'|format(b.units) }}u
+        </div>
+        <div class="pnl-roi {{ 'good' if (b.roi_pct or 0) > 0 else ('bad' if (b.roi_pct or 0) < 0 else '') }}">
+          {% if b.roi_pct is not none %}{{ '%+.1f'|format(b.roi_pct) }}% ROI{% else %}&mdash;{% endif %}
+        </div>
+        {% else %}
+        <div class="pnl-units">&mdash;</div>
+        <div class="pnl-roi">no settled picks</div>
+        {% endif %}
+        {% if b.pending %}
+        <div class="pnl-pending">{{ b.pending }} pending</div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    <table class="pnl-table">
+      <thead>
+        <tr>
+          <th>Consensus</th>
+          <th>Picks</th>
+          <th>Wins</th>
+          <th>Losses</th>
+          <th>Push</th>
+          <th>Win rate</th>
+          <th>Units P&amp;L</th>
+          <th>ROI</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for tier in [5, 4, 3, 'overall'] %}
+        {% set b = tier_tally[tier] %}
+        <tr>
+          <td class="pnl-row-tier {{ 't' ~ tier if tier != 'overall' else 'overall' }}">
+            {% if tier == 'overall' %}ALL{% else %}{{ tier }}/5{% endif %}
+          </td>
+          <td class="num">{{ b.picks }}</td>
+          <td class="num good">{{ b.W }}</td>
+          <td class="num bad">{{ b.L }}</td>
+          <td class="num">{% if b.P %}{{ b.P }}{% else %}&mdash;{% endif %}</td>
+          <td class="num">{% if b.win_rate is not none %}{{ '%.0f'|format(b.win_rate) }}%{% else %}&mdash;{% endif %}</td>
+          <td class="num {{ 'good' if b.units > 0 else ('bad' if b.units < 0 else '') }}">
+            {% if b.settled %}{{ '%+.2f'|format(b.units) }}u{% else %}&mdash;{% endif %}
+          </td>
+          <td class="num {{ 'good' if (b.roi_pct or 0) > 0 else ('bad' if (b.roi_pct or 0) < 0 else '') }}">
+            {% if b.roi_pct is not none %}{{ '%+.1f'|format(b.roi_pct) }}%{% else %}&mdash;{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
   {% endif %}
 
   <footer>
@@ -8450,6 +8635,44 @@ def today_landing():
                 today_tally["pending"] += 1
     today_tally["settled"] = today_tally["W"] + today_tally["L"] + today_tally["P"]
 
+    # Per-tier P&L breakdown for the Daily P&L Summary panel
+    # (shipped 2026-10-22). Buckets today's bet-able picks by their
+    # Signal score (5/5, 4/5, 3/5) so the summary panel can show
+    # per-tier hit rate + units + ROI the way the reference layout
+    # does. "overall" is all three tiers summed.
+    def _blank():
+        return {"picks": 0, "W": 0, "L": 0, "P": 0, "pending": 0,
+                "units": 0.0, "risk": 0.0}
+    tier_tally = {5: _blank(), 4: _blank(), 3: _blank(), "overall": _blank()}
+    for row in board_rows:
+        for p in row.get("picks", []):
+            if p.get("model_only") or p.get("do_not_bet"):
+                continue
+            sig = int(p.get("signal_score") or 0)
+            if sig not in (3, 4, 5):
+                continue
+            # Risk is 1 unit per bet (flat staking) for ROI math,
+            # same convention /logged uses.
+            buckets = (tier_tally[sig], tier_tally["overall"])
+            r = p.get("result")
+            try:
+                profit = float(p.get("profit_u") or 0.0)
+            except (TypeError, ValueError):
+                profit = 0.0
+            for b in buckets:
+                b["picks"] += 1
+                if r in ("W", "L", "P"):
+                    b[r] += 1
+                    b["units"] += profit
+                    b["risk"] += 1.0
+                elif p.get("_row_status") in ("live", "final"):
+                    b["pending"] += 1
+    for b in tier_tally.values():
+        settled = b["W"] + b["L"] + b["P"]
+        b["settled"] = settled
+        b["win_rate"] = (b["W"] / settled * 100.0) if settled else None
+        b["roi_pct"]  = (b["units"] / b["risk"] * 100.0) if b["risk"] else None
+
     # Phase 29d: current-filter 7-day record pill — no streak tracking.
     # Force a pending-pick backfill on the last 2 days first so
     # results that just landed are included in this request's record,
@@ -8521,6 +8744,17 @@ def today_landing():
         today=today,
         is_today=(date_str == today),
         today_tally=today_tally,
+        tier_tally=tier_tally,
+        board_status_counts={
+            "games":    len(board_rows),
+            "upcoming": sum(1 for r in board_rows if (r.get("status") or "") == "upcoming"),
+            "live":     sum(1 for r in board_rows if (r.get("status") or "") == "live"),
+            "final":    sum(1 for r in board_rows if (r.get("status") or "") == "final"),
+            "debated":  sum(1 for r in board_rows if any(
+                (p.get("ai_verdict") or "") in ("Strong Take", "Lean", "Pass", "Avoid")
+                for p in r.get("picks") or []
+            )),
+        },
         picks_early=picks_early,
         picks_late=picks_late,
         split_boundary_label=split_boundary_label,
