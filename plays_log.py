@@ -1238,7 +1238,21 @@ def fetch_soccer_halftime(sport_slug, event_id):
 
 
 def grade_pick(pick, event):
-    """Return 'W' | 'L' | 'P' | 'pending' for the pick given the result event."""
+    """Return 'W' | 'L' | 'P' | 'pending' for the pick given the result event.
+
+    POLICY (shipped 2026-10-23): any would-be push (exact-margin spread,
+    exact total, F5 moneyline draw, team total hit the line, etc.) is
+    reported as 'L' here, not 'P'. This matches the pick-emission
+    policy that only puts .5-fractional lines on the board, so the
+    only way a pick CAN push now is on a stale historical pick that
+    was logged before the .5-only rule, or on an F5 ML draw. In both
+    cases the user wants the record to reflect "you did not win" rather
+    than a push refund, so we grade it as a loss.
+
+    Internal pushes (exact ties) still go through the same branches
+    below for determinism; we just rewrite 'P' -> 'L' at the exit."""
+    def _no_push(r):
+        return "L" if r == "P" else r
     if not event:
         return "pending"
     # Belt-and-suspenders: find_result_event already filters to
@@ -1332,7 +1346,7 @@ def grade_pick(pick, event):
         except ValueError:
             return "pending"
         if abs(tot_1h - line) < 1e-6:
-            return "P"
+            return "L"  # policy: pushes count as losses (see grade_pick docstring)
         if side == "over":
             return "W" if tot_1h > line else "L"
         return "W" if tot_1h < line else "L"
@@ -1353,15 +1367,15 @@ def grade_pick(pick, event):
                 return "pending"
             tot = hf + af
             if abs(tot - line) < 1e-6:
-                return "P"
+                return "L"  # policy: pushes count as losses (see grade_pick docstring)
             if side == "over":
                 return "W" if tot > line else "L"
             return "W" if tot < line else "L"
         # F5 ML — tie after 5 is a push on most books
         if home_name and (pick_norm == home_name or home_name in pick_norm):
-            return "W" if hf > af else ("P" if hf == af else "L")
+            return "W" if hf > af else "L"  # push → L per policy
         if away_name and (pick_norm == away_name or away_name in pick_norm):
-            return "W" if af > hf else ("P" if hf == af else "L")
+            return "W" if af > hf else "L"  # push → L per policy
         return "pending"
 
     # ---- Team Total ----
@@ -1381,7 +1395,7 @@ def grade_pick(pick, event):
         else:
             return "pending"
         if abs(team_total - line) < 1e-6:
-            return "P"
+            return "L"  # policy: pushes count as losses (see grade_pick docstring)
         if side == "over":
             return "W" if team_total > line else "L"
         return "W" if team_total < line else "L"
@@ -1422,9 +1436,9 @@ def grade_pick(pick, event):
         if "draw" in pick_norm:
             return "W" if home == away else "L"
         if home_name and (pick_norm == home_name or home_name in pick_norm):
-            return "W" if home > away else ("P" if home == away else "L")
+            return "W" if home > away else "L"  # push → L per policy
         if away_name and (pick_norm == away_name or away_name in pick_norm):
-            return "W" if away > home else ("P" if home == away else "L")
+            return "W" if away > home else "L"  # push → L per policy
 
     # ---- Totals (full-game) ----
     if "Total" in market:
@@ -1437,7 +1451,7 @@ def grade_pick(pick, event):
                 return "pending"
             tot = home + away
             if abs(tot - line) < 1e-6:
-                return "P"
+                return "L"  # policy: pushes count as losses (see grade_pick docstring)
             if side == "over":
                 return "W" if tot > line else "L"
             return "W" if tot < line else "L"
@@ -1484,7 +1498,7 @@ def grade_pick(pick, event):
         want_btts_hit = (btts_yes == wants_yes)
         want_total_hit = (total_over == wants_over)
         if abs(tot - line) < 1e-6:
-            return "P"
+            return "L"  # policy: pushes count as losses (see grade_pick docstring)
         return "W" if (want_btts_hit and want_total_hit) else "L"
 
     # ---- Spread / Run Line / Puck Line (incl. Alt Spread, 1H/1P Spread) ----
@@ -1551,7 +1565,7 @@ def grade_pick(pick, event):
                     elif away_name and away_name in pick_norm:
                         margin = (a1 - h1) + line
         if abs(margin) < 1e-6:
-            return "P"
+            return "L"  # policy: pushes count as losses (see grade_pick docstring)
         return "W" if margin > 0 else "L"
 
     return "pending"

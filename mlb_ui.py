@@ -6063,10 +6063,9 @@ PICKS_TEMPLATE = r"""<!doctype html>
                      research-recommended slim layout). #}
                   {% if p.result == 'W' %}
                     <span class="pick-res W" title="Won">&#10003;</span>
-                  {% elif p.result == 'L' %}
-                    <span class="pick-res L" title="Lost">&#10007;</span>
-                  {% elif p.result == 'P' %}
-                    <span class="pick-res P" title="Push">P</span>
+                  {% elif p.result in ('L', 'P') %}
+                    {# Push counts as a loss per the no-push policy #}
+                    <span class="pick-res L" title="{{ 'Push (counted as loss)' if p.result == 'P' else 'Lost' }}">&#10007;</span>
                   {% elif p._row_status == 'live' %}
                     <span class="pick-res live" title="Game is live — awaiting final score">&#9679; LIVE</span>
                   {% elif p._row_status == 'final' %}
@@ -7452,13 +7451,21 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
     # or "Spread +0.25" is useless to the bettor — there's no matching DK
     # line to take it at. Only emit alts whose line snaps to .0 or .5.
     def _is_half_point(line):
+        # STRICT .5-only policy (shipped 2026-10-23). Whole-number lines
+        # (3.0, 7.0, 2.0, etc.) can push on an exact margin and that
+        # void-the-bet behavior is confusing on the record view. Every
+        # emission path now requires a .5 fractional line so there's
+        # no way for a pick on today's board to push. If the Pinnacle
+        # alt list only has whole-number candidates, we skip the alt
+        # path for that market and let the main line (which goes
+        # through _snap_to_half) carry the pick.
         if line is None:
             return False
         try:
             frac = abs(float(line) - int(float(line)))
         except (TypeError, ValueError):
             return False
-        return frac < 1e-9 or abs(frac - 0.5) < 1e-9
+        return abs(frac - 0.5) < 1e-9
 
     # Stricter gate for spreads: ONLY .5 lines. Whole-number spreads (e.g.
     # +7.0 or -3.0) can push on exact margin, which voids the bet — a
@@ -11316,10 +11323,20 @@ def picks_landing():
                 continue
             sig = int(p.get("signal_score") or 0)
             r = p.get("result")
-            try:
-                profit = float(p.get("profit_u") or 0.0)
-            except (TypeError, ValueError):
+            # Pushes count as losses per the no-push policy. Rewrite
+            # before bucketing so historical P-graded picks also show
+            # up in the L column without having to re-grade the files.
+            # Profit on a push is 0u (stake refunded), so the units
+            # column still reflects "no loss of money" — only the
+            # W-L record shifts.
+            if r == "P":
+                r = "L"
                 profit = 0.0
+            else:
+                try:
+                    profit = float(p.get("profit_u") or 0.0)
+                except (TypeError, ValueError):
+                    profit = 0.0
             # Which buckets this pick lands in
             buckets = [tier_tally["overall"]]
             if sig in (3, 4, 5):
@@ -11332,7 +11349,7 @@ def picks_landing():
                 buckets.append(tier_tally["discord"])
             for b in buckets:
                 b["picks"] += 1
-                if r in ("W", "L", "P"):
+                if r in ("W", "L"):
                     b[r] += 1
                     b["units"] += profit
                     b["risk"] += 1.0
