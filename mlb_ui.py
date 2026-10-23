@@ -2018,6 +2018,102 @@ TODAY_TEMPLATE = r"""<!doctype html>
 .today-tally .tally-units.good { color: var(--good); }
 .today-tally .tally-units.bad  { color: #ef4444; }
 .today-tally .tally-pending { color: var(--muted); font-size: 11px; }
+/* Board stats line (shipped 2026-10-22): small game-count summary
+   above the main picks list — "N games · M upcoming · K final ·
+   L AI debated." Matches the reference layout. */
+.board-stats-line {
+  display: flex; flex-wrap: wrap; gap: 14px;
+  padding: 10px 2px 12px;
+  font-family: "JetBrains Mono", monospace; font-size: 11.5px;
+  color: var(--muted);
+}
+.board-stats-line .bsl-item b { color: var(--ink); font-weight: 600; }
+.board-stats-line .bsl-item.upcoming b { color: var(--good); }
+.board-stats-line .bsl-item.live b { color: #ef4444; }
+.board-stats-line .bsl-item.final b { color: var(--muted-2); }
+.board-stats-line .bsl-item.debated b { color: var(--accent, #8b5cf6); }
+
+/* Daily P&L Summary panel (shipped 2026-10-22): per-Signal-tier
+   record breakdown shown at the bottom of TODAY. Four big tiles
+   (5/5, 4/5, 3/5, Overall) each with hit rate + record + units
+   + ROI. Compact table below repeats the same cuts. */
+.pnl-panel {
+  margin: 24px 0 32px;
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  padding: 18px 20px;
+}
+.pnl-panel .pnl-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  margin: 0 0 14px; flex-wrap: wrap; gap: 8px;
+}
+.pnl-panel .pnl-head h2 {
+  margin: 0; font-size: 15px;
+  font-family: "JetBrains Mono", monospace; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--ink); font-weight: 500;
+}
+.pnl-panel .pnl-head .pnl-sub { color: var(--muted); font-size: 12px; }
+.pnl-tiles {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+}
+.pnl-tile {
+  background: color-mix(in oklab, var(--bg) 60%, var(--card));
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 14px 12px;
+  text-align: center;
+}
+.pnl-tile .pnl-tier {
+  font-family: "JetBrains Mono", monospace; font-size: 10.5px;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--muted-2); margin: 0 0 6px;
+}
+.pnl-tile .pnl-rate {
+  font-family: "JetBrains Mono", monospace; font-weight: 700;
+  font-size: 28px; line-height: 1.1;
+}
+.pnl-tile .pnl-record { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+.pnl-tile .pnl-units  { font-family: "JetBrains Mono", monospace; font-size: 14px; font-weight: 700; margin-top: 10px; }
+.pnl-tile .pnl-roi    { font-family: "JetBrains Mono", monospace; font-size: 11.5px; margin-top: 2px; }
+.pnl-tile.t5 .pnl-rate, .pnl-tile.t5 .pnl-tier { color: #f59e0b; }
+.pnl-tile.t4 .pnl-rate, .pnl-tile.t4 .pnl-tier { color: var(--good); }
+.pnl-tile.t3 .pnl-rate, .pnl-tile.t3 .pnl-tier { color: #fbbf24; }
+.pnl-tile.overall .pnl-rate, .pnl-tile.overall .pnl-tier { color: var(--accent, #8b5cf6); }
+.pnl-tile .pnl-units.good { color: var(--good); }
+.pnl-tile .pnl-units.bad  { color: #ef4444; }
+.pnl-tile .pnl-roi.good   { color: var(--good); }
+.pnl-tile .pnl-roi.bad    { color: #ef4444; }
+.pnl-tile .pnl-pending {
+  color: var(--muted-2); font-size: 11px; margin-top: 6px;
+  font-family: "JetBrains Mono", monospace;
+}
+.pnl-table {
+  width: 100%; border-collapse: collapse; margin-top: 18px;
+  font-size: 12.5px;
+}
+.pnl-table th {
+  text-align: left; padding: 8px 10px;
+  font-family: "JetBrains Mono", monospace; font-weight: 500;
+  font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--muted-2); border-bottom: 1px solid var(--rule);
+}
+.pnl-table td {
+  padding: 10px; border-top: 1px solid var(--rule);
+  font-family: "JetBrains Mono", monospace;
+}
+.pnl-table .pnl-row-tier { font-weight: 600; color: var(--ink); }
+.pnl-table .pnl-row-tier.t5 { color: #f59e0b; }
+.pnl-table .pnl-row-tier.t4 { color: var(--good); }
+.pnl-table .pnl-row-tier.t3 { color: #fbbf24; }
+.pnl-table .pnl-row-tier.overall { color: var(--accent, #8b5cf6); }
+.pnl-table td.num { text-align: right; }
+.pnl-table td.good { color: var(--good); }
+.pnl-table td.bad  { color: #ef4444; }
+@media (max-width: 720px) {
+  .pnl-tiles { grid-template-columns: repeat(2, 1fr); }
+}
+
 /* AI Picks section (shipped 2026-10-21): Claude Haiku verdicts for
    Signal 4+ picks surfaced at top of TODAY. Each card is collapsible —
    click the header to toggle the AI analysis body (same pattern as
@@ -2616,6 +2712,15 @@ details.also-wrap .today-card { opacity: 0.88; }
         Nothing cleared the Signal &ge; 3 bar for today. Scroll down for picks the model has secondary interest in, or browse all games on the <a href="/games" style="color:var(--good)">GAMES</a> tab.
       {% endif %}
     </div>
+    {% if board_status_counts %}
+    <div class="board-stats-line">
+      <span class="bsl-item"><b>{{ board_status_counts.games }}</b> games</span>
+      {% if board_status_counts.upcoming %}<span class="bsl-item upcoming"><b>{{ board_status_counts.upcoming }}</b> upcoming</span>{% endif %}
+      {% if board_status_counts.live %}<span class="bsl-item live"><b>{{ board_status_counts.live }}</b> live</span>{% endif %}
+      {% if board_status_counts.final %}<span class="bsl-item final"><b>{{ board_status_counts.final }}</b> final</span>{% endif %}
+      {% if board_status_counts.debated %}<span class="bsl-item debated"><b>{{ board_status_counts.debated }}</b> AI debated</span>{% endif %}
+    </div>
+    {% endif %}
   </div>
 
   <details class="signal-explainer">
@@ -2909,6 +3014,86 @@ details.also-wrap .today-card { opacity: 0.88; }
       {% endfor %}
     </div>
   </details>
+  {% endif %}
+
+  {# Daily P&L Summary panel (shipped 2026-10-22). Per-Signal-tier
+     record breakdown at the bottom of TODAY — four tiles for 5/5,
+     4/5, 3/5, Overall + a compact table below. Hidden entirely
+     when no bet-able picks exist today. #}
+  {% if tier_tally and tier_tally.overall.picks %}
+  <section class="pnl-panel">
+    <div class="pnl-head">
+      <h2>&#x1F4CA; Daily P&amp;L Summary</h2>
+      <span class="pnl-sub">{{ date_pretty }} &middot; flat 1u stake per bet &middot; model-only + DNB excluded</span>
+    </div>
+    <div class="pnl-tiles">
+      {% for tier in [5, 4, 3, 'overall'] %}
+      {% set b = tier_tally[tier] %}
+      <div class="pnl-tile {{ 't' ~ tier if tier != 'overall' else 'overall' }}">
+        <div class="pnl-tier">
+          {% if tier == 'overall' %}&#x1F3C6; Overall
+          {% else %}{{ tier }}/5 Signal{% endif %}
+        </div>
+        <div class="pnl-rate">
+          {% if b.win_rate is not none %}{{ '%.0f'|format(b.win_rate) }}%{% else %}&mdash;{% endif %}
+        </div>
+        <div class="pnl-record">
+          {{ b.W }}W &middot; {{ b.L }}L{% if b.P %} &middot; {{ b.P }}P{% endif %}
+          ({{ b.picks }} pick{{ 's' if b.picks != 1 else '' }})
+        </div>
+        {% if b.settled %}
+        <div class="pnl-units {{ 'good' if b.units > 0 else ('bad' if b.units < 0 else '') }}">
+          {{ '%+.2f'|format(b.units) }}u
+        </div>
+        <div class="pnl-roi {{ 'good' if (b.roi_pct or 0) > 0 else ('bad' if (b.roi_pct or 0) < 0 else '') }}">
+          {% if b.roi_pct is not none %}{{ '%+.1f'|format(b.roi_pct) }}% ROI{% else %}&mdash;{% endif %}
+        </div>
+        {% else %}
+        <div class="pnl-units">&mdash;</div>
+        <div class="pnl-roi">no settled picks</div>
+        {% endif %}
+        {% if b.pending %}
+        <div class="pnl-pending">{{ b.pending }} pending</div>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    <table class="pnl-table">
+      <thead>
+        <tr>
+          <th>Consensus</th>
+          <th>Picks</th>
+          <th>Wins</th>
+          <th>Losses</th>
+          <th>Push</th>
+          <th>Win rate</th>
+          <th>Units P&amp;L</th>
+          <th>ROI</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for tier in [5, 4, 3, 'overall'] %}
+        {% set b = tier_tally[tier] %}
+        <tr>
+          <td class="pnl-row-tier {{ 't' ~ tier if tier != 'overall' else 'overall' }}">
+            {% if tier == 'overall' %}ALL{% else %}{{ tier }}/5{% endif %}
+          </td>
+          <td class="num">{{ b.picks }}</td>
+          <td class="num good">{{ b.W }}</td>
+          <td class="num bad">{{ b.L }}</td>
+          <td class="num">{% if b.P %}{{ b.P }}{% else %}&mdash;{% endif %}</td>
+          <td class="num">{% if b.win_rate is not none %}{{ '%.0f'|format(b.win_rate) }}%{% else %}&mdash;{% endif %}</td>
+          <td class="num {{ 'good' if b.units > 0 else ('bad' if b.units < 0 else '') }}">
+            {% if b.settled %}{{ '%+.2f'|format(b.units) }}u{% else %}&mdash;{% endif %}
+          </td>
+          <td class="num {{ 'good' if (b.roi_pct or 0) > 0 else ('bad' if (b.roi_pct or 0) < 0 else '') }}">
+            {% if b.roi_pct is not none %}{{ '%+.1f'|format(b.roi_pct) }}%{% else %}&mdash;{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
   {% endif %}
 
   <footer style="margin-top:40px; padding:16px 0; color:var(--muted-2); font-size:12px; border-top:1px solid var(--rule)">
