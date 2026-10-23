@@ -10871,7 +10871,21 @@ def picks_landing():
     # Keep DNB picks visible when they still match one of the stronger
     # pre-DNB signals (user flagged "picks don't go away after result"
     # — a graded DNB that's a Whale historical record should stay).
+    #
+    # Live/final games get a WIDER keep rule: once the game kicked off,
+    # the pick is in flight — we're waiting on a result, not deciding
+    # whether to place it. Re-filtering on the current composite can
+    # drop the pick when Pinnacle's in-play market shifts the signal,
+    # which hides the pick before the W/L badge ever lands. So for
+    # live/final rows we keep every non-model-only pick regardless of
+    # the current composite, and the template's ✓ / ✗ / LIVE / FINAL
+    # badge handles the result.
     def _keep_in_baseline(p):
+        if p.get("model_only"):
+            return False  # pure model-only noise never shows baseline
+        row_status = p.get("_row_status")
+        if row_status in ("live", "final"):
+            return True  # game in flight — hold the pick for grading
         if _passes_main_five(p):
             return True
         # Graded picks on completed games stay for the record view
@@ -10891,6 +10905,12 @@ def picks_landing():
         def _strongest_pick(p):
             if p.get("do_not_bet"):
                 return False
+            # Once the game kicks off, hold the pick for grading even if
+            # live-market shifts dropped it below the filter.
+            if p.get("_row_status") in ("live", "final"):
+                return True
+            if p.get("result") in ("W", "L", "P"):
+                return True
             try:
                 if int(p.get("signal_score") or 0) >= 3:
                     return True
