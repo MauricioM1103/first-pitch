@@ -803,9 +803,32 @@ _SPORT_PREGAME_WINDOW_MIN = {
 }
 _DEFAULT_PREGAME_WINDOW = (45, 150)
 
-# Evidence threshold — picks score 0-10. Only picks at or above
-# this bar get posted. User can adjust via env var.
-_EVIDENCE_POST_THRESHOLD = 5
+# Evidence threshold — picks score 0-10. The threshold is DYNAMIC
+# per the pick's Signal composite (0-5): stronger Signal gets a lower
+# evidence bar, since the composite already encodes most of the
+# convergence we'd otherwise want from AI+/Line+/Kalshi+.
+#
+#   Signal 5 ⇒ evidence >= 3
+#   Signal 4 ⇒ evidence >= 4
+#   Signal 0-3 ⇒ evidence >= 5
+#
+# Keeps the quality bar high while letting a 5/5 pick with just one
+# supporting signal (e.g. AI+ or Line+) through — matches the user's
+# "strong Signal shouldn't need the full stack" directive.
+_EVIDENCE_POST_THRESHOLD = 5  # back-compat; still used for stats labels
+
+
+def _evidence_bar_for(pick):
+    """Return the evidence-score threshold the pick must clear."""
+    try:
+        sig = int(pick.get("signal_score") or 0)
+    except Exception:
+        sig = 0
+    if sig >= 5:
+        return 3
+    if sig >= 4:
+        return 4
+    return 5
 
 # Where we track which pick IDs have already been posted to Discord
 # so we don't double-post. Keyed by pick id → {posted_at, score}.
@@ -955,9 +978,36 @@ Evidence {score}/10 — {reason_tags}  |  Tipoff in {mins_to_tip} min
 """
 
 
+def _fmt_bullets(items, emoji):
+    """Format a list of bullet strings as 'emoji text' lines.
+    Returns empty string if items is empty / None so the caller
+    can skip that section entirely."""
+    if not items:
+        return ""
+    # Accept either list[str] or a single str
+    if isinstance(items, str):
+        items = [items]
+    lines = []
+    for it in items:
+        it = (it or "").strip().lstrip("-•*").strip()
+        if it:
+            lines.append(f"{emoji} {it}")
+    return "\n".join(lines)
+
+
 def post_individual_pick(pick, webhook_url=None):
     """Compose + send one pick to Discord. Returns {ok, posted_text}.
-    Only called when the pick clears evidence >= _EVIDENCE_POST_THRESHOLD."""
+
+    Builds a full Discord post with:
+      - Sport · pick · price · evidence · tipoff
+      - AI verdict label (e.g. "AI: Lean")
+      - FULL matchup bullets
+      - FULL key-factor bullets
+      - FULL risk bullets
+      - Best US-book price chip (if a book beats Pinnacle by >=1%)
+
+    Called by the moderator when a pick clears its evidence bar,
+    or on-demand via /pick/force-post?id=<pid>."""
     try:
         import mlb_ui
         import discord_bot
@@ -976,25 +1026,52 @@ def post_individual_pick(pick, webhook_url=None):
     score, reasons = compute_evidence_score(pick)
     mins = _minutes_to_game_start(pick.get("start_time") or "")
 
-    # Compose body from existing AI fields; call Haiku only if any
-    # section is missing (keeps cost down since most A-tier picks
-    # already have their AI bullets cached).
-    matchup = (pick.get("ai_matchup") or [None])[0] or "No prior read on this matchup."
-    factor  = (pick.get("ai_factors") or [None])[0] or "No standout factor flagged."
-    risk    = (pick.get("ai_risks")   or [None])[0] or "No specific risk identified."
-
     sport  = (pick.get("sport_name") or pick.get("sport_slug") or "?").upper()
     pick_t = pick.get("pick") or "?"
     dec    = pick.get("decimal")
     dec_s  = f"{dec:.2f}" if dec else "?"
-    body = (
-        f"**{sport} · {pick_t}** @ {dec_s}\n"
-        f"Evidence **{score}/10** — {', '.join(reasons)}"
-        f"  |  Tipoff in **{mins} min**\n\n"
-        f"🏉 {matchup}\n"
-        f"📋 {factor}\n"
-        f"⚠ {risk}"
-    )
+    sig    = pick.get("signal_score")
+    ai_v   = pick.get("ai_verdict") or ""
+
+    # Header block
+    header_lines = [f"**{sport} · {pick_t}** @ {dec_s}"]
+    bits = [f"Evidence **{score}/10**"]
+    if reasons:
+        bits.append(", ".join(reasons))
+    if sig is not None:
+        bits.append(f"Signal **{sig}/5**")
+    if mins is not None:
+        bits.append(f"Tipoff in **{mins} min**")
+    header_lines.append("  |  ".join(bits))
+    if ai_v in ("Lean", "Strong Take"):
+        header_lines.append(f"**AI verdict:** {ai_v}")
+
+    # Full AI bullets (matchup / factors / risks). Fall back to short
+    # placeholder only when the field is entirely missing.
+    matchup_block = _fmt_bullets(pick.get("ai_matchup"), "🎯")
+    factor_block  = _fmt_bullets(pick.get("ai_factors"), "📋")
+    risk_block    = _fmt_bullets(pick.get("ai_risks"),   "⚠")
+    body_parts = ["\n".join(header_lines)]
+    if matchup_block:
+        body_parts.append("**Matchup**\n" + matchup_block)
+    if factor_block:
+        body_parts.append("**Key factors**\n" + factor_block)
+    if risk_block:
+        body_parts.append("**Risks**\n" + risk_block)
+
+    # Line-shop best-book chip if a US book beats us materially
+    if pick.get("best_book") and pick.get("best_price"):
+        bb   = str(pick.get("best_book")).upper()
+        bp   = pick.get("best_price")
+        pct  = pick.get("best_price_delta_pct") or 0.0
+        body_parts.append(
+            f"💵 Shop: **{bb}** at {bp:.2f} ({pct:+.1f}% vs Pinnacle)"
+        )
+
+    body = "\n\n".join(body_parts)
+    # Discord 2000-char hard cap — trim trailing section if needed.
+    if len(body) > 1900:
+        body = body[:1897] + "..."
     ok = discord_bot.post_text(webhook_url, body)
     return {"ok": bool(ok), "posted_text": body, "score": score,
             "reasons": reasons, "mins_to_tip": mins}
@@ -1054,13 +1131,15 @@ def run_moderator_tick():
             for r in reasons:
                 if r in reason_tally:
                     reason_tally[r] += 1
-            if score < _EVIDENCE_POST_THRESHOLD:
+            bar = _evidence_bar_for(p)
+            if score < bar:
                 # Keep the top of the "almost-cleared" list visible so
                 # the operator can see what's just below the gate.
                 if len(below_thresh) < 10:
                     below_thresh.append({
                         "pid":            pid,
                         "score":          score,
+                        "bar":            bar,       # per-pick threshold
                         "reasons":        reasons,  # ['AI+','Line+',...]
                         "signal_composite": pick_signal_for_debug(p),
                         "has_ai_bullets": bool(p.get("ai_matchup") or p.get("ai_factors")),

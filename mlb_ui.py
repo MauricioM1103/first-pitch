@@ -7891,18 +7891,18 @@ def _model_fill_picks(sport_slug, home, away, pin_ml, pin_spread, pin_total,
             if byes >= 0.5:
                 am = btts_yes_am
                 prob = byes
-                label = "BTTS: Yes"
-            else:
-                am = btts_no_am
-                prob = 1 - byes
-                label = "BTTS: No"
+                label = "BTTS Yes"   # Match generic_odds.py label (no colon)
+            else:                     # — fixes a dedup miss where the EV path
+                am = btts_no_am       #   emitted "BTTS: Yes" and the cross-book
+                prob = 1 - byes       #   path emitted "BTTS Yes", producing
+                label = "BTTS No"     #   two cards for the same market.
             dec = mlb_odds.american_to_decimal(am) if am is not None else None
             if (dec and dec > 1.0 and btts_yes_am is not None
                     and btts_no_am is not None):
                 p_y_raw = generic_odds.american_to_prob(btts_yes_am)
                 p_n_raw = generic_odds.american_to_prob(btts_no_am)
                 pin_fy, pin_fn = generic_odds.devig_two_sided(p_y_raw, p_n_raw)
-                pin_side_fair = pin_fy if label == "BTTS: Yes" else pin_fn
+                pin_side_fair = pin_fy if label == "BTTS Yes" else pin_fn
                 if (pin_side_fair is not None
                         and abs(prob - pin_side_fair) <= 0.12):
                     ev_raw = (prob * dec - 1.0) * 100.0
@@ -9558,8 +9558,13 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                 except (TypeError, ValueError):
                     ev = 0.0
                 return (sig * 100) + ev
+            def _norm_label(s):
+                # Normalize so "BTTS: Yes" and "BTTS Yes" collapse. Also
+                # catches "Over 2.5" vs "Over 2.5 goals" vs "O 2.5".
+                return (" ".join((s or "").lower().replace(":", " ").split()))
             for p in row["picks"]:
-                key = (p.get("market") or "", p.get("pick") or "")
+                key = (_norm_label(p.get("market")),
+                       _norm_label(p.get("pick")))
                 prev = seen.get(key)
                 if prev is None or _rank(p) > _rank(prev):
                     seen[key] = p
@@ -19690,6 +19695,63 @@ def cron_line_shop_scan():
                         mimetype="application/json")
     except Exception as e:
         return Response(_json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}),
+                        status=500, mimetype="application/json")
+
+
+@app.route("/pick/force-post")
+def pick_force_post():
+    """Manual trigger: post one specific pick to Discord right now,
+    bypassing the evidence-score bar and the pre-game window gate.
+    Still records the pick in the moderator's dedup log so it isn't
+    double-posted later on a normal tick.
+
+    Usage: /pick/force-post?id=<pick_id>  (gets the pick id from the
+    moderator-tick diagnostic or the dashboard)."""
+    import json as _json
+    pid = (request.args.get("id") or "").strip()
+    if not pid:
+        return Response(_json.dumps({"ok": False, "error": "?id= required"}),
+                        status=400, mimetype="application/json")
+    try:
+        today = datetime.now(CENTRAL).date()
+        board, _ = _build_board_rows(today.isoformat(), today, "all",
+                                      strong_only=False)
+        found = None
+        for row in board:
+            for p in (row.get("picks") or []):
+                if p.get("id") == pid:
+                    p["home_team"]   = p.get("home_team")   or row.get("home")
+                    p["away_team"]   = p.get("away_team")   or row.get("away")
+                    p["sport_slug"]  = p.get("sport_slug")  or row.get("sport_slug")
+                    p["sport_name"]  = p.get("sport_name")  or row.get("sport_name")
+                    p["start_time"]  = p.get("start_time")  or row.get("game_start_iso")
+                    found = p
+                    break
+            if found:
+                break
+        if not found:
+            return Response(_json.dumps({"ok": False,
+                                           "error": "pick not found on today's board"}),
+                            status=404, mimetype="application/json")
+        import agents
+        r = agents.post_individual_pick(found)
+        if r.get("ok"):
+            # Record so the next moderator tick doesn't repost
+            posted = agents._load_posted_state()
+            posted[pid] = {
+                "posted_at": datetime.utcnow().isoformat() + "Z",
+                "score":     r.get("score"),
+                "reasons":   r.get("reasons"),
+                "mins":      r.get("mins_to_tip"),
+                "day":       today.isoformat(),
+                "forced":    True,
+            }
+            agents._save_posted_state(posted)
+        return Response(_json.dumps(r, indent=2),
+                        mimetype="application/json")
+    except Exception as e:
+        return Response(_json.dumps({"ok": False,
+                                       "error": f"{type(e).__name__}: {e}"}),
                         status=500, mimetype="application/json")
 
 
