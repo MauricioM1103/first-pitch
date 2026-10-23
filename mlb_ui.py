@@ -10972,6 +10972,80 @@ def picks_landing():
     board_rows = [r for r in board_rows
                   if r.get("picks") or (r.get("status") or "") in ("live", "final")]
 
+    # Backfill from plays_log for live/final rows (shipped 2026-10-23).
+    # When a game kicks off, Pinnacle moves it off the pre-game market
+    # feed so parse_pinnacle_games() stops returning full price data.
+    # The current build then emits 0 picks for that game — but we DO
+    # have the picks on disk from when we snapshotted them pre-game.
+    # Pull them back from plays_log and attach them to the row with a
+    # `_row_status` set so the template renders the LIVE/FINAL/W/L/P
+    # badge. Only backfills live/final rows that are missing picks the
+    # log says existed.
+    try:
+        import plays_log as _pl_bk
+        _graded_today = (_pl_bk.grade_all(limit_dates=2) or {}).get(date_str, [])
+        if _graded_today:
+            # Index logged picks by (sport_slug, home_lower, away_lower)
+            _log_by_game = {}
+            for _lp in _graded_today:
+                _k = (
+                    (_lp.get("sport") or "").lower().strip(),
+                    (_lp.get("home_team") or "").lower().strip(),
+                    (_lp.get("away_team") or "").lower().strip(),
+                )
+                _log_by_game.setdefault(_k, []).append(_lp)
+            for _row in board_rows:
+                _rs = (_row.get("status") or "")
+                if _rs not in ("live", "final"):
+                    continue
+                _rk = (
+                    (_row.get("sport_slug") or "").lower().strip(),
+                    (_row.get("home") or "").lower().strip(),
+                    (_row.get("away") or "").lower().strip(),
+                )
+                _logged = _log_by_game.get(_rk) or []
+                if not _logged:
+                    continue
+                _existing_pids = {p.get("id") for p in (_row.get("picks") or []) if p.get("id")}
+                for _lp in _logged:
+                    _pid = _lp.get("id")
+                    if not _pid or _pid in _existing_pids:
+                        continue
+                    # Shape the logged pick to look like a board pick.
+                    # Fields the template needs: pick, market, decimal,
+                    # signal_score, ev_pct, result, profit_u, id,
+                    # home/away teams, _row_status for the badge.
+                    _row.setdefault("picks", []).append({
+                        "id":            _pid,
+                        "pick":          _lp.get("pick"),
+                        "market":        _lp.get("market"),
+                        "decimal":       _lp.get("decimal"),
+                        "american":      _lp.get("american"),
+                        "fair_prob":     _lp.get("fair_prob"),
+                        "ev_pct":        _lp.get("ev_pct"),
+                        "signal_score":  _lp.get("signal_score"),
+                        "result":        _lp.get("result"),       # W/L/P or None
+                        "profit_u":      _lp.get("profit_u"),
+                        "sport_slug":    _row.get("sport_slug"),
+                        "sport_name":    _row.get("sport_name"),
+                        "home_team":     _row.get("home"),
+                        "away_team":     _row.get("away"),
+                        "start_time":    _row.get("start_time"),
+                        "ai_verdict":    _lp.get("ai_verdict"),
+                        "ai_matchup":    _lp.get("ai_matchup") or [],
+                        "ai_factors":    _lp.get("ai_factors") or [],
+                        "ai_risks":      _lp.get("ai_risks") or [],
+                        "source":        _lp.get("source") or "logged",
+                        "model_only":    False,
+                        "do_not_bet":    False,
+                        "_row_status":   _rs,
+                        "_backfilled":   True,
+                        "row_score_home": _row.get("score_home"),
+                        "row_score_away": _row.get("score_away"),
+                    })
+    except Exception:
+        pass
+
     if strongest_only:
         def _strongest_pick(p):
             if p.get("do_not_bet"):
