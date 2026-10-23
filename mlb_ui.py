@@ -17516,6 +17516,73 @@ def debug_dispatch():
     return Response("\n".join(lines), mimetype="text/plain")
 
 
+@app.route("/debug/ai")
+def debug_ai():
+    """Probe Anthropic AI with the exact per-pick verdict pattern.
+    Returns env-key presence, SDK version, raw response blocks, and
+    the parsed verdict string. Use when the AI Picks section stays
+    empty to see what the model is actually returning."""
+    import json as _json
+    import os as _os
+    out = {
+        "anthropic_api_key_present": bool(_os.environ.get("ANTHROPIC_API_KEY")),
+        "settings_sync_key_present": bool(_os.environ.get("SETTINGS_SYNC_KEY")),
+    }
+    try:
+        import anthropic as _ant
+        out["sdk_version"] = getattr(_ant, "__version__", "?")
+    except Exception as e:
+        out["sdk_version_error"] = f"{type(e).__name__}: {e}"
+        return Response(_json.dumps(out, indent=2), mimetype="application/json")
+    if not out["anthropic_api_key_present"]:
+        return Response(_json.dumps(out, indent=2), mimetype="application/json")
+    try:
+        client = _ant.Anthropic(api_key=_os.environ["ANTHROPIC_API_KEY"])
+        prompt = (
+            "You are a sharp sports betting analyst. One pick to evaluate:\n"
+            "Sport: NHL\nGame: Dallas Stars at Winnipeg Jets\n"
+            "Market: Team Total\nPick: Over 2.5 @ 1.95 (Pinnacle)\n"
+            "Model prob: 55.3%  Pinnacle devig: 51.2%\n"
+            "EV: +8.2%  Signal composite: 3/5\n\n"
+            "Reply with ONE of these verdicts followed by one short reason "
+            "(<=15 words):\n"
+            "  STRONG TAKE  — exceptional edge, no concerns\n"
+            "  LEAN         — real edge, standard confidence\n"
+            "  PASS         — thin edge or specific red flag, skip\n"
+            "  AVOID        — clear reason this pick won't hit\n"
+            "\n"
+            "Format: VERDICT: <reason>"
+        )
+        resp = client.messages.create(
+            model="claude-sonnet-5-5",
+            max_tokens=160,
+            system=(
+                "You are a sharp sports betting analyst. Reply ONLY "
+                "with the verdict word followed by a short reason, in "
+                "the exact format the user requests. Do not add "
+                "preamble or caveats."
+            ),
+            messages=[{"role": "user", "content": prompt}],
+        )
+        blocks = []
+        for b in (resp.content or []):
+            blocks.append({
+                "type": getattr(b, "type", None),
+                "text": (getattr(b, "text", "") or "")[:300],
+                "has_text_attr": hasattr(b, "text"),
+            })
+        out["model"] = "claude-sonnet-5-5"
+        out["stop_reason"] = getattr(resp, "stop_reason", None)
+        out["blocks"] = blocks
+        out["usage"] = {
+            "input": getattr(getattr(resp, "usage", None), "input_tokens", None),
+            "output": getattr(getattr(resp, "usage", None), "output_tokens", None),
+        }
+    except Exception as e:
+        out["api_error"] = f"{type(e).__name__}: {e}"
+    return Response(_json.dumps(out, indent=2), mimetype="application/json")
+
+
 @app.route("/debug/discord")
 def debug_discord():
     """Probe the configured Discord webhook with a tiny test post.
