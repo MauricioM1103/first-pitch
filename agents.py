@@ -757,3 +757,433 @@ def find_pick_analogs(pick_id, n=3):
         "analogs":      analogs,
         "pattern_read": reply or "",
     }
+
+
+# ============================================================
+# Agent #8 — Smart Discord moderator (per-pick individual posts)
+# ============================================================
+# Shift from slate-based blast (top 5 per day) to individual-pick
+# posts timed for maximum evidence. A pick qualifies for posting
+# only when its evidence score crosses a threshold AND the game is
+# inside the sport-specific pre-game window where news/lineups
+# have surfaced. Expected volume: 1-6 posts/day instead of 15/day.
+
+# Per-sport pre-game window where posting makes sense. Chosen based
+# on when lineups + inactives + weather clear enough that evidence
+# is stable. Earlier = picks still subject to lineup risk; later =
+# too close to tip for subscribers to place the bet.
+_SPORT_PREGAME_WINDOW_MIN = {
+    "nba":    (30, 90),     # 30-90 min pre-tip (post inactives list)
+    "nfl":    (60, 120),    # 1-2 hr pre-kick (inactives report)
+    "nhl":    (90, 180),    # 1.5-3 hr pre (post morning skate)
+    "mlb":    (90, 180),    # 1.5-3 hr pre (confirmed starter)
+    "ncaaf":  (90, 180),
+    "epl":    (30, 90),     # 30-90 min pre (confirmed XI)
+    "laliga": (30, 90),
+    "ligamx": (30, 90),
+    "ucl":    (30, 90),
+    "europa": (30, 90),
+    "international": (30, 90),
+    "ufc":   (240, 1440),   # 4-24 hr pre-fight (post weigh-in)
+}
+_DEFAULT_PREGAME_WINDOW = (45, 150)
+
+# Evidence threshold — picks score 0-10. Only picks at or above
+# this bar get posted. User can adjust via env var.
+_EVIDENCE_POST_THRESHOLD = 5
+
+# Where we track which pick IDs have already been posted to Discord
+# so we don't double-post. Keyed by pick id → {posted_at, score}.
+_POSTED_STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "logs", "discord_posted_individual.json")
+
+
+def _load_posted_state():
+    try:
+        with open(_POSTED_STATE_PATH) as f:
+            return json.load(f) or {}
+    except Exception:
+        try:
+            import log_persist
+            text, _sha = log_persist.read_file("logs/discord_posted_individual.json")
+            if text:
+                return json.loads(text) or {}
+        except Exception:
+            pass
+        return {}
+
+
+def _save_posted_state(state):
+    try:
+        os.makedirs(os.path.dirname(_POSTED_STATE_PATH), exist_ok=True)
+        with open(_POSTED_STATE_PATH, "w") as f:
+            json.dump(state, f)
+    except Exception:
+        pass
+    try:
+        import log_persist
+        log_persist.write_file("logs/discord_posted_individual.json",
+                                 json.dumps(state))
+    except Exception:
+        pass
+
+
+def compute_evidence_score(pick, news_state=None):
+    """Return (score, reasons_list) for a pick. Score is 0-10.
+    reasons_list is the compact labels used in the Discord post
+    (e.g. ['AI+', 'Line+', 'Kalshi+', 'Whale']).
+
+    All signals come from fields the UI already computes — this
+    is a pure data aggregator, no LLM involved."""
+    score = 0
+    reasons = []
+    # AI endorsement with full bullets (vs legacy one-liner)
+    if (pick.get("ai_verdict") in ("Strong Take", "Lean")
+            and not pick.get("do_not_bet")
+            and (pick.get("ai_matchup") or pick.get("ai_factors"))):
+        score += 2
+        reasons.append("AI+")
+    # Favorable line movement toward us
+    try:
+        lm = float(pick.get("line_move_pp") or 0.0)
+        if lm >= 0.005:
+            score += 2
+            reasons.append("Line+")
+    except (TypeError, ValueError):
+        pass
+    # Kalshi cross-check: our side agrees with Kalshi (NOT contra)
+    if pick.get("kalshi_live_prob") is not None and not pick.get("kalshi_contra"):
+        try:
+            fp = float(pick.get("fair_prob") or 0.0)
+            kp = float(pick.get("kalshi_live_prob") or 0.0)
+            if fp > 0 and kp > 0 and abs(fp - kp) * 100 < 5:
+                score += 2
+                reasons.append("Kalshi+")
+        except Exception:
+            pass
+    # Whale tier
+    if pick.get("whale"):
+        score += 1
+        reasons.append("Whale")
+    # Signal >= 4 (upgrades beyond baseline)
+    try:
+        if int(pick.get("signal_score") or 0) >= 4:
+            score += 1
+            reasons.append("Sig4+")
+    except Exception:
+        pass
+    # News-watcher: no negative items for either team in pre-game window
+    if news_state is None:
+        news_state = _load_news_state()
+    try:
+        recent_changes = news_state.get("last_changes") or []
+        teams = {
+            (pick.get("home_team") or "").lower(),
+            (pick.get("away_team") or "").lower(),
+        }
+        blocking = any(
+            c for c in recent_changes
+            if (c.get("team") or "").lower() in teams
+            and c.get("change") == "worsened"
+        )
+        if not blocking:
+            score += 1
+            reasons.append("News-clean")
+    except Exception:
+        pass
+    return (min(10, score), reasons)
+
+
+def _pick_sport_pregame_window(sport_slug):
+    return _SPORT_PREGAME_WINDOW_MIN.get(sport_slug, _DEFAULT_PREGAME_WINDOW)
+
+
+def _minutes_to_game_start(start_time_iso):
+    try:
+        import mlb_ui
+        from datetime import datetime as _dt
+        start = _dt.fromisoformat(start_time_iso.replace("Z", "+00:00")).astimezone(mlb_ui.CENTRAL)
+        now = _dt.now(mlb_ui.CENTRAL)
+        return int((start - now).total_seconds() / 60)
+    except Exception:
+        return None
+
+
+MODERATOR_POST_PROMPT = """You are writing a SHORT Discord post for one betting pick that
+cleared our highest-evidence filter. Lead with the pick + price. Then
+3 concrete bullets:
+
+  🏉 Matchup
+  📋 Key factor
+  ⚠ Risk
+
+Each bullet one sentence, <=18 words, naming a specific player/stat/trend.
+No preamble, no sign-off, no emoji in the body text beyond the three
+leading icons. Match this exact format:
+
+**{sport} · {pick}** @ {decimal}
+Evidence {score}/10 — {reason_tags}  |  Tipoff in {mins_to_tip} min
+
+🏉 {matchup_bullet}
+📋 {factor_bullet}
+⚠ {risk_bullet}
+"""
+
+
+def post_individual_pick(pick, webhook_url=None):
+    """Compose + send one pick to Discord. Returns {ok, posted_text}.
+    Only called when the pick clears evidence >= _EVIDENCE_POST_THRESHOLD."""
+    try:
+        import mlb_ui
+        import discord_bot
+    except Exception:
+        return {"ok": False, "error": "mlb_ui / discord_bot import failed"}
+
+    if not webhook_url:
+        try:
+            settings = mlb_ui._load_settings()
+            webhook_url = (settings.get("daily_picks_webhook_url") or "").strip()
+        except Exception:
+            webhook_url = None
+    if not webhook_url:
+        return {"ok": False, "error": "no webhook configured"}
+
+    score, reasons = compute_evidence_score(pick)
+    mins = _minutes_to_game_start(pick.get("start_time") or "")
+
+    # Compose body from existing AI fields; call Haiku only if any
+    # section is missing (keeps cost down since most A-tier picks
+    # already have their AI bullets cached).
+    matchup = (pick.get("ai_matchup") or [None])[0] or "No prior read on this matchup."
+    factor  = (pick.get("ai_factors") or [None])[0] or "No standout factor flagged."
+    risk    = (pick.get("ai_risks")   or [None])[0] or "No specific risk identified."
+
+    sport  = (pick.get("sport_name") or pick.get("sport_slug") or "?").upper()
+    pick_t = pick.get("pick") or "?"
+    dec    = pick.get("decimal")
+    dec_s  = f"{dec:.2f}" if dec else "?"
+    body = (
+        f"**{sport} · {pick_t}** @ {dec_s}\n"
+        f"Evidence **{score}/10** — {', '.join(reasons)}"
+        f"  |  Tipoff in **{mins} min**\n\n"
+        f"🏉 {matchup}\n"
+        f"📋 {factor}\n"
+        f"⚠ {risk}"
+    )
+    ok = discord_bot.post_text(webhook_url, body)
+    return {"ok": bool(ok), "posted_text": body, "score": score,
+            "reasons": reasons, "mins_to_tip": mins}
+
+
+def run_moderator_tick():
+    """Called every ~10 min. Scans the current board, computes
+    evidence per pick, posts picks that:
+      - clear evidence threshold (>= 5)
+      - are inside their sport-specific pre-game window
+      - haven't already been posted today
+    Returns summary of what was posted + what was eligible."""
+    try:
+        import mlb_ui
+        today = datetime.now(mlb_ui.CENTRAL).date()
+        board, _ = mlb_ui._build_board_rows(today.isoformat(), today, "all",
+                                              strong_only=False)
+    except Exception as e:
+        return {"ok": False, "error": f"board build failed: {e}"}
+
+    posted_state = _load_posted_state()
+    news_state   = _load_news_state()
+    today_str    = today.isoformat()
+    posted_today = []
+    eligible     = []
+
+    for row in board:
+        for p in row.get("picks") or []:
+            if p.get("do_not_bet") or p.get("model_only"):
+                continue
+            pid = p.get("id")
+            if not pid or pid in posted_state:
+                continue
+            score, reasons = compute_evidence_score(p, news_state=news_state)
+            if score < _EVIDENCE_POST_THRESHOLD:
+                continue
+            mins = _minutes_to_game_start(p.get("start_time") or "")
+            if mins is None or mins < 0:
+                continue  # game live or finished
+            lo, hi = _pick_sport_pregame_window(p.get("sport_slug") or "")
+            eligible.append({"pid": pid, "score": score, "mins": mins,
+                              "window": [lo, hi], "pick": p.get("pick")})
+            if not (lo <= mins <= hi):
+                continue  # not in pre-game window yet
+            # Post + record
+            r = post_individual_pick(p)
+            if r.get("ok"):
+                posted_state[pid] = {
+                    "posted_at": datetime.utcnow().isoformat() + "Z",
+                    "score":     score,
+                    "reasons":   reasons,
+                    "mins":      mins,
+                    "day":       today_str,
+                }
+                posted_today.append({**r, "pid": pid, "pick": p.get("pick")})
+
+    # Prune old entries so the state file stays small (keep last 14 days)
+    try:
+        cutoff = (today - timedelta(days=14)).isoformat()
+        posted_state = {k: v for k, v in posted_state.items()
+                         if (v.get("day") or "") >= cutoff}
+    except Exception:
+        pass
+    _save_posted_state(posted_state)
+
+    return {
+        "ok":              True,
+        "ran_at":          datetime.utcnow().isoformat() + "Z",
+        "threshold":       _EVIDENCE_POST_THRESHOLD,
+        "eligible_count":  len(eligible),
+        "posted_count":    len(posted_today),
+        "eligible":        eligible[:20],
+        "posted":          posted_today,
+    }
+
+
+def run_line_move_followup():
+    """Agent #8 follow-up: for picks posted 90-180 min ago, check if
+    DK caught up to our price (= we were ahead of the market). Posts
+    a one-line update per pick that moved toward us. Free — no LLM
+    needed, pure math on existing line_move_pp field (now that
+    enough time has passed to see post-posting movement)."""
+    try:
+        import mlb_ui
+        import discord_bot
+        settings = mlb_ui._load_settings()
+        webhook  = (settings.get("daily_picks_webhook_url") or "").strip()
+        if not webhook:
+            return {"ok": False, "error": "no webhook"}
+        today = datetime.now(mlb_ui.CENTRAL).date()
+        board, _ = mlb_ui._build_board_rows(today.isoformat(), today, "all",
+                                              strong_only=False)
+    except Exception as e:
+        return {"ok": False, "error": f"board/webhook failed: {e}"}
+
+    posted_state = _load_posted_state()
+    now = datetime.utcnow()
+    confirmed = []
+    for row in board:
+        for p in row.get("picks") or []:
+            pid = p.get("id")
+            entry = posted_state.get(pid)
+            if not entry:
+                continue
+            # Check posted-at age
+            try:
+                posted_at = datetime.fromisoformat(entry["posted_at"].replace("Z", ""))
+                age_min = (now - posted_at).total_seconds() / 60
+            except Exception:
+                continue
+            if age_min < 90 or age_min > 240:
+                continue  # only follow up on 1.5-4 hr old posts
+            if entry.get("followup_sent"):
+                continue
+            # Did the line move further toward us since posting?
+            try:
+                lm_now = float(p.get("line_move_pp") or 0.0)
+                if lm_now >= 0.01:
+                    confirmed.append({"pid": pid, "pick": p.get("pick"),
+                                       "sport": p.get("sport_name"),
+                                       "move_pp": lm_now * 100})
+                    entry["followup_sent"] = True
+            except Exception:
+                continue
+
+    if confirmed:
+        lines = ["📈 **Line check — picks the market caught up to:**"]
+        for c in confirmed:
+            lines.append(f"• {c['sport']} · {c['pick']} — "
+                         f"moved +{c['move_pp']:.1f}pp toward our side")
+        discord_bot.post_text(webhook, "\n".join(lines))
+        _save_posted_state(posted_state)
+
+    return {"ok": True, "confirmed_count": len(confirmed),
+            "confirmed": confirmed}
+
+
+WEEKLY_AUDIT_PROMPT = """You are auditing our Discord moderator's picks over the last 7
+days. Evidence filter posts only picks with score >= 5 (out of 10),
+timed to each sport's pre-game window.
+
+RESULT DATA:
+{result_table}
+
+Reply in <=5 sentences:
+1. Did the evidence filter pay off? (compare A-tier posted record vs
+   the broader board record)
+2. Which evidence component correlated most with wins? (Line, AI,
+   Kalshi, Whale, News-clean, Sig4+)
+3. Any adjustments to the threshold (currently 5) you'd suggest?
+4. One honest sentence on sample size / confidence.
+"""
+
+
+def run_weekly_moderator_audit():
+    """Sunday-ish agent: audits last 7 days of individually-posted
+    picks. Haiku composes a short report. Posts to Discord as a
+    footnote-style message."""
+    try:
+        import mlb_ui
+        import plays_log
+        import discord_bot
+        settings = mlb_ui._load_settings()
+        webhook  = (settings.get("daily_picks_webhook_url") or "").strip()
+    except Exception as e:
+        return {"ok": False, "error": f"import failed: {e}"}
+
+    posted_state = _load_posted_state()
+    cutoff = (datetime.utcnow().date() - timedelta(days=7)).isoformat()
+    posted_ids = [pid for pid, v in posted_state.items()
+                  if (v.get("day") or "") >= cutoff]
+    if not posted_ids:
+        return {"ok": True, "audit": "no posts in the last 7 days"}
+
+    try:
+        graded_by_date = plays_log.grade_all(limit_dates=14) or {}
+    except Exception:
+        graded_by_date = {}
+    all_picks = []
+    for day_picks in graded_by_date.values():
+        all_picks.extend(day_picks or [])
+    by_id = {p.get("id"): p for p in all_picks if p.get("id")}
+
+    # Build a compact table of posted + graded picks per component
+    rows = []
+    totals = {"w": 0, "l": 0, "u": 0.0}
+    comp_hits = {}
+    for pid in posted_ids:
+        p = by_id.get(pid)
+        if not p or p.get("result") not in ("W", "L", "P"):
+            continue
+        rows.append(p)
+        if p["result"] == "W": totals["w"] += 1
+        elif p["result"] == "L": totals["l"] += 1
+        try: totals["u"] += float(p.get("profit_u") or 0.0)
+        except Exception: pass
+        for comp in (posted_state.get(pid, {}).get("reasons") or []):
+            c = comp_hits.setdefault(comp, {"n": 0, "w": 0})
+            c["n"] += 1
+            if p["result"] == "W":
+                c["w"] += 1
+
+    table = (f"Overall posted: {totals['w']}-{totals['l']}  "
+             f"{totals['u']:+.2f}u  ({len(rows)} graded)\n"
+             f"\nBy component (hits / sample):\n")
+    for comp, c in sorted(comp_hits.items(), key=lambda kv: -kv[1]["n"]):
+        rate = (c["w"] / c["n"] * 100) if c["n"] else 0
+        table += f"  {comp:12s} {c['w']}/{c['n']}  {rate:.0f}%\n"
+
+    prompt = WEEKLY_AUDIT_PROMPT.format(result_table=table)
+    reply = _call_claude(prompt, model="claude-haiku-5-5",
+                           max_tokens=400,
+                           system="You audit sports-betting models honestly. Dry tone.")
+    if webhook and reply:
+        discord_bot.post_text(webhook,
+            f":bar_chart: **Weekly moderator audit**\n\n```\n{table}```\n\n{reply}")
+    return {"ok": True, "data": table, "analysis": reply or "(no reply)"}

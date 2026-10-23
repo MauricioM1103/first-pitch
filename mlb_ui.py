@@ -19583,6 +19583,67 @@ def cron_model_tune():
                         status=500, mimetype="application/json")
 
 
+@app.route("/cron/moderator-tick")
+def cron_moderator_tick():
+    """Agent #8 — smart Discord moderator. Scans the current board,
+    computes evidence score per pick, posts those that clear the
+    threshold AND are inside their sport-specific pre-game window.
+
+    Set up as a 10-min UptimeRobot cron. Each pick is posted at
+    most once per day (dedup via logs/discord_posted_individual.json).
+    Expected volume: 1-6 posts/day, each with full AI matchup +
+    factor + risk bullets + evidence breakdown.
+
+    Returns per-pick summary (eligible + posted). Keyword
+    monitor: `"ok": true`."""
+    import json as _json
+    try:
+        import agents
+        out = agents.run_moderator_tick()
+        return Response(_json.dumps(out, indent=2),
+                        mimetype="application/json")
+    except Exception as e:
+        return Response(_json.dumps({"ok": False,
+                                       "error": f"{type(e).__name__}: {e}"}),
+                        status=500, mimetype="application/json")
+
+
+@app.route("/cron/moderator-followup")
+def cron_moderator_followup():
+    """Agent #8 follow-up: for picks posted 1.5-4 hr ago, check if
+    the market moved further toward our side (DK caught up to our
+    price). Posts a one-line update per confirmed pick. Free — no
+    LLM. Set up as a 15-min cron."""
+    import json as _json
+    try:
+        import agents
+        out = agents.run_line_move_followup()
+        return Response(_json.dumps(out, indent=2),
+                        mimetype="application/json")
+    except Exception as e:
+        return Response(_json.dumps({"ok": False,
+                                       "error": f"{type(e).__name__}: {e}"}),
+                        status=500, mimetype="application/json")
+
+
+@app.route("/cron/moderator-weekly")
+def cron_moderator_weekly():
+    """Agent #8 weekly audit: last 7 days of individually-posted
+    picks, per-component correlation with wins, suggested threshold
+    nudge. Haiku composes + posts to Discord. Run weekly (e.g.
+    Sunday 23:00 CT). ~$0.03/call."""
+    import json as _json
+    try:
+        import agents
+        out = agents.run_weekly_moderator_audit()
+        return Response(_json.dumps(out, indent=2),
+                        mimetype="application/json")
+    except Exception as e:
+        return Response(_json.dumps({"ok": False,
+                                       "error": f"{type(e).__name__}: {e}"}),
+                        status=500, mimetype="application/json")
+
+
 @app.route("/cron/news-watcher")
 def cron_news_watcher():
     """Agent #1 — news/injury watcher with cost-optimized cadence.
