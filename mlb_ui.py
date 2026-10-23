@@ -4846,6 +4846,20 @@ PICKS_TEMPLATE = r"""<!doctype html>
   background: #ef4444;
   border-color: #ef4444;
 }
+/* AI only chip (shipped 2026-10-23) — matches the AI accent color. */
+.filter-chips .chip.ai-chip {
+  color: #38bdf8;
+  border-color: color-mix(in oklab, #38bdf8 50%, var(--rule));
+  font-weight: 600;
+}
+.filter-chips .chip.ai-chip:hover {
+  background: color-mix(in oklab, #38bdf8 12%, transparent);
+}
+.filter-chips .chip.ai-chip.active {
+  color: #fff;
+  background: #0ea5e9;
+  border-color: #0ea5e9;
+}
 
 /* Board stats line (shipped 2026-10-22): small game-count summary
    above the main board table — "14 games · 0 upcoming · 14 final ·
@@ -5554,8 +5568,9 @@ PICKS_TEMPLATE = r"""<!doctype html>
   {% set whale_suffix = '&whale=1' if whale_only else '' %}
   {% set linemove_suffix = '&linemove=1' if favorable_move_only else '' %}
   {% set strongest_suffix = '&strongest=1' if strongest_only else '' %}
+  {% set ai_suffix = '&ai=1' if ai_only else '' %}
   {% set sport_suffix  = ('&sport=' ~ sport_filter) if sport_filter != 'all' else '' %}
-  {% set extra_filters = strong_suffix ~ whale_suffix ~ linemove_suffix ~ strongest_suffix %}
+  {% set extra_filters = strong_suffix ~ whale_suffix ~ linemove_suffix ~ strongest_suffix ~ ai_suffix %}
   <div class="filter-chips">
     <a class="chip {% if sport_filter == 'all' %}active{% endif %}" href="/?date={{ date_str }}{{ extra_filters }}">All ({{ total_games }})</a>
     {% for s in sport_counts %}
@@ -5604,6 +5619,17 @@ PICKS_TEMPLATE = r"""<!doctype html>
       <a class="chip linemove-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}&linemove=1"
          title="Show only picks where Pinnacle's devigged prob moved toward our side by ≥ +1pp over the past 3 days (sharp agreement signal)">&uarr; Line toward me</a>
     {% endif %}
+    {# 🤖 AI only (shipped 2026-10-23). Shows only picks AI
+       verdicted Strong Take or Lean, ranked by (verdict > Signal >
+       EV), top half kept. The AI acts as a cross-sport filter in
+       its own right rather than a per-pick expansion. #}
+    {% if ai_only %}
+      <a class="chip ai-chip active" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ whale_suffix }}{{ linemove_suffix }}"
+         title="Showing only AI-endorsed picks (Strong Take + top-half of Lean picks by Signal + EV). Click to clear.">&#x1F916; AI only ({{ tier_tally.ai.picks if tier_tally else 0 }})</a>
+    {% else %}
+      <a class="chip ai-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ whale_suffix }}{{ linemove_suffix }}&ai=1"
+         title="Show only AI-endorsed picks — Claude Sonnet verdicted Strong Take or Lean, ranked by verdict + Signal + EV, top half kept. The AI acts as a cross-sport filter instead of an inline tiebreaker.">&#x1F916; AI only</a>
+    {% endif %}
   </div>
 
   {# Filter guide (shipped 2026-10-23). Collapsible explainer that
@@ -5624,7 +5650,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
           <b style="color:#f59e0b">&#9733; Filter 2.0</b> &mdash; <b>the current primary betting filter.</b> Signal composite &ge; 3/5 AND decimal &ge; 1.50 AND not DNB AND not model-only. This is what the TODAY board recommends and what the <a href="/logged" style="color:var(--good)">Current Filter 2.0</a> record on /logged tracks.
         </li>
         <li>
-          <b style="color:#38bdf8">&#x1F916; AI Picks</b> &mdash; picks where Claude Sonnet verdicted <i>Strong Take</i> or <i>Lean</i> after reviewing the matchup + model prob + Pinnacle devig + EV + Signal. Shown in the right-hand AI Picks column; tracked as its own record so AI's own hit rate is visible.
+          <b style="color:#38bdf8">&#x1F916; AI only</b> &mdash; the chip version of the AI filter. Shows ONLY picks where Claude Sonnet verdicted <i>Strong Take</i> or <i>Lean</i>, ranked by (verdict &gt; Signal &gt; EV), <b>top half kept</b>. The AI acts as a cross-sport filter instead of an inline tiebreaker: when the chip is active the board shrinks to the highest-conviction AI endorsements across all sports. Also shown in the right-hand AI Picks column on every page and tracked as its own record so AI's own hit rate is visible.
         </li>
         <li>
           <b style="color:#38bdf8">&#x1F40B; Whale picks</b> &mdash; bankroll-max tier. Rules: model prob &ge; 68%, decimal 1.50&ndash;1.90, EV &ge; +1.5%, not DNB, no weather/injury risk flags. Rare but high-conviction &mdash; size at quarter-to-half Kelly (5&ndash;10% of bankroll).
@@ -8944,22 +8970,18 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                     p["signal_score"] = max(0, _curr - 1)
                 except Exception:
                     pass
-            # AI verdict gate (shipped 2026-10-21, re-tuned 2026-10-22):
-            #   - Called on ANY Signal 3+ pick with a book price. The
-            #     earlier "not alt_line_flag / not model_only / not
-            #     do_not_bet" filter was dropping every Signal 3+ pick
-            #     on today's board (counters confirmed queue_called=0
-            #     for 11 Signal 3+ picks), because most of them were
-            #     dec<1.50 DNBs or soccer alt-line emissions. Running
-            #     AI on more picks is cheap: 24h cache + background
-            #     threads means 15-20 Sonnet calls per day ≈ $0.60.
+            # AI verdict gate (shipped 2026-10-21, re-tuned 2026-10-23):
+            #   - Called on ANY Signal 2+ pick with a book price so AI
+            #     acts as a proper CROSS-SPORT FILTER, not just a
+            #     tiebreaker on top-tier picks. The ?ai=1 chip then
+            #     ranks all endorsed picks and keeps the top half, so
+            #     widening the gate here does NOT bloat the main board.
+            #   - 24h per-pick cache keeps the Sonnet bill flat:
+            #     ~25-40 calls per day with Signal 2+ ≈ $1-1.50/day.
             #   - Only "Avoid" forces do_not_bet.
             #   - "Pass" / "Lean" are informational on the card.
             #   - "Strong Take" still +1 Signal point.
-            # The AI Picks section only shows picks AI actually
-            # endorsed (Strong Take / Lean), so widening the gate
-            # here doesn't noise up the section.
-            if ((p.get("signal_score") or 0) >= 3
+            if ((p.get("signal_score") or 0) >= 2
                     and (p.get("decimal") or 0)
                     and not p.get("model_only")):
                 try:
@@ -9201,7 +9223,15 @@ def today_landing():
                     _pid = _p.get("id")
                     if not _pid or _pid in seen_pids:
                         continue
-                    if (_p.get("signal_score") or 0) >= 3 and not _p.get("do_not_bet"):
+                    # Save criteria: Signal 3+ (standard filter)
+                    # OR AI-endorsed (Strong Take / Lean). The AI
+                    # branch persists AI picks even when their Signal
+                    # score is only 2 so /logged can track AI's own
+                    # historical record over time, not just today's
+                    # tier_tally.
+                    sig_ok = (_p.get("signal_score") or 0) >= 3
+                    ai_ok  = _p.get("ai_verdict") in ("Strong Take", "Lean")
+                    if (sig_ok or ai_ok) and not _p.get("do_not_bet"):
                         to_save.append({**_p, "model_only": False})
                         seen_pids.add(_pid)
             if to_save:
@@ -10210,6 +10240,11 @@ def picks_landing():
     whale_only = request.args.get("whale") in ("1", "true", "on", "yes")
     favorable_move_only = request.args.get("linemove") in ("1", "true", "on", "yes")
     strongest_only = request.args.get("strongest") in ("1", "true", "on", "yes")
+    # ?ai=1 — show only picks where Claude Sonnet verdicted Strong Take
+    # or Lean, DNB excluded. When active we also rank by (Strong Take >
+    # Lean) + signal_score + EV and keep only the top half so the board
+    # stays focused on AI's highest-conviction endorsements.
+    ai_only = request.args.get("ai") in ("1", "true", "on", "yes")
     try:
         d = datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
@@ -10249,6 +10284,48 @@ def picks_landing():
             return False
         for row in board_rows:
             row["picks"] = [p for p in row.get("picks") or [] if _strongest_pick(p)]
+        board_rows = [r for r in board_rows if r.get("picks")]
+
+    # AI-only filter (shipped 2026-10-23). When ?ai=1 is active:
+    #   1. Keep only picks AI verdicted Strong Take or Lean (DNB
+    #      excluded).
+    #   2. Rank all qualifying picks across every game by composite
+    #      score: Strong Take > Lean, then signal_score desc, then
+    #      EV desc. Keep the TOP HALF of the ranked list — this is
+    #      the user's "top half makes it to today" rule.
+    #   3. Prune games left with zero picks.
+    #
+    # Rationale: AI tends to Lean on many picks and only Strong-Take
+    # on a few. A top-half cut keeps the board focused without
+    # dropping endorsed picks completely, and the Strong-Takes
+    # always survive the cut since they rank first.
+    if ai_only:
+        all_ai = []
+        for row in board_rows:
+            for p in row.get("picks") or []:
+                if p.get("do_not_bet"):
+                    continue
+                if p.get("ai_verdict") in ("Strong Take", "Lean"):
+                    all_ai.append(p)
+        # Composite rank score — higher = better; survives the top-half cut.
+        def _ai_rank(p):
+            verdict_pts = 100 if p.get("ai_verdict") == "Strong Take" else 50
+            try:
+                sig_pts = int(p.get("signal_score") or 0) * 10
+            except Exception:
+                sig_pts = 0
+            try:
+                ev_pts = float(p.get("ev_pct") or 0.0)
+            except (TypeError, ValueError):
+                ev_pts = 0.0
+            return verdict_pts + sig_pts + ev_pts
+        all_ai.sort(key=_ai_rank, reverse=True)
+        # Top half, minimum 1 pick kept so the board never empties
+        # out when there's a single Lean endorsement.
+        keep_n = max(1, (len(all_ai) + 1) // 2) if all_ai else 0
+        keep_ids = set(id(p) for p in all_ai[:keep_n])
+        for row in board_rows:
+            row["picks"] = [p for p in row.get("picks") or [] if id(p) in keep_ids]
         board_rows = [r for r in board_rows if r.get("picks")]
 
     # Snapshot picks for /logged (+ GitHub mirror). Persist EVERY pick that
@@ -10456,6 +10533,7 @@ def picks_landing():
         whale_only=whale_only,
         favorable_move_only=favorable_move_only,
         strongest_only=strongest_only,
+        ai_only=ai_only,
         picks_count=picks_count,
         ev_count=ev_count,
         strong_count=strong_count,
