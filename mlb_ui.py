@@ -4995,6 +4995,19 @@ PICKS_TEMPLATE = r"""<!doctype html>
   vertical-align: top;
 }
 .board-table tr.row-main:first-child td { border-top: none; }
+/* Row hover + LIVE pulse (shipped 2026-10-23). Subtle hover
+   highlight so the user can track their cursor's row across the
+   wide table, plus a pulsing left-border on LIVE games to draw
+   the eye to active contests. */
+.board-table tr.row-main:hover td { background: color-mix(in oklab, var(--accent, #8b5cf6) 6%, transparent); }
+.board-table tr.row-main td { transition: background 120ms ease; }
+.board-table tr.row-main .status-chip.st-live {
+  animation: statusLivePulse 1.8s ease-in-out infinite;
+}
+@keyframes statusLivePulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, #ef4444 70%, transparent); }
+  50%      { box-shadow: 0 0 0 6px color-mix(in oklab, #ef4444 0%, transparent); }
+}
 .board-table .col-status  { width: 90px; }
 .board-table .col-time    { width: 110px; }
 .board-table .col-match   { min-width: 180px; }
@@ -5593,10 +5606,10 @@ PICKS_TEMPLATE = r"""<!doctype html>
        The headline filter the user wanted to combine all premium signals. #}
     {% if strongest_only %}
       <a class="chip strongest-chip active" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ whale_suffix }}{{ linemove_suffix }}"
-         title="Showing only Strongest picks (Signal 3+ OR Whale OR +0.5pp line move toward us, DNB excluded). Click to clear.">&#x1F525; Strongest ({{ tier_tally.strongest.picks if tier_tally else 0 }})</a>
+         title="Showing only Strongest picks (Signal 3+ OR Whale OR +0.5pp line move toward us, DNB excluded). Click to clear.">&#x1F525; Strongest ({{ strongest_count }})</a>
     {% else %}
       <a class="chip strongest-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ whale_suffix }}{{ linemove_suffix }}&strongest=1"
-         title="Show only Strongest picks — the union of Signal 3+ AND Whale AND favorable line-movement picks, DNB excluded. One click to see every premium signal on the board.">&#x1F525; Strongest</a>
+         title="Show only Strongest picks — the union of Signal 3+ OR Whale OR favorable line-movement picks, DNB excluded. One click to see every premium signal on the board.">&#x1F525; Strongest{% if strongest_count %} ({{ strongest_count }}){% endif %}</a>
     {% endif %}
     {# ★ Filter 2.0 (Signal ≥ 3) toggle. This is the live default —
        picks worth placing — and corresponds to the "Current Filter
@@ -5608,7 +5621,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
          title="Filter 2.0 — Signal >= 3 AND decimal >= 1.50 AND not DNB AND not model-only. The current primary betting filter. Click to clear.">&#9733; Filter 2.0 ({{ strong_count }})</a>
     {% else %}
       <a class="chip strong-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ whale_suffix }}{{ linemove_suffix }}&strong=1"
-         title="Filter 2.0 — Signal composite >= 3/5 (EV cushion + line move + prob floor + book agreement + persistence + Kalshi depth) AND decimal >= 1.50 AND not DNB AND not model-only. The current primary betting filter.">&#9733; Filter 2.0</a>
+         title="Filter 2.0 — Signal composite >= 3/5 (EV cushion + line move + prob floor + book agreement + persistence + Kalshi depth) AND decimal >= 1.50 AND not DNB AND not model-only. The current primary betting filter.">&#9733; Filter 2.0{% if strong_count %} ({{ strong_count }}){% endif %}</a>
     {% endif %}
     {# 🐋 WHALE picks — bankroll-maximum tier. Fresh criteria
        (2026-10-18): fp ≥ 0.72, dec 1.30–1.65, Signal ≥ 4, EV ≥ 1.5%,
@@ -5626,10 +5639,10 @@ PICKS_TEMPLATE = r"""<!doctype html>
        agreeing with us is one of the strongest independent EV signals. #}
     {% if favorable_move_only %}
       <a class="chip linemove-chip active" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}"
-         title="Showing only picks where the market moved toward our side ≥ +1pp. Click to clear.">&uarr; Line toward me</a>
+         title="Showing only picks where the market moved toward our side ≥ +1pp. Click to clear.">&uarr; Line toward me ({{ linemove_count }})</a>
     {% else %}
       <a class="chip linemove-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}&linemove=1"
-         title="Show only picks where Pinnacle's devigged prob moved toward our side by ≥ +1pp over the past 3 days (sharp agreement signal)">&uarr; Line toward me</a>
+         title="Show only picks where Pinnacle's devigged prob moved toward our side by ≥ +1pp over the past 3 days (sharp agreement signal)">&uarr; Line toward me{% if linemove_count %} ({{ linemove_count }}){% endif %}</a>
     {% endif %}
     {# 🤖 AI only (shipped 2026-10-23). Shows only picks AI
        verdicted Strong Take or Lean, ranked by (verdict > Signal >
@@ -5637,10 +5650,10 @@ PICKS_TEMPLATE = r"""<!doctype html>
        its own right rather than a per-pick expansion. #}
     {% if ai_only %}
       <a class="chip ai-chip active" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ whale_suffix }}{{ linemove_suffix }}"
-         title="Showing only AI-endorsed picks (Strong Take + top-half of Lean picks by Signal + EV). Click to clear.">&#x1F916; AI only ({{ tier_tally.ai.picks if tier_tally else 0 }})</a>
+         title="Showing only AI-endorsed picks (Strong Take + top-half of Lean picks by Signal + EV). Click to clear.">&#x1F916; AI only ({{ ai_count }})</a>
     {% else %}
       <a class="chip ai-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ whale_suffix }}{{ linemove_suffix }}&ai=1"
-         title="Show only AI-endorsed picks — Claude Sonnet verdicted Strong Take or Lean, ranked by verdict + Signal + EV, top half kept. The AI acts as a cross-sport filter instead of an inline tiebreaker.">&#x1F916; AI only</a>
+         title="Show only AI-endorsed picks — Claude Sonnet verdicted Strong Take or Lean, ranked by verdict + Signal + EV, top half kept. The AI acts as a cross-sport filter instead of an inline tiebreaker.">&#x1F916; AI only{% if ai_count %} ({{ ai_count }}){% endif %}</a>
     {% endif %}
   </div>
 
@@ -10436,6 +10449,26 @@ def picks_landing():
     strong_count  = sum(1 for r in board_rows for p in r["picks"] if p.get("strong"))
     whale_count   = sum(1 for r in board_rows for p in r["picks"] if p.get("whale"))
     total_games   = len(board_rows)
+    # Pick counts for every filter chip so inactive chips can show
+    # "(N)" too — the user shouldn't have to click a chip to find out
+    # whether it has anything on today's board.
+    def _px_strongest(p):
+        if p.get("do_not_bet"):
+            return False
+        try:
+            if int(p.get("signal_score") or 0) >= 3: return True
+        except Exception: pass
+        if p.get("whale"): return True
+        try:
+            if float(p.get("line_move_pp") or 0.0) >= 0.005: return True
+        except Exception: pass
+        return False
+    strongest_count = sum(1 for r in board_rows for p in r["picks"] if _px_strongest(p))
+    ai_count        = sum(1 for r in board_rows for p in r["picks"]
+                           if p.get("ai_verdict") in ("Strong Take", "Lean")
+                           and not p.get("do_not_bet"))
+    linemove_count  = sum(1 for r in board_rows for p in r["picks"]
+                           if (p.get("line_move_pp") or 0) >= 0.01)
     # NO BET count: games we have on the slate with zero picks. Per research,
     # "no bet" is the expected and default outcome; empty rows are a feature
     # not a bug.
@@ -10553,6 +10586,9 @@ def picks_landing():
         ev_count=ev_count,
         strong_count=strong_count,
         whale_count=whale_count,
+        strongest_count=strongest_count,
+        ai_count=ai_count,
+        linemove_count=linemove_count,
         no_bet_count=no_bet_count,
         total_games=total_games,
         sports_with_games=sports_with_games,
