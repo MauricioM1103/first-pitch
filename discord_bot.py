@@ -569,21 +569,20 @@ def post_text(webhook_url, message):
 
 
 _INTRO_MESSAGE = (
-    "**Cheeks Model picks feed**\n\n"
-    "What this is: an automated feed of the day's best bets from the Cheeks "
-    "Model dashboard (NFL, MLB, NHL, NBA, soccer, UFC, F5, etc.).\n\n"
-    "**Two scheduled posts per day — top 10 picks each:**\n"
-    "- :sun_with_face: **First Half** (games before 3 PM CT) — posted in the morning\n"
-    "- :city_sunset: **Second Half** (games 3 PM CT or later) — posted early afternoon\n\n"
-    "Each pick carries:\n"
-    "- **Signal 1-5** composite (EV cushion + line move + cross-book agreement)\n"
-    "- **EV %** vs Pinnacle fair price\n"
-    "- **LOCK** = 5/5 signal\n\n"
-    "**Live updates are rare on purpose.** If a pick in the top 10 flips to "
-    "DO NOT BET and a new pick qualifies to replace it in time to still bet, "
-    "you get one combined update PNG — otherwise the channel stays quiet. "
-    "Rate-limited to one live update every ~2 hours.\n\n"
-    "Dashboard: https://cheeks-model.onrender.com"
+    "**Cheeks Model — picks feed**\n\n"
+    "Automated feed of the day's highest-conviction bets across NFL, MLB, "
+    "NHL, NBA, soccer, UFC and more.\n\n"
+    "**How it works now**\n"
+    "- Picks post **individually**, timed to each sport's pre-game window "
+    "(when lineups + injuries lock in) — no slate blast.\n"
+    "- Only picks with an **Evidence Score ≥ 5** make it here. Score is "
+    "built from Signal 4+ composite, favorable line move, Kalshi agreement, "
+    "whale alignment, clean injury news, and AI endorsement.\n"
+    "- Each post includes the matchup read, key factors, risk flags, and "
+    "the best US-book price if DK / FD / MGM / Caesars beats Pinnacle.\n"
+    "- Expected volume: **1–6 picks per day**. Quiet days are fine — only "
+    "the strongest signals get through.\n\n"
+    "Full dashboard: https://cheeks-model.onrender.com"
 )
 
 
@@ -592,6 +591,179 @@ def send_intro(webhook_url):
     new viewers know what the feed does. Pin it in Discord for best
     results."""
     return post_text(webhook_url, _INTRO_MESSAGE)
+
+
+# ------------------------------------------------------------------
+# Channel wipe + re-intro (Phase 32).
+# ------------------------------------------------------------------
+# Discord webhooks CANNOT list or delete arbitrary channel history —
+# only a Bot token can. We derive the channel_id from the webhook via
+# `GET /webhooks/{id}/{token}` (no bot token needed for that), then use
+# the bot token's REST permissions to bulk-delete recent messages and
+# individually delete messages older than 14 days.
+#
+# If no bot token is provided we skip the wipe step and just post the
+# fresh intro. The caller gets a result dict that explains what ran.
+# ------------------------------------------------------------------
+
+def _discord_api(method, path, bot_token=None, body=None, timeout=15):
+    """Thin wrapper around the Discord REST API. Returns the parsed
+    JSON on 2xx, or raises on error. `path` is the API path starting
+    with '/'. `bot_token` is required for anything beyond webhook
+    endpoints; webhook calls can pass None."""
+    from urllib.request import Request, urlopen
+    url = "https://discord.com/api/v10" + path
+    headers = {
+        "User-Agent": "cheeks-model/1.0 (+https://cheeks-model.onrender.com)",
+        "Content-Type": "application/json",
+    }
+    if bot_token:
+        headers["Authorization"] = f"Bot {bot_token}"
+    data = json.dumps(body).encode() if body is not None else None
+    req = Request(url, data=data, method=method, headers=headers)
+    with urlopen(req, timeout=timeout) as r:
+        raw = r.read()
+        if not raw:
+            return {}
+        try:
+            return json.loads(raw)
+        except Exception:
+            return {}
+
+
+def _channel_id_from_webhook(webhook_url):
+    """Hit the webhook's own metadata endpoint to recover its
+    channel_id. Returns None if the webhook URL is malformed or the
+    call fails."""
+    try:
+        # Webhook URL: https://discord.com/api/webhooks/{id}/{token}
+        tail = webhook_url.rstrip("/").split("/api/webhooks/", 1)[-1]
+        wid, token = tail.split("/", 1)
+    except Exception:
+        return None
+    try:
+        meta = _discord_api("GET", f"/webhooks/{wid}/{token}")
+        return meta.get("channel_id")
+    except Exception:
+        return None
+
+
+def clear_channel_history(bot_token, channel_id, max_batches=20):
+    """Delete every message in the channel. Uses bulk-delete for
+    messages <14d old, individual DELETE for older. Returns a dict
+    with counts.
+
+    `max_batches` caps the number of 100-message pages we walk — each
+    batch is one list + one bulk-delete call, so 20 batches = 2000
+    messages max. Discord bot rate-limits are generous for this but
+    we still cap it to avoid runaway loops."""
+    if not bot_token or not channel_id:
+        return {"ok": False, "error": "bot_token + channel_id required"}
+    total_bulk = 0
+    total_single = 0
+    now_ms = int(time.time() * 1000)
+    # Discord bulk-delete window is 14 days.
+    cutoff_ms = now_ms - (14 * 24 * 60 * 60 * 1000)
+    for _ in range(max_batches):
+        try:
+            msgs = _discord_api("GET",
+                                 f"/channels/{channel_id}/messages?limit=100",
+                                 bot_token=bot_token)
+        except Exception as e:
+            return {"ok": False, "error": f"list failed: {e}",
+                    "deleted_bulk": total_bulk, "deleted_single": total_single}
+        if not msgs:
+            break
+        recent = []
+        old = []
+        for m in msgs:
+            mid = m.get("id")
+            if not mid:
+                continue
+            # Discord IDs are snowflakes — timestamp is upper 42 bits
+            # (shifted by 22) + Discord epoch (2015-01-01 00:00:00 UTC).
+            try:
+                ts_ms = (int(mid) >> 22) + 1420070400000
+            except Exception:
+                ts_ms = now_ms
+            if ts_ms >= cutoff_ms:
+                recent.append(mid)
+            else:
+                old.append(mid)
+        # Bulk-delete the recent batch (needs 2-100 items; a single
+        # recent message falls through to single-delete).
+        if len(recent) >= 2:
+            try:
+                _discord_api("POST",
+                              f"/channels/{channel_id}/messages/bulk-delete",
+                              bot_token=bot_token,
+                              body={"messages": recent})
+                total_bulk += len(recent)
+            except Exception:
+                for mid in recent:
+                    try:
+                        _discord_api("DELETE",
+                                      f"/channels/{channel_id}/messages/{mid}",
+                                      bot_token=bot_token)
+                        total_single += 1
+                    except Exception:
+                        continue
+                    time.sleep(0.3)  # polite pacing on fallback path
+        elif len(recent) == 1:
+            try:
+                _discord_api("DELETE",
+                              f"/channels/{channel_id}/messages/{recent[0]}",
+                              bot_token=bot_token)
+                total_single += 1
+            except Exception:
+                pass
+        # Individually delete old messages (bulk-delete rejects
+        # anything > 14 days).
+        for mid in old:
+            try:
+                _discord_api("DELETE",
+                              f"/channels/{channel_id}/messages/{mid}",
+                              bot_token=bot_token)
+                total_single += 1
+            except Exception:
+                continue
+            time.sleep(0.3)
+        if len(msgs) < 100:
+            break
+    return {"ok": True,
+            "deleted_bulk": total_bulk,
+            "deleted_single": total_single,
+            "total_deleted": total_bulk + total_single}
+
+
+def reset_channel_and_reintro(webhook_url, bot_token=None):
+    """Full reset: wipe channel history (if bot_token supplied), then
+    post the fresh intro via the webhook. Returns a result dict the
+    caller can hand straight back as JSON."""
+    out = {"ok": False, "cleared": None, "intro_posted": False,
+           "notes": []}
+    if not webhook_url:
+        out["notes"].append("No webhook URL configured.")
+        return out
+    channel_id = _channel_id_from_webhook(webhook_url)
+    if not channel_id:
+        out["notes"].append("Could not resolve channel_id from webhook URL.")
+    # 1. Clear
+    if bot_token and channel_id:
+        try:
+            out["cleared"] = clear_channel_history(bot_token, channel_id)
+        except Exception as e:
+            out["cleared"] = {"ok": False, "error": str(e)}
+    else:
+        out["notes"].append(
+            "No bot token — skipping channel wipe. Add a Discord bot "
+            "with MANAGE_MESSAGES in that channel to enable auto-wipe."
+        )
+    # 2. Post fresh intro
+    out["intro_posted"] = send_intro(webhook_url)
+    out["ok"] = out["intro_posted"] and (bot_token is None or
+                                          (out["cleared"] or {}).get("ok", False))
+    return out
 
 
 def render_picks_png_tall(picks, title, subtitle=""):

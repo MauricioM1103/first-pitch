@@ -18006,6 +18006,7 @@ _SETTINGS_ENV_KEYS = {
     "pushover_api_token":       "PUSHOVER_API_TOKEN",
     "daily_picks_webhook_url":  "DAILY_PICKS_WEBHOOK_URL",
     "cron_secret":              "CRON_SECRET",
+    "discord_bot_token":        "DISCORD_BOT_TOKEN",
 }
 
 
@@ -18029,6 +18030,7 @@ def _load_settings():
         "pushover_api_token":  "",
         "daily_picks_webhook_url": "",
         "cron_secret": "",
+        "discord_bot_token": "",
     }
     try:
         import json
@@ -18077,6 +18079,7 @@ _SETTINGS_SYNC_FIELDS = (
     "pushover_user_key",
     "pushover_api_token",
     "cron_secret",
+    "discord_bot_token",
 )
 
 
@@ -19697,6 +19700,62 @@ def cron_line_shop_scan():
                         status=500, mimetype="application/json")
 
 
+@app.route("/discord/reintro", methods=["GET", "POST"])
+def discord_reintro():
+    """Nuke the Discord channel and post a fresh short intro.
+
+    Deletes all prior messages if a bot token (`discord_bot_token`
+    setting / `DISCORD_BOT_TOKEN` env) with Manage Messages in the
+    channel is configured. Without a bot token the delete step is
+    skipped — webhooks alone can't list channel history — and we
+    just post the fresh intro. The response's `notes` field tells
+    the caller exactly what did (or didn't) run.
+
+    Also clears the moderator's per-pick dedup log so the fresh
+    channel can repost today's picks when they next clear the
+    evidence threshold inside their pre-game window.
+
+    Triggered from the Settings page button, or by GET for cron."""
+    import json as _json
+    s = _load_settings()
+    hook = (s.get("discord_webhook_url") or "").strip()
+    bot = (s.get("discord_bot_token") or "").strip() or None
+    if not hook:
+        return Response(_json.dumps({"ok": False,
+                                       "error": "no discord_webhook_url configured",
+                                       "notes": ["Set the webhook URL in /settings first."]}),
+                        status=400, mimetype="application/json")
+    try:
+        import discord_bot
+        result = discord_bot.reset_channel_and_reintro(hook, bot_token=bot)
+    except Exception as e:
+        return Response(_json.dumps({"ok": False,
+                                       "error": f"{type(e).__name__}: {e}"}),
+                        status=500, mimetype="application/json")
+    # Reset the moderator's dedup log so today's picks can repost
+    # into the fresh channel next tick.
+    try:
+        import os as _os
+        import json as _j
+        _mod_dedup = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                     "logs", "discord_posted_individual.json")
+        with open(_mod_dedup, "w") as f:
+            _j.dump({}, f)
+        result.setdefault("notes", []).append(
+            "Moderator dedup log cleared — picks that still clear the "
+            "evidence bar will repost on the next /cron/moderator-tick."
+        )
+    except Exception:
+        pass
+    # If called from the Settings form, redirect back with a flash
+    # banner. Otherwise return JSON.
+    if request.form.get("action") == "reset_discord":
+        q = "ok" if result.get("ok") else "fail"
+        return redirect(f"/settings?reset={q}")
+    return Response(_json.dumps(result, indent=2),
+                    mimetype="application/json")
+
+
 @app.route("/cron/moderator-tick")
 def cron_moderator_tick():
     """Agent #8 — smart Discord moderator. Scans the current board,
@@ -20383,6 +20442,7 @@ def settings_page():
             s["pushover_api_token"]  = (request.form.get("pushover_api_token")  or "").strip()
             s["daily_picks_webhook_url"] = (request.form.get("daily_picks_webhook_url") or "").strip()
             s["cron_secret"]             = (request.form.get("cron_secret")             or "").strip()
+            s["discord_bot_token"]       = (request.form.get("discord_bot_token")       or "").strip()
             saved = _save_settings(s)
         except Exception:
             saved = False
@@ -20397,6 +20457,10 @@ def settings_page():
            '<div style="padding:10px 14px;background:color-mix(in oklab,var(--good) 10%,transparent);border:1px solid var(--good);border-radius:8px;color:var(--good);margin:12px 0;font-size:13px">Encrypted mirror active. Secrets below survive Render deploys automatically.</div>'
           )()
         + ('<div style="padding:10px 14px;background:color-mix(in oklab,var(--good) 15%,transparent);border:1px solid var(--good);border-radius:8px;color:var(--good);margin:12px 0">Saved.</div>' if saved else '')
+        + (('<div style="padding:10px 14px;background:color-mix(in oklab,var(--good) 15%,transparent);border:1px solid var(--good);border-radius:8px;color:var(--good);margin:12px 0">Discord channel reset and fresh intro posted.</div>'
+            if request.args.get("reset") == "ok" else
+            ('<div style="padding:10px 14px;background:color-mix(in oklab,var(--bad) 15%,transparent);border:1px solid var(--bad);border-radius:8px;color:var(--bad);margin:12px 0">Reset returned a partial result. Hit <code>/discord/reintro</code> directly for details.</div>'
+             if request.args.get("reset") == "fail" else '')))
         + '<form method="post" style="display:flex;flex-direction:column;gap:18px;margin-top:16px">'
         + '<fieldset style="border:1px solid var(--rule);border-radius:10px;padding:14px"><legend style="padding:0 6px;color:var(--muted);font-size:12px;letter-spacing:0.1em;text-transform:uppercase">Bankroll</legend>'
         + f'<label style="display:block">Bankroll (units reference)<br><input type="number" step="1" min="0" name="bankroll" value="{s.get("bankroll", 1000)}" style="{_input_style};width:160px;margin-top:4px"></label>'
@@ -20412,6 +20476,12 @@ def settings_page():
         + '<p style="margin:0 0 10px;color:var(--muted);font-size:12.5px">A separate Discord channel for the daily picks slate. At 12 AM CT the full day\'s Signal 3+ list goes out as 2-3 PNG cards. When a pick is added mid-day or flipped to DO NOT BET, a live PNG update is posted. Create a channel webhook in Discord: Channel settings → Integrations → Webhooks → New Webhook → Copy Webhook URL. Note: discord.gg invite links will NOT work — this must be a channel webhook URL.</p>'
         + f'<label style="display:block">Daily picks webhook URL<br><input type="url" name="daily_picks_webhook_url" value="{s.get("daily_picks_webhook_url", "")}" placeholder="https://discord.com/api/webhooks/..." style="{_input_style};width:100%;margin-top:4px;box-sizing:border-box"></label>'
         + f'<label style="display:block;margin-top:10px">Cron secret (optional)<br><input type="text" name="cron_secret" value="{s.get("cron_secret", "")}" placeholder="random string, e.g. 7fK9...q" style="{_input_style};width:260px;margin-top:4px"><br><span style="color:var(--muted);font-size:12px">If set, /cron/daily-picks requires ?key=&lt;secret&gt;. Leave blank to allow unauthenticated.</span></label>'
+        + '</fieldset>'
+        + '<fieldset style="border:1px solid var(--rule);border-radius:10px;padding:14px"><legend style="padding:0 6px;color:var(--muted);font-size:12px;letter-spacing:0.1em;text-transform:uppercase">Discord mod — channel reset</legend>'
+        + '<p style="margin:0 0 10px;color:var(--muted);font-size:12.5px">Lets the mod wipe its channel and post a fresh intro. Webhooks can\'t delete history on their own — a Discord bot token with <b>Manage Messages</b> in the channel is required to clear old posts.<br><br><b>How to get a bot token (3 min):</b> Discord Developer Portal → New Application → Bot → Reset Token → copy. Then OAuth2 → URL Generator → scope <code>bot</code>, permission <code>Manage Messages</code> → invite into your server → give it access to the picks channel. Paste the token below.</p>'
+        + f'<label style="display:block">Discord bot token (optional)<br><input type="password" name="discord_bot_token" value="{s.get("discord_bot_token", "")}" placeholder="MTA...bot token" style="{_input_style};width:100%;margin-top:4px;box-sizing:border-box;font-family:monospace"></label>'
+        + '<p style="margin:12px 0 0;color:var(--muted);font-size:12.5px">Clicking <b>Reset channel</b> below will <b>permanently delete</b> every message in the picks channel (where the <i>webhook URL</i> above points), then post a short fresh intro. Save your settings first.</p>'
+        + '<button type="submit" name="action" value="reset_discord" formaction="/discord/reintro" formmethod="post" onclick="return confirm(\'This will DELETE every message in the Discord channel the webhook points to, then post a fresh intro. Continue?\');" style="background:var(--bad);color:#fff;border:none;padding:9px 18px;border-radius:8px;font-weight:600;cursor:pointer;margin-top:10px">Reset channel + post fresh intro</button>'
         + '</fieldset>'
         + '<button type="submit" style="background:var(--good);color:var(--bg);border:none;padding:10px 24px;border-radius:8px;font-weight:600;cursor:pointer;align-self:flex-start">Save</button>'
         + '</form></main>' + THEME_SCRIPT)
