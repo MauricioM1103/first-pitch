@@ -8069,26 +8069,23 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                 except Exception:
                     pass
             # AI verdict gate (shipped 2026-10-21, re-tuned 2026-10-22):
-            #   - Called on Signal 3+ picks. Earlier narrowing to
-            #     Signal 4+ meant the AI Picks section was always
-            #     empty because today's board had 0 picks at Signal
-            #     4+ (that bar needs ≥4 of EV + line move + prob
-            #     floor + book agreement + persistence + Kalshi
-            #     depth — hard to clear organically).
-            #   - 24h cache per pick keeps the API bill flat: 8–15
-            #     calls on the first scan after midnight CT, then
-            #     every subsequent page load reads cache.
-            #   - Only "Avoid" forces do_not_bet (strongest negative).
-            #   - "Pass" and "Lean" are informational: ai_verdict and
-            #     ai_reason stay on the pick card, but the pick is
-            #     NOT blocked. AI tends to Pass on anything thin,
-            #     which previously collapsed the entire slate.
+            #   - Called on ANY Signal 3+ pick with a book price. The
+            #     earlier "not alt_line_flag / not model_only / not
+            #     do_not_bet" filter was dropping every Signal 3+ pick
+            #     on today's board (counters confirmed queue_called=0
+            #     for 11 Signal 3+ picks), because most of them were
+            #     dec<1.50 DNBs or soccer alt-line emissions. Running
+            #     AI on more picks is cheap: 24h cache + background
+            #     threads means 15-20 Sonnet calls per day ≈ $0.60.
+            #   - Only "Avoid" forces do_not_bet.
+            #   - "Pass" / "Lean" are informational on the card.
             #   - "Strong Take" still +1 Signal point.
-            # Requires ANTHROPIC_API_KEY; silent no-op without.
+            # The AI Picks section only shows picks AI actually
+            # endorsed (Strong Take / Lean), so widening the gate
+            # here doesn't noise up the section.
             if ((p.get("signal_score") or 0) >= 3
-                    and not p.get("alt_line_flag")
-                    and not p.get("model_only")
-                    and not p.get("do_not_bet")):
+                    and (p.get("decimal") or 0)
+                    and not p.get("model_only")):
                 try:
                     _av = _ai_verdict_for_pick(p)
                 except Exception:
