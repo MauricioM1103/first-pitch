@@ -2080,6 +2080,15 @@ TODAY_TEMPLATE = r"""<!doctype html>
 .pnl-tile.t4 .pnl-rate, .pnl-tile.t4 .pnl-tier { color: var(--good); }
 .pnl-tile.t3 .pnl-rate, .pnl-tile.t3 .pnl-tier { color: #fbbf24; }
 .pnl-tile.overall .pnl-rate, .pnl-tile.overall .pnl-tier { color: var(--accent, #8b5cf6); }
+.pnl-tile.strongest .pnl-rate, .pnl-tile.strongest .pnl-tier { color: #ef4444; }
+.pnl-tile.strongest { border-color: color-mix(in oklab, #ef4444 40%, var(--rule)); }
+.pnl-tile.ai .pnl-rate, .pnl-tile.ai .pnl-tier { color: #38bdf8; }
+.pnl-tile.ai { border-color: color-mix(in oklab, #38bdf8 40%, var(--rule)); }
+.pnl-table .pnl-row-tier.strongest { color: #ef4444; }
+.pnl-table .pnl-row-tier.ai { color: #38bdf8; }
+@media (max-width: 1000px) {
+  .pnl-tiles { grid-template-columns: repeat(3, 1fr); }
+}
 .pnl-tile .pnl-units.good { color: var(--good); }
 .pnl-tile .pnl-units.bad  { color: #ef4444; }
 .pnl-tile .pnl-roi.good   { color: var(--good); }
@@ -3027,11 +3036,19 @@ details.also-wrap .today-card { opacity: 0.88; }
       <span class="pnl-sub">{{ date_pretty }} &middot; flat 1u stake per bet &middot; model-only + DNB excluded</span>
     </div>
     <div class="pnl-tiles">
-      {% for tier in [5, 4, 3, 'overall'] %}
+      {% for tier in ['strongest', 'ai', 5, 4, 3, 'overall'] %}
       {% set b = tier_tally[tier] %}
-      <div class="pnl-tile {{ 't' ~ tier if tier != 'overall' else 'overall' }}">
+      <div class="pnl-tile {{
+        'strongest' if tier == 'strongest' else (
+          'ai' if tier == 'ai' else (
+            'overall' if tier == 'overall' else ('t' ~ tier)
+          )
+        )
+      }}">
         <div class="pnl-tier">
-          {% if tier == 'overall' %}&#x1F3C6; Overall
+          {% if tier == 'strongest' %}&#x1F525; Strongest
+          {% elif tier == 'ai' %}&#x1F916; AI Picks
+          {% elif tier == 'overall' %}&#x1F3C6; Overall
           {% else %}{{ tier }}/5 Signal{% endif %}
         </div>
         <div class="pnl-rate">
@@ -3061,7 +3078,7 @@ details.also-wrap .today-card { opacity: 0.88; }
     <table class="pnl-table">
       <thead>
         <tr>
-          <th>Consensus</th>
+          <th>Filter</th>
           <th>Picks</th>
           <th>Wins</th>
           <th>Losses</th>
@@ -3072,11 +3089,20 @@ details.also-wrap .today-card { opacity: 0.88; }
         </tr>
       </thead>
       <tbody>
-        {% for tier in [5, 4, 3, 'overall'] %}
+        {% for tier in ['strongest', 'ai', 5, 4, 3, 'overall'] %}
         {% set b = tier_tally[tier] %}
         <tr>
-          <td class="pnl-row-tier {{ 't' ~ tier if tier != 'overall' else 'overall' }}">
-            {% if tier == 'overall' %}ALL{% else %}{{ tier }}/5{% endif %}
+          <td class="pnl-row-tier {{
+            'strongest' if tier == 'strongest' else (
+              'ai' if tier == 'ai' else (
+                'overall' if tier == 'overall' else ('t' ~ tier)
+              )
+            )
+          }}">
+            {% if tier == 'strongest' %}&#x1F525; STRONGEST
+            {% elif tier == 'ai' %}&#x1F916; AI
+            {% elif tier == 'overall' %}ALL
+            {% else %}{{ tier }}/5{% endif %}
           </td>
           <td class="num">{{ b.picks }}</td>
           <td class="num good">{{ b.W }}</td>
@@ -4549,6 +4575,20 @@ PICKS_TEMPLATE = r"""<!doctype html>
   background: color-mix(in oklab, var(--accent, #8b5cf6) 10%, var(--card));
 }
 .drr-pill.drr-overall .drr-label { color: var(--accent, #8b5cf6); }
+/* Strongest = combined-signal filter (Signal 3+ OR Whale OR line-move).
+   Headline pill — gets the richest treatment. */
+.drr-pill.drr-strongest {
+  border-color: #ef4444;
+  background: color-mix(in oklab, #ef4444 14%, var(--card));
+  box-shadow: 0 0 10px color-mix(in oklab, #ef4444 25%, transparent);
+}
+.drr-pill.drr-strongest .drr-label { color: #ef4444; font-weight: 700; }
+/* AI = Strong Take + Lean endorsements */
+.drr-pill.drr-ai {
+  border-color: #38bdf8;
+  background: color-mix(in oklab, #38bdf8 12%, var(--card));
+}
+.drr-pill.drr-ai .drr-label { color: #38bdf8; font-weight: 700; }
 
 /* AI Picks explainer (shipped 2026-10-23): collapsible card at the
    top of TODAY explaining how the AI Picks column works. Default
@@ -4608,6 +4648,23 @@ PICKS_TEMPLATE = r"""<!doctype html>
   color: var(--muted-2); font-size: 11.5px;
 }
 .ai-picks-explainer .aie-foot b { color: var(--ink); font-weight: 600; }
+/* Shared list style for the Sport Models collapsible */
+.ai-picks-explainer .models-list { list-style: none; padding: 0; margin: 0 0 10px; }
+.ai-picks-explainer .models-list li { margin: 6px 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+.ai-picks-explainer .models-list li b { color: var(--ink); font-weight: 600; }
+/* Inline confidence chips used in the footer of the sport models card */
+.pick-conf-inline {
+  display: inline-block; padding: 1px 6px; border-radius: 4px;
+  font-family: "JetBrains Mono", monospace; font-size: 10.5px;
+  font-weight: 600; margin: 0 1px;
+}
+.pick-conf-inline.c5 { background: color-mix(in oklab, #f59e0b 25%, transparent); color: #f59e0b; }
+.pick-conf-inline.c4 { background: color-mix(in oklab, var(--good) 25%, transparent); color: var(--good); }
+.pick-conf-inline.c3 { background: color-mix(in oklab, #fbbf24 25%, transparent); color: #fbbf24; }
+.pick-conf-inline.c2 { background: color-mix(in oklab, var(--muted-2) 25%, transparent); color: var(--muted-2); }
+.pick-conf-inline.c1 { background: color-mix(in oklab, var(--muted-2) 15%, transparent); color: var(--muted-2); }
+.collapse-ev summary .aie-icon { color: var(--good); }
+.collapse-models summary .aie-icon { color: #38bdf8; }
 
 .model-explain {
   margin-top: 10px;
@@ -4773,6 +4830,20 @@ PICKS_TEMPLATE = r"""<!doctype html>
   border-color: #f59e0b;
   font-weight: 600;
 }
+/* Strongest chip (shipped 2026-10-23) — headlines the filter row. */
+.filter-chips .chip.strongest-chip {
+  color: #ef4444;
+  border-color: color-mix(in oklab, #ef4444 50%, var(--rule));
+  font-weight: 600;
+}
+.filter-chips .chip.strongest-chip:hover {
+  background: color-mix(in oklab, #ef4444 12%, transparent);
+}
+.filter-chips .chip.strongest-chip.active {
+  color: #fff;
+  background: #ef4444;
+  border-color: #ef4444;
+}
 
 /* Board stats line (shipped 2026-10-22): small game-count summary
    above the main board table — "14 games · 0 upcoming · 14 final ·
@@ -4836,6 +4907,15 @@ PICKS_TEMPLATE = r"""<!doctype html>
 .pnl-tile.t4 .pnl-rate, .pnl-tile.t4 .pnl-tier { color: var(--good); }
 .pnl-tile.t3 .pnl-rate, .pnl-tile.t3 .pnl-tier { color: #fbbf24; }
 .pnl-tile.overall .pnl-rate, .pnl-tile.overall .pnl-tier { color: var(--accent, #8b5cf6); }
+.pnl-tile.strongest .pnl-rate, .pnl-tile.strongest .pnl-tier { color: #ef4444; }
+.pnl-tile.strongest { border-color: color-mix(in oklab, #ef4444 40%, var(--rule)); }
+.pnl-tile.ai .pnl-rate, .pnl-tile.ai .pnl-tier { color: #38bdf8; }
+.pnl-tile.ai { border-color: color-mix(in oklab, #38bdf8 40%, var(--rule)); }
+.pnl-table .pnl-row-tier.strongest { color: #ef4444; }
+.pnl-table .pnl-row-tier.ai { color: #38bdf8; }
+@media (max-width: 1000px) {
+  .pnl-tiles { grid-template-columns: repeat(3, 1fr); }
+}
 .pnl-tile .pnl-units.good { color: var(--good); }
 .pnl-tile .pnl-units.bad  { color: #ef4444; }
 .pnl-tile .pnl-roi.good   { color: var(--good); }
@@ -5245,19 +5325,27 @@ PICKS_TEMPLATE = r"""<!doctype html>
   <div class="hero">
     <h1>{{ date_pretty }}</h1>
 
-    {# Day record row (shipped 2026-10-23): per-Signal-tier W-L and
-       units P&L for today's bet-able picks. Replaces the old
-       today-tally pill + Current filter streak pill — both of those
-       surfaced the same information twice. This row sits above the
-       collapsed explainer per the UI rework. #}
+    {# Day record row (shipped 2026-10-23, extended 2026-10-23):
+       per-Signal-tier + Strongest + AI Picks + Overall. DNB picks
+       are excluded everywhere. The pill order reflects importance:
+       Strongest first (the combined filter the user wants headlined),
+       then AI, then individual tiers, then Overall at the end. #}
     {% if tier_tally and tier_tally.overall.picks %}
     <div class="day-record-row">
-      {% for tier in [5, 4, 3, 'overall'] %}
+      {% for tier in ['strongest', 'ai', 5, 4, 3, 'overall'] %}
       {% set b = tier_tally[tier] %}
       {% if b.picks %}
-      <span class="drr-pill drr-{{ 't' ~ tier if tier != 'overall' else 'overall' }}">
+      <span class="drr-pill drr-{{
+        'strongest' if tier == 'strongest' else (
+          'ai' if tier == 'ai' else (
+            'overall' if tier == 'overall' else ('t' ~ tier)
+          )
+        )
+      }}">
         <span class="drr-label">
-          {% if tier == 'overall' %}Today
+          {% if tier == 'strongest' %}&#x1F525; Strongest
+          {% elif tier == 'ai' %}&#x1F916; AI
+          {% elif tier == 'overall' %}Today
           {% else %}{{ tier }}/5{% endif %}
         </span>
         <span class="drr-rec">{{ b.W }}&ndash;{{ b.L }}{% if b.P %}&ndash;{{ b.P }}{% endif %}</span>
@@ -5310,44 +5398,60 @@ PICKS_TEMPLATE = r"""<!doctype html>
         </p>
       </div>
     </details>
-    <div class="ev-callout">
-      <strong>What's EV?</strong> <em>Expected value</em> &mdash; the long-run profit per
-      $1 risked if you repeated the same bet forever. We compute it as
-      <code>fair_prob &times; book_decimal &minus; 1</code>. <b>EV +3%</b> means
-      the model expects a 3-cent profit per dollar bet, long-run.
-      Picks are gated: the model must stay within <b>12pp</b> of Pinnacle's own
-      devig (sanity cap against sim overconfidence), <b>EV must be positive</b>
-      (uniform filter &mdash; nothing below zero reaches the board), and the display
-      EV is capped at <b>+15%</b> so a bad sim read can't produce absurd numbers.
-      Hitting both <b>68% probability AND &ge; +4% EV</b> (5/5 confidence tier) earns a &#9733; <b>Strong</b> badge.
-    </div>
-    <details class="model-explain">
-      <summary>How each sport's model works &rsaquo;</summary>
-      <div class="model-explain-grid">
-        <div><b>MLB</b> &mdash; Elo + starting-pitcher ratings fit on 12 seasons; plate-appearance Markov chain drives the Monte Carlo (run/HR rates by base-out state).</div>
-        <div><b>NFL</b> &mdash; Elo + QB-adjustment fit on 12 seasons; empirical margin distribution preserves key-number mass at 3 / 7 / 10 / 14.</div>
-        <div><b>NCAAF</b> &mdash; CFBD-fit team Elo + normal-dist scoring (PPG baseline 25.5, &sigma; 14); totals anchor 40% to the market to curb Over bias.</div>
-        <div><b>NHL</b> &mdash; Poisson goals + Elo fit on 5 seasons; confirmed-starter save % scales each team's &lambda;; 1-goal games get an empty-net correction (42% +1 ENG, 8% +2).</div>
-        <div><b>UFC</b> &mdash; Glicko-1 fighter ratings (RD-aware g-factor); a striking &times; grappling style match adjusts win prob &plusmn;5pp; short-notice fighters get a penalty.</div>
-        <div><b>EPL / La Liga / Liga MX</b> &mdash; Dixon-Coles joint pmf with low-score &rho; correction, 3-way Elo + xG blended attack/defense, per-league HFA, 12-season fit.</div>
-        <div><b>UCL / Europa</b> &mdash; Dixon-Coles sim with EPL-prior goal rates for teams not in the historical fit; league-average HFA.</div>
-        <div><b>International</b> &mdash; National-team Elo (eloratings-style) fed into Dixon-Coles; friendlies downweighted 0.4&times; vs competitive matches.</div>
+    {# What's EV — collapsed card matching the AI Picks explainer style #}
+    <details class="ai-picks-explainer collapse-ev">
+      <summary>
+        <span class="aie-icon">&#x1F4B0;</span>
+        <span class="aie-title">What's EV</span>
+        <span class="chev">&rsaquo;</span>
+      </summary>
+      <div class="aie-body">
+        <p>
+          <em>Expected value</em> &mdash; the long-run profit per $1 risked
+          if you repeated the same bet forever. We compute it as
+          <code>fair_prob &times; book_decimal &minus; 1</code>.
+          <b>EV +3%</b> means the model expects a 3-cent profit per
+          dollar bet, long-run.
+        </p>
+        <p>
+          Picks are gated: the model must stay within <b>12pp</b> of
+          Pinnacle's own devig (sanity cap against sim overconfidence),
+          <b>EV must be positive</b> (uniform filter &mdash; nothing below
+          zero reaches the board), and the display EV is capped at
+          <b>+15%</b> so a bad sim read can't produce absurd numbers.
+          Hitting both <b>68% probability AND &ge; +4% EV</b> (5/5
+          confidence tier) earns a &#9733; <b>Strong</b> badge.
+        </p>
       </div>
-      <div class="model-explain-conf">
-        <div class="model-explain-conf-head">Confidence badges &mdash; tier from consensus probability</div>
-        <div class="model-explain-conf-row">
-          <span class="pick-conf c5">5/5</span><span class="muted">&ge; 68% &mdash; model strongly favors; strong-pick territory</span>
-          <span class="pick-conf c4">4/5</span><span class="muted">62&ndash;68% &mdash; clear lean, moderate conviction</span>
-          <span class="pick-conf c3">3/5</span><span class="muted">57&ndash;62% &mdash; mild edge, coin-flippy</span>
-          <span class="pick-conf c2">2/5</span><span class="muted">52&ndash;57% &mdash; barely over 50%, likely noise</span>
-          <span class="pick-conf c1">1/5</span><span class="muted">&lt; 52% &mdash; essentially a toss-up</span>
-        </div>
-      </div>
-      <div class="model-explain-foot">
-        Each candidate is scored against a <b>per-sport model/Pinnacle devig</b> consensus (default 35/65; NFL &amp; NCAAF 30/70, soccer 45/55, UFC 50/50).
-        EV-verified picks must clear <b>+2% EV</b>, fair prob &ge; 46%, odds &ge; 1.60.
-        Strong (&starf;) picks clear <b>68% consensus (5/5 tier) AND +4% EV</b>. Picks below
-        3/5 confidence (fair_prob &lt; 57%) are hidden entirely.
+    </details>
+
+    {# Sport-model summary — now matches the explainer visual #}
+    <details class="ai-picks-explainer collapse-models">
+      <summary>
+        <span class="aie-icon">&#x1F3DF;&#xFE0F;</span>
+        <span class="aie-title">How each sport's model works</span>
+        <span class="chev">&rsaquo;</span>
+      </summary>
+      <div class="aie-body">
+        <ul class="models-list">
+          <li><b>MLB</b> &mdash; Elo + starting-pitcher ratings fit on 12 seasons; plate-appearance Markov chain drives the Monte Carlo (run/HR rates by base-out state).</li>
+          <li><b>NFL</b> &mdash; Elo + QB-adjustment fit on 12 seasons; empirical margin distribution preserves key-number mass at 3 / 7 / 10 / 14.</li>
+          <li><b>NCAAF</b> &mdash; CFBD-fit team Elo + normal-dist scoring (PPG baseline 25.5, &sigma; 14); totals anchor 40% to the market to curb Over bias.</li>
+          <li><b>NBA</b> &mdash; pace &times; efficiency Monte Carlo; team Elo fit from ESPN scoreboards (walk-forward); +2.5 pt home-court prior; back-to-back scoring penalty.</li>
+          <li><b>NHL</b> &mdash; Poisson goals + Elo fit on 5 seasons; confirmed-starter save % scales each team's &lambda;; 1-goal games get an empty-net correction (42% +1 ENG, 8% +2).</li>
+          <li><b>UFC</b> &mdash; Glicko-1 fighter ratings (RD-aware g-factor); a striking &times; grappling style match adjusts win prob &plusmn;5pp; short-notice fighters get a penalty.</li>
+          <li><b>EPL / La Liga / Liga MX</b> &mdash; Dixon-Coles joint pmf with low-score &rho; correction, 3-way Elo + xG blended attack/defense, per-league HFA, 12-season fit.</li>
+          <li><b>UCL / Europa</b> &mdash; Dixon-Coles sim with EPL-prior goal rates for teams not in the historical fit; league-average HFA.</li>
+          <li><b>International</b> &mdash; National-team Elo (eloratings-style) fed into Dixon-Coles; friendlies downweighted 0.4&times; vs competitive matches.</li>
+        </ul>
+        <p class="aie-foot">
+          Confidence badges from consensus probability: <b class="pick-conf-inline c5">5/5</b> &ge;68% &middot;
+          <b class="pick-conf-inline c4">4/5</b> 62&ndash;68% &middot;
+          <b class="pick-conf-inline c3">3/5</b> 57&ndash;62% &middot;
+          <b class="pick-conf-inline c2">2/5</b> 52&ndash;57% &middot;
+          <b class="pick-conf-inline c1">1/5</b> &lt;52%.
+          Per-sport consensus (default 35/65 model/Pinnacle; NFL &amp; NCAAF 30/70, soccer 45/55, UFC 50/50).
+        </p>
       </div>
     </details>
   </div>
@@ -5372,14 +5476,24 @@ PICKS_TEMPLATE = r"""<!doctype html>
   {% set strong_suffix = '&strong=1' if strong_only else '' %}
   {% set whale_suffix = '&whale=1' if whale_only else '' %}
   {% set linemove_suffix = '&linemove=1' if favorable_move_only else '' %}
+  {% set strongest_suffix = '&strongest=1' if strongest_only else '' %}
   {% set sport_suffix  = ('&sport=' ~ sport_filter) if sport_filter != 'all' else '' %}
-  {% set extra_filters = strong_suffix ~ whale_suffix ~ linemove_suffix %}
+  {% set extra_filters = strong_suffix ~ whale_suffix ~ linemove_suffix ~ strongest_suffix %}
   <div class="filter-chips">
     <a class="chip {% if sport_filter == 'all' %}active{% endif %}" href="/?date={{ date_str }}{{ extra_filters }}">All ({{ total_games }})</a>
     {% for s in sport_counts %}
       <a class="chip {% if sport_filter == s.slug %}active{% endif %}" href="/?date={{ date_str }}&sport={{ s.slug }}{{ extra_filters }}">{{ s.name }} ({{ s.count }})</a>
     {% endfor %}
     <span class="chip-divider" aria-hidden="true"></span>
+    {# 🔥 STRONGEST — union of Signal 3+ OR Whale OR favorable line move.
+       The headline filter the user wanted to combine all premium signals. #}
+    {% if strongest_only %}
+      <a class="chip strongest-chip active" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ whale_suffix }}{{ linemove_suffix }}"
+         title="Showing only Strongest picks (Signal 3+ OR Whale OR +0.5pp line move toward us, DNB excluded). Click to clear.">&#x1F525; Strongest ({{ tier_tally.strongest.picks if tier_tally else 0 }})</a>
+    {% else %}
+      <a class="chip strongest-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ whale_suffix }}{{ linemove_suffix }}&strongest=1"
+         title="Show only Strongest picks — the union of Signal 3+ AND Whale AND favorable line-movement picks, DNB excluded. One click to see every premium signal on the board.">&#x1F525; Strongest</a>
+    {% endif %}
     {# ★ Signal ≥ 3 toggle: picks worth placing (TODAY's 'star picks' set) #}
     {% if strong_only %}
       <a class="chip strong-chip active" href="/?date={{ date_str }}{{ sport_suffix }}{{ whale_suffix }}{{ linemove_suffix }}"
@@ -5691,11 +5805,19 @@ PICKS_TEMPLATE = r"""<!doctype html>
       <span class="pnl-sub">{{ date_pretty }} &middot; flat 1u stake per bet &middot; model-only + DNB excluded</span>
     </div>
     <div class="pnl-tiles">
-      {% for tier in [5, 4, 3, 'overall'] %}
+      {% for tier in ['strongest', 'ai', 5, 4, 3, 'overall'] %}
       {% set b = tier_tally[tier] %}
-      <div class="pnl-tile {{ 't' ~ tier if tier != 'overall' else 'overall' }}">
+      <div class="pnl-tile {{
+        'strongest' if tier == 'strongest' else (
+          'ai' if tier == 'ai' else (
+            'overall' if tier == 'overall' else ('t' ~ tier)
+          )
+        )
+      }}">
         <div class="pnl-tier">
-          {% if tier == 'overall' %}&#x1F3C6; Overall
+          {% if tier == 'strongest' %}&#x1F525; Strongest
+          {% elif tier == 'ai' %}&#x1F916; AI Picks
+          {% elif tier == 'overall' %}&#x1F3C6; Overall
           {% else %}{{ tier }}/5 Signal{% endif %}
         </div>
         <div class="pnl-rate">
@@ -5725,7 +5847,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
     <table class="pnl-table">
       <thead>
         <tr>
-          <th>Consensus</th>
+          <th>Filter</th>
           <th>Picks</th>
           <th>Wins</th>
           <th>Losses</th>
@@ -5736,11 +5858,20 @@ PICKS_TEMPLATE = r"""<!doctype html>
         </tr>
       </thead>
       <tbody>
-        {% for tier in [5, 4, 3, 'overall'] %}
+        {% for tier in ['strongest', 'ai', 5, 4, 3, 'overall'] %}
         {% set b = tier_tally[tier] %}
         <tr>
-          <td class="pnl-row-tier {{ 't' ~ tier if tier != 'overall' else 'overall' }}">
-            {% if tier == 'overall' %}ALL{% else %}{{ tier }}/5{% endif %}
+          <td class="pnl-row-tier {{
+            'strongest' if tier == 'strongest' else (
+              'ai' if tier == 'ai' else (
+                'overall' if tier == 'overall' else ('t' ~ tier)
+              )
+            )
+          }}">
+            {% if tier == 'strongest' %}&#x1F525; STRONGEST
+            {% elif tier == 'ai' %}&#x1F916; AI
+            {% elif tier == 'overall' %}ALL
+            {% else %}{{ tier }}/5{% endif %}
           </td>
           <td class="num">{{ b.picks }}</td>
           <td class="num good">{{ b.W }}</td>
@@ -9905,17 +10036,21 @@ def pick_deep_dive():
 def picks_landing():
     date_str = request.args.get("date") or datetime.now(CENTRAL).date().isoformat()
     sport_filter = (request.args.get("sport") or "all").lower()
-    # Two independent filters:
-    #   ?strong=1 — picks worth placing today (Signal >= 3 AND bet-able)
-    #   ?whale=1  — heavy-favorite "banker" picks (fair_prob >= 65%,
-    #              decimal <= 1.60, non-negative EV). Lower returns per
-    #              pick but high probability — whales ladder these at
-    #              larger stakes.
+    # Filter params:
+    #   ?strong=1    — picks worth placing today (Signal >= 3 AND bet-able)
+    #   ?whale=1     — heavy-favorite "banker" picks (fair_prob >= 65%,
+    #                  decimal <= 1.60, non-negative EV). Lower returns per
+    #                  pick but high probability — whales ladder these at
+    #                  larger stakes.
+    #   ?linemove=1  — picks where Pinnacle devig moved toward our side by
+    #                  >= 1pp over the past <= 3 days (sharp agreement).
+    #   ?strongest=1 — UNION of Signal 3+ OR Whale OR favorable line-move
+    #                  >= +0.5pp. The "all the top ones combined" filter;
+    #                  the primary filter the day-record pill uses too.
     strong_only = request.args.get("strong") in ("1", "true", "on", "yes")
     whale_only = request.args.get("whale") in ("1", "true", "on", "yes")
-    # ?linemove=1 filters the board to picks where Pinnacle devig moved
-    # toward our side by >= 1pp over the past <= 3 days (sharp agreement).
     favorable_move_only = request.args.get("linemove") in ("1", "true", "on", "yes")
+    strongest_only = request.args.get("strongest") in ("1", "true", "on", "yes")
     try:
         d = datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
@@ -9930,6 +10065,32 @@ def picks_landing():
     except Exception:
         board_rows, all_picks = [], []
     scan_time_ms = int((time.time() - t0) * 1000)
+
+    # Strongest filter — applied AFTER _build_board_rows so the tally
+    # math (which runs below) sees the same filtered set. Strongest =
+    # Signal 3+ OR Whale OR favorable line-move >= +0.5pp, DNB excluded.
+    # When toggled, prunes picks that don't meet the union and drops
+    # games left with zero picks.
+    if strongest_only:
+        def _strongest_pick(p):
+            if p.get("do_not_bet"):
+                return False
+            try:
+                if int(p.get("signal_score") or 0) >= 3:
+                    return True
+            except Exception:
+                pass
+            if p.get("whale"):
+                return True
+            try:
+                if float(p.get("line_move_pp") or 0.0) >= 0.005:
+                    return True
+            except Exception:
+                pass
+            return False
+        for row in board_rows:
+            row["picks"] = [p for p in row.get("picks") or [] if _strongest_pick(p)]
+        board_rows = [r for r in board_rows if r.get("picks")]
 
     # Snapshot picks for /logged (+ GitHub mirror). Persist EVERY pick that
     # earned a 4/5 or 5/5 confidence badge today — EV-verified AND model-only
@@ -10031,28 +10192,74 @@ def picks_landing():
     sports_with_games = len({r["sport_slug"] for r in board_rows})
     today = datetime.now(CENTRAL).date().isoformat()
 
-    # Per-Signal-tier record pill (replaces the old today-tally + streak
-    # pills). Buckets today's bet-able picks by signal_score (3/4/5) and
-    # computes W-L-P + units + ROI per tier. The pnl-panel at the bottom
-    # of the page uses the same tier_tally for the detailed breakdown.
+    # Per-Signal-tier + Strongest + AI record tracking. Buckets today's
+    # bet-able picks for the day-record pills + P&L summary panel.
+    #
+    # Buckets:
+    #   5, 4, 3       — picks by signal_score (DNB excluded)
+    #   strongest     — union of all "premium" signals: signal>=3 OR
+    #                   whale OR favorable line move >= +0.5pp. This is
+    #                   the user's "all the top ones combined" filter.
+    #                   DNB excluded.
+    #   ai            — picks AI endorsed (Strong Take or Lean verdict),
+    #                   DNB excluded. Tracks AI's own hit rate.
+    #   overall       — all bet-able picks across any filter path.
+    #
+    # DNB picks are excluded from EVERY bucket per user request —
+    # a pick that flipped to DNB after posting shouldn't count against
+    # any filter's record even if its game played out.
     def _blank_tier():
         return {"picks": 0, "W": 0, "L": 0, "P": 0, "pending": 0,
                 "units": 0.0, "risk": 0.0}
-    tier_tally = {5: _blank_tier(), 4: _blank_tier(), 3: _blank_tier(),
-                  "overall": _blank_tier()}
+    tier_tally = {
+        5:            _blank_tier(),
+        4:            _blank_tier(),
+        3:            _blank_tier(),
+        "strongest":  _blank_tier(),
+        "ai":         _blank_tier(),
+        "overall":    _blank_tier(),
+    }
+
+    def _is_strongest(p):
+        """A pick is in the Strongest bucket if it clears ANY of the
+        premium signals: Signal 3+, Whale tier, or favorable line
+        movement of at least +0.5pp toward our side."""
+        try:
+            sig = int(p.get("signal_score") or 0)
+        except Exception:
+            sig = 0
+        if sig >= 3:
+            return True
+        if p.get("whale"):
+            return True
+        try:
+            if float(p.get("line_move_pp") or 0.0) >= 0.005:
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _is_ai_pick(p):
+        return (p.get("ai_verdict") or "") in ("Strong Take", "Lean")
+
     for row in board_rows:
         for p in row.get("picks", []):
             if p.get("model_only") or p.get("do_not_bet"):
                 continue
             sig = int(p.get("signal_score") or 0)
-            if sig not in (3, 4, 5):
-                continue
-            buckets = (tier_tally[sig], tier_tally["overall"])
             r = p.get("result")
             try:
                 profit = float(p.get("profit_u") or 0.0)
             except (TypeError, ValueError):
                 profit = 0.0
+            # Which buckets this pick lands in
+            buckets = [tier_tally["overall"]]
+            if sig in (3, 4, 5):
+                buckets.append(tier_tally[sig])
+            if _is_strongest(p):
+                buckets.append(tier_tally["strongest"])
+            if _is_ai_pick(p):
+                buckets.append(tier_tally["ai"])
             for b in buckets:
                 b["picks"] += 1
                 if r in ("W", "L", "P"):
@@ -10089,6 +10296,7 @@ def picks_landing():
         strong_only=strong_only,
         whale_only=whale_only,
         favorable_move_only=favorable_move_only,
+        strongest_only=strongest_only,
         picks_count=picks_count,
         ev_count=ev_count,
         strong_count=strong_count,
@@ -18327,6 +18535,33 @@ def debug_ai():
     out["counters"] = dict(_AI_COUNTERS)
     out["inflight_count"] = len(_AI_INFLIGHT)
     return Response(_json.dumps(out, indent=2), mimetype="application/json")
+
+
+@app.route("/debug/nba-backtest")
+def debug_nba_backtest():
+    """Run the NBA walk-forward Elo + pace fit from ESPN scoreboards.
+    Pass ?days=N (default 365) to control the window. Returns JSON
+    with games processed, metric summary (log-loss, Brier, margin
+    MAE, total MAE), and the top-10 teams by Elo. Writes the per-
+    team ratings to logs/nba_ratings_cache.json and mirrors via
+    log_persist so simulate_game() picks them up on the next render.
+    Takes a while — fetching 365 days of ESPN scoreboards is ~365
+    HTTP calls. Expect 2-5 min on first run."""
+    import json as _json
+    try:
+        days = int(request.args.get("days") or "365")
+    except Exception:
+        days = 365
+    days = max(7, min(days, 1095))  # clamp 1 week to 3 years
+    try:
+        import nba_backtest as _nbt
+        result = _nbt.run_backtest(days_back=days, verbose=False)
+    except Exception as e:
+        return Response(_json.dumps({"ok": False,
+                                       "error": f"{type(e).__name__}: {e}"}),
+                        status=500, mimetype="application/json")
+    return Response(_json.dumps({"ok": True, **result}, indent=2),
+                    mimetype="application/json")
 
 
 @app.route("/debug/discord")

@@ -208,17 +208,71 @@ GAME_SIGMA_PTS     = 11.5    # per-team per-game Monte Carlo σ
 B2B_SCORING_PENALTY_PTS = 3.0
 
 
+_RATINGS_CACHE_MEM = {"data": None, "ts": 0.0}
+
+
+def _load_ratings_cache():
+    """Load the per-team Elo + pace fit from nba_backtest.py's output.
+    Reads local file first, falls back to log_persist mirror (lets a
+    freshly-deployed instance pick up ratings fit on an older one).
+    60-second in-memory cache."""
+    import json
+    import os as _os
+    import time as _time
+    now = _time.time()
+    cached = _RATINGS_CACHE_MEM.get("data")
+    if cached is not None and (now - _RATINGS_CACHE_MEM["ts"]) < 60:
+        return cached
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                          "logs", "nba_ratings_cache.json")
+    data = {}
+    try:
+        with open(path) as f:
+            data = json.load(f) or {}
+    except Exception:
+        try:
+            import log_persist
+            text, _sha = log_persist.read_file("logs/nba_ratings_cache.json")
+            if text:
+                data = json.loads(text) or {}
+        except Exception:
+            data = {}
+    _RATINGS_CACHE_MEM["data"] = data
+    _RATINGS_CACHE_MEM["ts"] = now
+    return data
+
+
 def _team_ratings(team_slug):
-    """Lookup per-team ratings. Returns league averages until the
-    rating cache is populated by nba_backtest.py (follow-up).
-    When live, this reads from nba_ratings_cache.json on the data
-    branch (via log_persist)."""
-    # TODO: load from log_persist("logs/nba_ratings_cache.json")
-    return {
-        "off_rtg": LEAGUE_AVG_OFF_RTG,
-        "def_rtg": LEAGUE_AVG_DEF_RTG,
-        "pace":    LEAGUE_AVG_PACE,
-    }
+    """Lookup per-team ratings. Falls back to league averages if the
+    cache hasn't been populated (nba_backtest.py hasn't been run yet)
+    or if we don't have ratings for this team (new team, slug
+    mismatch).
+
+    Returned shape mirrors the Elo-based rating from nba_backtest:
+      off_rtg + def_rtg are derived from elo (both set to the same
+      value since Elo is one-dimensional). pace is the EWMA'd
+      possessions-per-48 from the backtest."""
+    try:
+        slug = (team_slug or "").lower()
+        cache = _load_ratings_cache()
+        ratings = (cache.get("ratings") or {}).get(slug)
+        if not ratings:
+            raise KeyError(slug)
+        # Elo → off/def-rating conversion: 1 Elo pt ≈ 0.1 rtg pts,
+        # anchored so that a 1500 Elo team is at LEAGUE_AVG_OFF_RTG.
+        elo = float(ratings.get("elo") or 1500)
+        rtg_delta = (elo - 1500) * 0.1
+        return {
+            "off_rtg": LEAGUE_AVG_OFF_RTG + rtg_delta,
+            "def_rtg": LEAGUE_AVG_DEF_RTG - rtg_delta,  # higher Elo = better defense too
+            "pace":    float(ratings.get("pace") or LEAGUE_AVG_PACE),
+        }
+    except Exception:
+        return {
+            "off_rtg": LEAGUE_AVG_OFF_RTG,
+            "def_rtg": LEAGUE_AVG_DEF_RTG,
+            "pace":    LEAGUE_AVG_PACE,
+        }
 
 
 def simulate_game(home_team, away_team,
