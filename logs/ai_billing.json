@@ -1,1 +1,1 @@
-{"2026-10-23": {"calls": 238, "input": 217806, "output": 141669, "cost": 2.7784530000000003, "models": {"claude-sonnet-5-5": {"calls": 238, "input": 217806, "output": 141669, "cost": 2.7784530000000003}}}}
+{"2026-10-23": {"calls": 239, "input": 218041, "output": 141789, "cost": 2.7791210000000004, "models": {"claude-sonnet-5-5": {"calls": 238, "input": 217806, "output": 141669, "cost": 2.7784530000000003}, "claude-haiku-5-5": {"calls": 1, "input": 235, "output": 120, "cost": 0.000668}}}}
