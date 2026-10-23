@@ -36,6 +36,21 @@ def _record_usage(model, in_toks, out_toks):
         pass
 
 
+def _resolve_discord_webhook(settings):
+    """Resolve the Discord webhook the moderator / recap agents post
+    through. Preference order:
+      1. daily_picks_webhook_url (dedicated picks channel, legacy name)
+      2. discord_webhook_url     (general picks channel, now the single
+                                   webhook most users set)
+    Returns an empty string if neither is configured. Lets the user
+    get away with configuring just one webhook URL in /settings instead
+    of two identical ones."""
+    url = (settings.get("daily_picks_webhook_url") or "").strip()
+    if url:
+        return url
+    return (settings.get("discord_webhook_url") or "").strip()
+
+
 def _call_claude(prompt, model="claude-sonnet-5-5", max_tokens=2000, system=None):
     """Thin wrapper around Anthropic's SDK that returns parsed text +
     records usage. Falls back to None if the SDK isn't configured."""
@@ -351,7 +366,7 @@ def compose_eod_recap(date_str=None, post_to_discord=False):
         try:
             import mlb_ui
             settings = mlb_ui._load_settings()
-            webhook = (settings.get("daily_picks_webhook_url") or "").strip()
+            webhook = _resolve_discord_webhook(settings)
             if webhook:
                 import discord_bot
                 discord_bot.post_text(webhook,
@@ -942,7 +957,7 @@ def post_individual_pick(pick, webhook_url=None):
     if not webhook_url:
         try:
             settings = mlb_ui._load_settings()
-            webhook_url = (settings.get("daily_picks_webhook_url") or "").strip()
+            webhook_url = _resolve_discord_webhook(settings)
         except Exception:
             webhook_url = None
     if not webhook_url:
@@ -1097,7 +1112,7 @@ def run_line_move_followup():
         import mlb_ui
         import discord_bot
         settings = mlb_ui._load_settings()
-        webhook  = (settings.get("daily_picks_webhook_url") or "").strip()
+        webhook  = _resolve_discord_webhook(settings)
         if not webhook:
             return {"ok": False, "error": "no webhook"}
         today = datetime.now(mlb_ui.CENTRAL).date()
@@ -1425,7 +1440,7 @@ def run_weekly_moderator_audit():
         import plays_log
         import discord_bot
         settings = mlb_ui._load_settings()
-        webhook  = (settings.get("daily_picks_webhook_url") or "").strip()
+        webhook  = _resolve_discord_webhook(settings)
     except Exception as e:
         return {"ok": False, "error": f"import failed: {e}"}
 

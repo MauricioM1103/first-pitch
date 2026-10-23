@@ -19520,7 +19520,14 @@ def debug_discord():
     from urllib.request import Request as _Req, urlopen as _uo
     from urllib.error import HTTPError as _HE
     settings = _load_settings()
+    # Match moderator's resolution order: dedicated picks webhook first,
+    # fall back to the general discord_webhook_url so single-channel
+    # users don't need to configure two fields.
     url = (settings.get("daily_picks_webhook_url") or "").strip()
+    source = "daily_picks_webhook_url"
+    if not url:
+        url = (settings.get("discord_webhook_url") or "").strip()
+        source = "discord_webhook_url (fallback)" if url else ""
     if not url:
         return Response(_json.dumps({"ok": False, "error": "no_webhook_configured"}),
                         mimetype="application/json")
@@ -19531,6 +19538,7 @@ def debug_discord():
             "ok": True,
             "webhook_configured": True,
             "webhook_tail": "…" + tail,
+            "source": source,
             "note": "Pass ?test=1 to send a one-line probe message to the webhook."
         }, indent=2), mimetype="application/json")
     body = _json.dumps({"content": "cheeks-model probe — ignore"}).encode()
