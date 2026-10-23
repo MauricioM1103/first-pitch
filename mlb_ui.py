@@ -4648,6 +4648,32 @@ PICKS_TEMPLATE = r"""<!doctype html>
   color: var(--muted-2); font-size: 11.5px;
 }
 .ai-picks-explainer .aie-foot b { color: var(--ink); font-weight: 600; }
+/* MTD API spend pill (shipped 2026-10-24). Muted gray pill on the
+   right side of the header showing this month's estimated Anthropic
+   API bill. Deliberately understated so it doesn't compete with the
+   board — small font, low-contrast text, no accent color. Hover
+   reveals the full tooltip; click opens the Anthropic console. */
+.api-spend-pill {
+  display: inline-flex; align-items: center;
+  padding: 2px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--surface) 60%, transparent);
+  color: var(--muted-2);
+  font-family: "JetBrains Mono", monospace; font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-decoration: none;
+  margin-right: 8px;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.api-spend-pill:hover {
+  color: var(--muted);
+  border-color: color-mix(in oklab, var(--muted-2) 40%, var(--rule));
+}
+@media (max-width: 640px) {
+  .api-spend-pill { font-size: 10px; padding: 2px 8px; }
+}
+
 /* Shared list style for the Sport Models collapsible */
 .ai-picks-explainer .models-list { list-style: none; padding: 0; margin: 0 0 10px; }
 .ai-picks-explainer .models-list li { margin: 6px 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
@@ -5472,6 +5498,17 @@ PICKS_TEMPLATE = r"""<!doctype html>
       <span class="brand-name">Betting Tools</span>
     </div>
     <form class="controls" method="get" action="/">
+      {# MTD Anthropic API spend — small, muted pill on the right of
+         the header. Shows this month's running estimated bill from
+         local token tracking (no admin API required). Hidden on
+         months with zero spend. Click to open the Anthropic console
+         where the authoritative bill lives. #}
+      {% if ai_billing_mtd and ai_billing_mtd.cost > 0 %}
+      <a class="api-spend-pill" href="https://console.anthropic.com/settings/usage" target="_blank"
+         title="Estimated Anthropic API spend this month ({{ ai_billing_mtd.month }}) from {{ ai_billing_mtd.calls }} tracked calls. Click to open the Anthropic console for the authoritative bill.">
+        API &middot; ${{ '%.2f'|format(ai_billing_mtd.cost) }}
+      </a>
+      {% endif %}
       <a class="btn icon" href="/?date={{ prev_date }}">&lsaquo;</a>
       <input type="date" name="date" value="{{ date_str }}" onchange="this.form.submit()">
       <a class="btn icon" href="/?date={{ next_date }}">&rsaquo;</a>
@@ -6428,6 +6465,118 @@ def _save_ai_verdict_cache(data):
         pass
 
 
+# Anthropic API billing tracker (shipped 2026-10-24). Records every
+# per-call token usage locally so we can show the user their rough
+# month-to-date Anthropic bill in the top-right of the landing page.
+# The real spend is on console.anthropic.com, but surfacing an
+# estimate inline avoids tab-switching.
+#
+# Prices in dollars-per-million-tokens for the models we actually
+# call. Update if Anthropic changes pricing.
+_AI_PRICING = {
+    "claude-sonnet-5-5":  {"in": 3.0,  "out": 15.0},
+    "claude-haiku-5-5":   {"in": 0.8,  "out": 4.0},
+    "claude-opus-5-5":    {"in": 15.0, "out": 75.0},
+    "claude-opus-4-7":    {"in": 15.0, "out": 75.0},
+}
+_AI_BILLING_MEM = {"data": None, "ts": 0.0}
+
+
+def _ai_billing_path():
+    import os as _os
+    return _os.path.join(
+        _os.path.dirname(_os.path.abspath(__file__)),
+        "logs", "ai_billing.json",
+    )
+
+
+def _load_ai_billing():
+    """Load the per-day usage log. 60s in-memory cache keeps the
+    top-right spend pill fast on every page load."""
+    now = time.time()
+    cached = _AI_BILLING_MEM.get("data")
+    if cached is not None and (now - _AI_BILLING_MEM["ts"]) < 60:
+        return cached
+    data = {}
+    try:
+        with open(_ai_billing_path()) as f:
+            data = json.load(f) or {}
+    except Exception:
+        try:
+            import log_persist
+            text, _sha = log_persist.read_file("logs/ai_billing.json")
+            if text:
+                data = json.loads(text) or {}
+        except Exception:
+            data = {}
+    _AI_BILLING_MEM["data"] = data
+    _AI_BILLING_MEM["ts"] = now
+    return data
+
+
+def _record_ai_usage(model, input_tokens, output_tokens):
+    """Add this call's tokens + cost to today's bucket. Thread-safe
+    enough for our use (occasional races just lose one call's
+    tokens, no corruption). Mirrors to log_persist on save."""
+    try:
+        import os as _os
+        from datetime import datetime as _dt
+        day = _dt.now(CENTRAL).date().isoformat()
+        price = _AI_PRICING.get(model, _AI_PRICING["claude-sonnet-5-5"])
+        cost = (input_tokens * price["in"] + output_tokens * price["out"]) / 1_000_000
+        data = _load_ai_billing()
+        entry = data.get(day) or {"calls": 0, "input": 0, "output": 0,
+                                   "cost": 0.0, "models": {}}
+        entry["calls"]  = int(entry.get("calls")  or 0) + 1
+        entry["input"]  = int(entry.get("input")  or 0) + int(input_tokens or 0)
+        entry["output"] = int(entry.get("output") or 0) + int(output_tokens or 0)
+        entry["cost"]   = float(entry.get("cost") or 0.0) + cost
+        models = entry.get("models") or {}
+        m_entry = models.get(model) or {"calls": 0, "input": 0, "output": 0, "cost": 0.0}
+        m_entry["calls"]  = int(m_entry.get("calls")  or 0) + 1
+        m_entry["input"]  = int(m_entry.get("input")  or 0) + int(input_tokens or 0)
+        m_entry["output"] = int(m_entry.get("output") or 0) + int(output_tokens or 0)
+        m_entry["cost"]   = float(m_entry.get("cost") or 0.0) + cost
+        models[model] = m_entry
+        entry["models"] = models
+        data[day] = entry
+        path = _ai_billing_path()
+        _os.makedirs(_os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(data, f)
+        _AI_BILLING_MEM["data"] = data
+        _AI_BILLING_MEM["ts"]   = time.time()
+        try:
+            import log_persist
+            log_persist.write_file("logs/ai_billing.json", json.dumps(data))
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _ai_billing_mtd():
+    """Current month-to-date Anthropic spend estimate + call count."""
+    try:
+        from datetime import datetime as _dt
+        today = _dt.now(CENTRAL).date()
+        prefix = f"{today.year:04d}-{today.month:02d}-"
+        data = _load_ai_billing()
+        total_cost  = 0.0
+        total_calls = 0
+        for day, entry in data.items():
+            if not isinstance(day, str) or not day.startswith(prefix):
+                continue
+            try:
+                total_cost  += float(entry.get("cost") or 0.0)
+                total_calls += int(entry.get("calls") or 0)
+            except Exception:
+                continue
+        return {"month": prefix[:-1], "cost": total_cost, "calls": total_calls}
+    except Exception:
+        return {"month": None, "cost": 0.0, "calls": 0}
+
+
 def _ai_verdict_for_pick(pick):
     """Cache-only lookup. Returns {verdict, reason} on a fresh cache
     hit, else None. NEVER calls the Anthropic API inline — API calls
@@ -6575,6 +6724,17 @@ def _queue_ai_verdict_fill(pick):
                     ),
                     messages=[{"role": "user", "content": prompt}],
                 )
+                # Record this call's tokens for the MTD spend tracker
+                # shown in the top-right of the landing page.
+                try:
+                    _usage = getattr(resp, "usage", None)
+                    _record_ai_usage(
+                        "claude-sonnet-5-5",
+                        int(getattr(_usage, "input_tokens", 0) or 0),
+                        int(getattr(_usage, "output_tokens", 0) or 0),
+                    )
+                except Exception:
+                    pass
                 # Claude 5 returns ThinkingBlock + TextBlock; pick ONLY
                 # the text block by type (haiku's ThinkingBlock has no
                 # .text; sonnet's does, but it's empty — the real reply
@@ -10907,6 +11067,7 @@ def picks_landing():
         active_adj=active_adj,
         tier_tally=tier_tally,
         board_status_counts=board_status_counts,
+        ai_billing_mtd=_ai_billing_mtd(),
     )
 
 
