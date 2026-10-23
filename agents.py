@@ -843,6 +843,16 @@ def _save_posted_state(state):
         pass
 
 
+def pick_signal_for_debug(pick):
+    """Return the pick's Signal composite score (0-5) as an int.
+    Used only by the moderator diagnostic payload so the user can
+    tell Signal composite apart from Evidence Score."""
+    try:
+        return int(pick.get("signal_score") or 0)
+    except Exception:
+        return 0
+
+
 def compute_evidence_score(pick, news_state=None):
     """Return (score, reasons_list) for a pick. Score is 0-10.
     reasons_list is the compact labels used in the Discord post
@@ -1018,7 +1028,10 @@ def run_moderator_tick():
     evaluated     = 0
     dnb_or_model  = 0
     already_posted = 0
-    score_hist    = {i: 0 for i in range(11)}
+    score_hist    = {i: 0 for i in range(11)}        # Evidence (0-10)
+    signal_hist   = {i: 0 for i in range(6)}         # Signal (0-5)
+    reason_tally  = {"AI+": 0, "Line+": 0, "Kalshi+": 0,
+                      "Whale": 0, "Sig4+": 0, "News-clean": 0}
     below_thresh  = []
     window_blocked = []
     live_or_done  = 0
@@ -1037,13 +1050,28 @@ def run_moderator_tick():
             score, reasons = compute_evidence_score(p, news_state=news_state)
             evaluated += 1
             score_hist[max(0, min(10, int(score)))] += 1
+            signal_hist[max(0, min(5, pick_signal_for_debug(p)))] += 1
+            for r in reasons:
+                if r in reason_tally:
+                    reason_tally[r] += 1
             if score < _EVIDENCE_POST_THRESHOLD:
                 # Keep the top of the "almost-cleared" list visible so
                 # the operator can see what's just below the gate.
                 if len(below_thresh) < 10:
-                    below_thresh.append({"pid": pid, "score": score,
-                                          "pick": p.get("pick"),
-                                          "sport": p.get("sport_slug")})
+                    below_thresh.append({
+                        "pid":            pid,
+                        "score":          score,
+                        "reasons":        reasons,  # ['AI+','Line+',...]
+                        "signal_composite": pick_signal_for_debug(p),
+                        "has_ai_bullets": bool(p.get("ai_matchup") or p.get("ai_factors")),
+                        "ai_verdict":     p.get("ai_verdict"),
+                        "line_move_pp":   p.get("line_move_pp"),
+                        "kalshi_live_prob": p.get("kalshi_live_prob"),
+                        "kalshi_contra":  p.get("kalshi_contra"),
+                        "whale":          bool(p.get("whale")),
+                        "pick":           p.get("pick"),
+                        "sport":          p.get("sport_slug"),
+                    })
                 continue
             mins = _minutes_to_game_start(p.get("start_time") or "")
             if mins is None or mins < 0:
@@ -1098,7 +1126,9 @@ def run_moderator_tick():
         "window_blocked_count": len(window_blocked),
         "window_blocked":       window_blocked[:10],
         "below_threshold":      below_thresh,
-        "score_histogram":      score_hist,
+        "score_histogram":      score_hist,       # Evidence Score (0-10) distribution
+        "signal_histogram":     signal_hist,      # Signal composite (0-5) distribution
+        "reason_tally":         reason_tally,     # How many picks earned each component
     }
 
 
