@@ -5017,6 +5017,16 @@ PICKS_TEMPLATE = r"""<!doctype html>
 .ai-pick-mini .aim-res.L { color: #ef4444; }
 .ai-pick-mini .aim-res.P { color: var(--muted); }
 .aim-empty { color: var(--muted-2); font-size: 14px; }
+/* Overlap markers — AI mini also qualifies for Whale / Filter 2.0 */
+.ai-pick-mini .aim-tag {
+  font-size: 10px;
+  padding: 0 3px;
+  border-radius: 3px;
+}
+.ai-pick-mini .aim-tag.whale   { color: #38bdf8; background: color-mix(in oklab, #38bdf8 20%, transparent); }
+.ai-pick-mini .aim-tag.filter2 { color: #f59e0b; background: color-mix(in oklab, #f59e0b 20%, transparent); }
+.ai-pick-mini.with-whale   { box-shadow: inset 0 0 0 1px color-mix(in oklab, #38bdf8 60%, transparent); }
+.ai-pick-mini.with-filter2 { box-shadow: inset 0 0 0 1px color-mix(in oklab, #f59e0b 60%, transparent); }
 @media (max-width: 900px) {
   .board-table .col-ai-picks { width: auto; min-width: 130px; }
   .ai-pick-mini .aim-pick { max-width: 100px; }
@@ -5077,6 +5087,71 @@ PICKS_TEMPLATE = r"""<!doctype html>
 }
 .pick-badge-row.strong .pick-lbl { color: var(--ink); font-weight: 600; }
 .pick-badge-row.strong .src-tag.ev { color: #000; background: #f59e0b; border-color: #f59e0b; font-weight: 700; }
+
+/* Filter-based card highlighting (shipped 2026-10-23).
+   Every pick card wears a left-border + background tint reflecting
+   the FILTERS it qualifies for. Priority cascade (higher class wins
+   border color): DNB (dim gray) > whale (cyan) > filter2 (gold) >
+   strongest (red) > ai-endorsed (blue). Backgrounds stack via
+   color-mix so a Strongest+AI pick blends both tints subtly. The
+   data-filters attribute carries a machine-readable list for JS
+   or copy-paste exports.
+
+   NOTE: We re-declare the left border thickness here (3px) so each
+   filter class can push its own color through, same base width as
+   the existing .strong rule to avoid layout shift when a pick
+   enters/leaves a filter. */
+.pick-badge-row.strongest {
+  background: color-mix(in oklab, #ef4444 8%, transparent);
+  border-left: 3px solid #ef4444;
+}
+.pick-badge-row.filter2 {
+  /* Filter 2.0 is the primary betting filter — gold border with a
+     stronger glow so it visually asserts primacy. */
+  background: color-mix(in oklab, #f59e0b 12%, transparent);
+  border-left: 3px solid #f59e0b;
+  box-shadow: inset 2px 0 0 #f59e0b;
+}
+.pick-badge-row.ai-endorsed {
+  /* AI endorsement (Lean) — subtle blue tint. Overridden by
+     filter2 / strongest / whale if the pick is in those too, but
+     the ::after chip below still shows a 🤖 marker. */
+  background: color-mix(in oklab, #38bdf8 7%, transparent);
+  border-left: 3px solid #38bdf8;
+}
+.pick-badge-row.ai-strong-take {
+  /* AI Strong Take — bolder blue (user research says this is AI's
+     most reliable verdict). Overrides ai-endorsed background. */
+  background: color-mix(in oklab, #38bdf8 14%, transparent);
+  border-left: 3px solid #0ea5e9;
+  box-shadow: inset 2px 0 0 #0ea5e9;
+}
+.pick-badge-row.linemove-fav {
+  /* Favorable line movement — purple accent on the right edge so
+     it coexists with the left-border filter colors. */
+  border-right: 2px solid color-mix(in oklab, #a855f7 60%, transparent);
+}
+.pick-badge-row.do-not-bet-pick {
+  background: color-mix(in oklab, #ef4444 5%, transparent);
+  border-left: 3px dashed color-mix(in oklab, #ef4444 50%, var(--muted-2));
+  opacity: 0.68;
+}
+.pick-badge-row.do-not-bet-pick .pick-lbl {
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in oklab, #ef4444 60%, transparent);
+}
+/* Priority CASCADE — later rules win if a pick carries multiple
+   classes. Mirrors the explainer order (Strongest headlines over
+   Filter 2.0 over AI; Whale dominates when present; DNB always
+   wins the look because don't-bet is the most important status).
+   The order below MATCHES the CSS source order so specificity ties
+   go to "last declared wins". */
+.pick-badge-row.ai-endorsed.strongest    { border-left-color: #ef4444; }
+.pick-badge-row.ai-endorsed.filter2      { border-left-color: #f59e0b; }
+.pick-badge-row.strongest.filter2        { border-left-color: #f59e0b; box-shadow: inset 2px 0 0 #f59e0b, 0 0 0 1px color-mix(in oklab, #ef4444 25%, transparent); }
+.pick-badge-row.whale-pick               { border-left-color: #38bdf8; box-shadow: inset 2px 0 0 #38bdf8; }
+.pick-badge-row.whale-pick.filter2       { box-shadow: inset 2px 0 0 #f59e0b, 0 0 10px color-mix(in oklab, #38bdf8 40%, transparent); }
+.pick-badge-row.do-not-bet-pick          { border-left-color: color-mix(in oklab, #ef4444 50%, var(--muted-2)); box-shadow: none; }
 .pick-badge-row .pick-ico {
   display: inline-block; width: 18px; height: 18px; border-radius: 50%;
   text-align: center; line-height: 18px; font-size: 10px; font-weight: 700;
@@ -5685,7 +5760,38 @@ PICKS_TEMPLATE = r"""<!doctype html>
           <td class="col-picks">
             {% if row.picks %}
               {% for p in row.picks %}
-                <div class="pick-badge-row {{ 'strong' if p.strong else '' }} {{ 'whale-pick' if p.whale else '' }} {{ 'model-only' if p.model_only else '' }}" title="{{ 'Model-only preference (no EV filter)' if p.model_only else ('🐋 WHALE pick — bankroll-maximum tier: fp ≥ 72%, dec 1.30–1.65, Signal ≥ 4, EV ≥ 1.5%, no risk flags. Size at quarter-to-half Kelly (5–10% of bankroll).' if p.whale else ('High-signal pick (Signal ≥ 3/5): EV cushion + favorable line move + prob floor' if p.strong else 'EV-verified pick')) }}">
+                {# Filter membership classes (shipped 2026-10-23).
+                   A pick can belong to multiple filters; CSS stacks
+                   the backgrounds so the strongest-tier filter wins
+                   the dominant border color. Priority order (highest
+                   first): whale → filter2 → strongest → ai → dnb →
+                   model-only. See CSS block for cascade. #}
+                {% set _is_strongest_pick = (not p.do_not_bet) and (
+                   (p.signal_score is not none and p.signal_score >= 3)
+                   or p.whale
+                   or ((p.line_move_pp or 0) >= 0.005)
+                ) %}
+                {% set _is_filter2 = p.strong and not p.do_not_bet and not p.model_only %}
+                {% set _is_ai_endorsed = p.ai_verdict in ('Strong Take', 'Lean') and not p.do_not_bet %}
+                {% set _is_linemove = (p.line_move_pp or 0) >= 0.01 %}
+                <div class="pick-badge-row
+                            {{ 'strong' if p.strong else '' }}
+                            {{ 'whale-pick' if p.whale else '' }}
+                            {{ 'model-only' if p.model_only else '' }}
+                            {{ 'strongest' if _is_strongest_pick else '' }}
+                            {{ 'filter2' if _is_filter2 else '' }}
+                            {{ 'ai-endorsed' if _is_ai_endorsed else '' }}
+                            {{ 'ai-strong-take' if p.ai_verdict == 'Strong Take' and not p.do_not_bet else '' }}
+                            {{ 'linemove-fav' if _is_linemove else '' }}
+                            {{ 'do-not-bet-pick' if p.do_not_bet else '' }}"
+                     data-filters="{{
+                       (['strongest'] if _is_strongest_pick else []) +
+                       (['filter2']   if _is_filter2 else []) +
+                       (['whale']     if p.whale else []) +
+                       (['ai']        if _is_ai_endorsed else []) +
+                       (['linemove']  if _is_linemove else [])
+                     }}"
+                     title="{{ 'Model-only preference (no EV filter)' if p.model_only else ('🐋 WHALE pick — bankroll-maximum tier: fp ≥ 72%, dec 1.30–1.65, Signal ≥ 4, EV ≥ 1.5%, no risk flags. Size at quarter-to-half Kelly (5–10% of bankroll).' if p.whale else ('High-signal pick (Signal ≥ 3/5): EV cushion + favorable line move + prob floor' if p.strong else 'EV-verified pick')) }}">
                   <span class="pick-ico {{ p.icon_cls }}">{{ p.icon }}</span>
                   <span class="pick-lbl">{{ p.pick_short }}</span>
                   <span class="pick-conf c{{ p.conf }}">{{ p.conf }}/5</span>
@@ -5741,10 +5847,18 @@ PICKS_TEMPLATE = r"""<!doctype html>
             {% endfor %}
             {% if _ai_endorsed %}
               {% for p in _ai_endorsed %}
-                <div class="ai-pick-mini {{ 'strong-take' if p.ai_verdict == 'Strong Take' else 'lean' }}"
-                     title="{{ p.ai_reason or '' }}">
+                {# Also highlight AI minis if the pick qualifies for
+                   stronger filters so the user sees overlap at a
+                   glance (e.g. an AI Lean that's also a Whale). #}
+                <div class="ai-pick-mini
+                            {{ 'strong-take' if p.ai_verdict == 'Strong Take' else 'lean' }}
+                            {{ 'with-whale' if p.whale else '' }}
+                            {{ 'with-filter2' if p.strong and not p.do_not_bet and not p.model_only else '' }}"
+                     title="{{ p.ai_reason or '' }}{% if p.whale %} | 🐋 Whale{% endif %}{% if p.strong %} | ★ Filter 2.0{% endif %}">
                   <span class="aim-verd">{{ 'STRONG' if p.ai_verdict == 'Strong Take' else 'LEAN' }}</span>
                   <span class="aim-pick">{{ p.pick_short }}</span>
+                  {% if p.whale %}<span class="aim-tag whale">&#x1F40B;</span>{% endif %}
+                  {% if p.strong and not p.do_not_bet and not p.model_only %}<span class="aim-tag filter2">&#9733;</span>{% endif %}
                   {% if p.result == 'W' %}<span class="aim-res W">&#10003;</span>
                   {% elif p.result == 'L' %}<span class="aim-res L">&#10007;</span>
                   {% elif p.result == 'P' %}<span class="aim-res P">P</span>
