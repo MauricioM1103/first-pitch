@@ -5330,6 +5330,20 @@ _AI_VERDICT_CACHE_MEM = {"data": None, "ts": 0.0}
 _AI_INFLIGHT = set()
 import threading as _ai_threading
 _AI_INFLIGHT_LOCK = _ai_threading.Lock()
+# Diagnostic counters, surfaced via /debug/ai so we can see what the
+# background-fill path is actually doing in production.
+_AI_COUNTERS = {
+    "queue_called":    0,
+    "skipped_no_pid":  0,
+    "skipped_no_key":  0,
+    "skipped_inflight":0,
+    "thread_started":  0,
+    "thread_wrote":    0,
+    "thread_empty_txt":0,
+    "thread_api_err":  0,
+    "thread_save_err": 0,
+    "last_err":        None,
+}
 
 
 def _ai_verdict_cache_path():
@@ -5437,14 +5451,18 @@ def _queue_ai_verdict_fill(pick):
     already in flight for this pick, no-op. Caller fires this for
     every Signal 3+ pick that `_ai_verdict_for_pick` returned None on;
     the next page load picks up the cached verdict and renders it."""
+    _AI_COUNTERS["queue_called"] += 1
     pid = pick.get("id")
     if not pid:
+        _AI_COUNTERS["skipped_no_pid"] += 1
         return
     import os as _os
     if not _os.environ.get("ANTHROPIC_API_KEY"):
+        _AI_COUNTERS["skipped_no_key"] += 1
         return
     with _AI_INFLIGHT_LOCK:
         if pid in _AI_INFLIGHT:
+            _AI_COUNTERS["skipped_inflight"] += 1
             return
         _AI_INFLIGHT.add(pid)
     def _work():
@@ -5516,7 +5534,9 @@ def _queue_ai_verdict_fill(pick):
                         if t:
                             txt = t
                             break
-            except Exception:
+            except Exception as _apierr:
+                _AI_COUNTERS["thread_api_err"] += 1
+                _AI_COUNTERS["last_err"] = f"api: {type(_apierr).__name__}: {str(_apierr)[:120]}"
                 return
             # Don't cache empty responses — the Haiku API occasionally
             # returns an empty TextBlock (safety filter, rate-limit
@@ -5525,6 +5545,7 @@ def _queue_ai_verdict_fill(pick):
             # whole cache on an earlier run; now we skip entirely and
             # let the next scan retry.
             if not txt:
+                _AI_COUNTERS["thread_empty_txt"] += 1
                 return
             verdict_map = {"STRONG": "Strong Take", "LEAN": "Lean",
                            "PASS": "Pass", "AVOID": "Avoid"}
@@ -5543,15 +5564,21 @@ def _queue_ai_verdict_fill(pick):
             reason = reason.strip()[:200]
             # Reload cache (another thread may have written since we
             # started), merge, and save.
-            cache = _load_ai_verdict_cache()
-            cache[pid] = {"verdict": verdict, "reason": reason, "ts": time.time()}
-            _save_ai_verdict_cache(cache)
+            try:
+                cache = _load_ai_verdict_cache()
+                cache[pid] = {"verdict": verdict, "reason": reason, "ts": time.time()}
+                _save_ai_verdict_cache(cache)
+                _AI_COUNTERS["thread_wrote"] += 1
+            except Exception as _saverr:
+                _AI_COUNTERS["thread_save_err"] += 1
+                _AI_COUNTERS["last_err"] = f"save: {type(_saverr).__name__}: {str(_saverr)[:120]}"
         finally:
             with _AI_INFLIGHT_LOCK:
                 _AI_INFLIGHT.discard(pid)
     try:
         t = _ai_threading.Thread(target=_work, daemon=True)
         t.start()
+        _AI_COUNTERS["thread_started"] += 1
     except Exception:
         with _AI_INFLIGHT_LOCK:
             _AI_INFLIGHT.discard(pid)
@@ -17629,6 +17656,8 @@ def debug_ai():
         }
     except Exception as e:
         out["bg_thread_test_error"] = f"{type(e).__name__}: {e}"
+    out["counters"] = dict(_AI_COUNTERS)
+    out["inflight_count"] = len(_AI_INFLIGHT)
     return Response(_json.dumps(out, indent=2), mimetype="application/json")
 
 
