@@ -18465,34 +18465,19 @@ def _send_daily_picks_png(half=None):
 
 @app.route("/cron/daily-picks")
 def cron_daily_picks():
-    """Scheduled endpoint for Render cron. Pass ?half=1 (first half,
-    games before 3 PM CT) or ?half=2 (second half, 3 PM CT or later).
-    Omitting half auto-picks by current CT hour: 1 if before noon CT,
-    else 2. Optionally gated by cron_secret setting."""
-    settings = _load_settings()
-    secret = (settings.get("cron_secret") or "").strip()
-    if secret and (request.args.get("key") or "") != secret:
-        return Response(json.dumps({"ok": False, "error": "unauthorized"}),
-                        status=401, mimetype="application/json")
-    raw_half = (request.args.get("half") or "").strip()
-    if raw_half in ("1", "2"):
-        half = int(raw_half)
-    elif raw_half == "both":
-        # Convenience: send BOTH halves in one call (useful for manual
-        # one-shot testing).
-        r1 = _send_daily_picks_png(half=1)
-        r2 = _send_daily_picks_png(half=2)
-        return Response(json.dumps({
-            "ok": bool(r1.get("sent") or r2.get("sent")),
-            "first_half": r1,
-            "second_half": r2,
-        }), mimetype="application/json")
-    else:
-        # Auto-pick by current CT hour: half 1 before noon, half 2 after.
-        half = 1 if datetime.now(CENTRAL).hour < 12 else 2
-    result = _send_daily_picks_png(half=half)
-    result["ok"] = bool(result.get("sent"))
-    return Response(json.dumps(result), mimetype="application/json")
+    """RETIRED. The slate-based pipeline (two PNG posts per day of top-N
+    picks) was replaced by Agent #8 — the per-pick moderator — which
+    posts individually when each pick is in its sport's pre-game window
+    AND clears the evidence-score threshold. See /cron/moderator-tick.
+    Kept as a 200 no-op so legacy UptimeRobot monitors stay green."""
+    return Response(json.dumps({
+        "ok": True,
+        "retired": True,
+        "replaced_by": "/cron/moderator-tick",
+        "note": ("Legacy slate pipeline retired on 2026-10-23. Point "
+                 "your cron at /cron/moderator-tick (every 10 min) and "
+                 "/cron/eod-recap (daily)."),
+    }), mimetype="application/json")
 
 
 # Phase 31 orchestrator — one Render cron hits /cron/dispatch every
@@ -19928,14 +19913,35 @@ def cron_prebuild():
 
 @app.route("/cron/dispatch")
 def cron_dispatch():
-    """Fire every ~15 min. Decides what's due today and fires each
-    event only once per day. v2 schedule:
-      - 7:00 AM CT  : Morning slate (top 5, games < 12 PM CT)
-      - 12:30 PM CT : Afternoon slate (top 5, games 12 PM - 6 PM CT)
-      - 6:00 PM CT  : Prime Time slate (top 5, games 6 PM CT+)
-      - 1:00 AM CT  : End-of-day summary (next day)
-    Plus per-pick result PNGs as picks grade, and hard-DNB alerts if a
-    posted pick's signal collapses."""
+    """RETIRED 2026-10-23. Legacy slate dispatcher (agenda + 3 slate
+    PNGs + EOD + result alerts) replaced by Agent #8 moderator
+    (/cron/moderator-tick) and Agent #4 EOD recap (/cron/eod-recap).
+
+    Kept returning 200 so UptimeRobot monitors stay green; records a
+    heartbeat for /healthz. No Discord posts fire from here anymore."""
+    now_ct = datetime.now(CENTRAL)
+    try:
+        import time as _tbeat
+        _settings_os.makedirs(_settings_os.path.dirname(
+            _DISPATCH_HEARTBEAT_PATH), exist_ok=True)
+        with open(_DISPATCH_HEARTBEAT_PATH, "w") as _hf:
+            json.dump({"ts": _tbeat.time(),
+                       "now_ct": now_ct.isoformat()}, _hf)
+    except Exception:
+        pass
+    return Response(json.dumps({
+        "ok": True,
+        "retired": True,
+        "replaced_by": ["/cron/moderator-tick", "/cron/eod-recap"],
+        "actions": ["heartbeat"],
+        "now_ct": now_ct.isoformat(),
+    }, default=str), mimetype="application/json")
+
+
+def _cron_dispatch_disabled_entry():
+    """Older code paths that still call into the dispatcher directly
+    (manual curls, /debug probes) go here instead of running the
+    legacy flow."""
     settings = _load_settings()
     secret = (settings.get("cron_secret") or "").strip()
     if secret and (request.args.get("key") or "") != secret:
@@ -19983,6 +19989,26 @@ def _cron_dispatch_inner(_db, settings, webhook):
                        "now_ct": now_ct.isoformat()}, _hf)
     except Exception:
         pass
+
+    # ------------------------------------------------------------
+    # RETIRED 2026-10-23 — the slate dispatcher (agenda text post,
+    # 3 slate PNGs, result alerts, EOD summary) has been replaced
+    # by Agent #8 (/cron/moderator-tick: per-pick individual posts
+    # timed to each sport's pre-game window + evidence-score gate)
+    # and Agent #4 (/cron/eod-recap).
+    #
+    # We keep the route wired so UptimeRobot monitors stay green
+    # and the heartbeat above still records, but we exit here
+    # before any Discord POST fires. If you need the legacy
+    # pipeline back, revert this guard.
+    # ------------------------------------------------------------
+    return Response(json.dumps({
+        "ok": True,
+        "retired": True,
+        "replaced_by": ["/cron/moderator-tick", "/cron/eod-recap"],
+        "actions": ["heartbeat"],
+        "now_ct": now_ct.isoformat(),
+    }, default=str), mimetype="application/json")
 
     sched = _load_dispatch_schedule()
     # Reset on date change OR schema upgrade (v1 → v2 slate layout).
