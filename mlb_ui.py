@@ -5071,8 +5071,10 @@ PICKS_TEMPLATE = r"""<!doctype html>
   letter-spacing: 0.1em; text-transform: uppercase; font-weight: 600;
   margin-bottom: 3px;
 }
-.ai-pick-mini .aim-section-label.aim-pro  { color: var(--good); }
-.ai-pick-mini .aim-section-label.aim-risk { color: #ef4444; }
+.ai-pick-mini .aim-section-label.aim-pro      { color: var(--good); }
+.ai-pick-mini .aim-section-label.aim-matchup  { color: #38bdf8; }
+.ai-pick-mini .aim-section-label.aim-factors  { color: #a855f7; }
+.ai-pick-mini .aim-section-label.aim-risk     { color: #ef4444; }
 .ai-pick-mini .aim-section ul {
   margin: 0; padding-left: 16px;
   color: var(--muted); font-size: 11px;
@@ -5966,11 +5968,21 @@ PICKS_TEMPLATE = r"""<!doctype html>
                     {% if p.ai_summary %}
                     <div class="aim-summary">{{ p.ai_summary }}</div>
                     {% endif %}
-                    {% if p.ai_reasons %}
+                    {% if p.ai_matchup %}
                     <div class="aim-section">
-                      <div class="aim-section-label aim-pro">&#10003; Reasons</div>
+                      <div class="aim-section-label aim-matchup">&#x1F3C9; Matchup</div>
                       <ul>
-                        {% for r in p.ai_reasons %}
+                        {% for r in p.ai_matchup %}
+                        <li>{{ r }}</li>
+                        {% endfor %}
+                      </ul>
+                    </div>
+                    {% endif %}
+                    {% if p.ai_factors %}
+                    <div class="aim-section">
+                      <div class="aim-section-label aim-factors">&#x1F4CB; Key Factors</div>
+                      <ul>
+                        {% for r in p.ai_factors %}
                         <li>{{ r }}</li>
                         {% endfor %}
                       </ul>
@@ -5986,7 +5998,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
                       </ul>
                     </div>
                     {% endif %}
-                    {% if not p.ai_reasons and not p.ai_risks and p.ai_reason %}
+                    {% if not p.ai_matchup and not p.ai_factors and not p.ai_risks and p.ai_reason %}
                     <div class="aim-legacy">{{ p.ai_reason }}</div>
                     {% endif %}
                   </div>
@@ -6457,14 +6469,15 @@ def _ai_verdict_for_pick(pick):
                 return None  # treat as miss → re-fires with new prompt
         except Exception:
             return None
-    # Return the full structured result when available. Old cache entries
-    # without summary/reasons/risks fall back to the legacy single-reason
-    # string so the UI never breaks mid-migration.
+    # Return the full structured result. New fields: matchup, factors,
+    # risks. Legacy entries without them (or old reasons[] array) fall
+    # back gracefully — the UI shows whatever sections have content.
     return {
         "verdict": v,
         "reason":  hit.get("reason"),
         "summary": hit.get("summary"),
-        "reasons": hit.get("reasons") or [],
+        "matchup": hit.get("matchup") or hit.get("reasons") or [],  # legacy reasons[] mapped to matchup
+        "factors": hit.get("factors") or [],
         "risks":   hit.get("risks") or [],
     }
 
@@ -6505,37 +6518,43 @@ def _queue_ai_verdict_fill(pick):
             _pin = pick.get("pinnacle_prob") or 0
             _sig = pick.get("signal_score") or 0
             prompt = (
-                f"You are a sharp sports betting analyst. One pick to evaluate:\n"
+                f"You are a sharp sports betting analyst with deep knowledge of pro + major-college sports.\n\n"
+                f"Pick to analyze:\n"
                 f"Sport: {pick.get('sport_name') or pick.get('sport_slug') or '?'}\n"
                 f"Game: {pick.get('away_team') or '?'} at {pick.get('home_team') or '?'}\n"
                 f"Market: {pick.get('market') or '?'}\n"
                 f"Pick: {pick.get('pick') or '?'}  @  {_dec}  ({pick.get('book') or '?'})\n"
-                f"Model prob: {float(_mc)*100:.1f}%  Pinnacle devig: {float(_pin)*100:.1f}%\n"
-                f"EV: {float(_ev):+.1f}%  Signal composite: {_sig}/5\n\n"
-                f"The pick already passed OUR model's +EV filter — your "
-                f"job is to confirm or push back, not to re-apply a market "
-                f"filter. Default to LEAN unless the model clearly misread "
-                f"the matchup.\n\n"
+                f"(The pick already cleared our +EV model filter — default to LEAN unless something is clearly wrong.)\n\n"
+                f"Do a SUBSTANTIVE matchup analysis — like a human handicapper, not a stats bot. "
+                f"Draw on what you know about these specific teams/players, recent form, injuries, "
+                f"head-to-head history, scheduling (back-to-backs, travel, rest), tactical matchup, "
+                f"weather if outdoor, and any current-season trends. Use the actual team + player "
+                f"names and the current season's context. Do NOT narrate the model/EV mechanics — "
+                f"that's filter plumbing the user doesn't need in the AI view.\n\n"
                 f"Verdicts:\n"
-                f"  STRONG TAKE  — standout edge: model + market agree AND signal >=4, no concerns\n"
+                f"  STRONG TAKE  — clear angle, high conviction, no major concerns\n"
                 f"  LEAN         — reasonable edge, bet-worthy at standard stake (DEFAULT)\n"
-                f"  PASS         — real red flag the model missed (not just market disagreement)\n"
-                f"  AVOID        — clear structural reason this bet won't hit (injury/weather/scheduling)\n\n"
+                f"  PASS         — real red flag you spotted (injury, trend, matchup) that argues against this side\n"
+                f"  AVOID        — clear structural reason this bet won't hit (ruled-out star, severe weather, blowout risk)\n\n"
                 f"Reply in EXACTLY this format, nothing else:\n"
                 f"VERDICT: <one of the four verdict words>\n"
-                f"SUMMARY: <one sentence, <=18 words>\n"
-                f"REASONS:\n"
-                f"- <short bullet, <=12 words — specific supporting signal>\n"
-                f"- <short bullet, <=12 words>\n"
-                f"- <short bullet, <=12 words — optional, max 3 bullets>\n"
+                f"SUMMARY: <one sentence, <=20 words, naming the specific angle>\n"
+                f"MATCHUP:\n"
+                f"- <team/player-level bullet, <=15 words — recent form, head-to-head, tactical edge>\n"
+                f"- <bullet, <=15 words>\n"
+                f"- <bullet, <=15 words — optional, max 3>\n"
+                f"KEY FACTORS:\n"
+                f"- <concrete factor, <=15 words — injury, pitching/goalie, rest, weather, trend>\n"
+                f"- <bullet, <=15 words>\n"
+                f"- <bullet, <=15 words — optional, max 3>\n"
                 f"RISKS:\n"
-                f"- <short bullet, <=12 words — specific risk to this pick>\n"
-                f"- <short bullet, <=12 words — optional, max 2 bullets>\n"
+                f"- <specific risk to this pick, <=15 words — ruled-out starter, back-to-back, weather>\n"
+                f"- <bullet, <=15 words — optional, max 2>\n"
                 f"\n"
-                f"Each bullet must be concrete (e.g. 'Starter unconfirmed' or\n"
-                f"'Alt line, DK unverified' — not 'bet responsibly' or vague\n"
-                f"caveats). If a section would be empty (e.g. no clear risks),\n"
-                f"write '- none' instead of leaving it blank."
+                f"Every bullet must name a SPECIFIC thing — a player, a stat, a scheduling fact, a tactical point. "
+                f"Avoid vague filler ('team playing well', 'good matchup'). If you don't know a specific "
+                f"detail, say so plainly ('no injury news surfaced'). If a section would be empty, "
+                f"write '- none' and the parser will drop it."
             )
             try:
                 # max_tokens=2048 (was 160) because Sonnet 5.5 runs
@@ -6589,20 +6608,22 @@ def _queue_ai_verdict_fill(pick):
                 return
             # Parse the structured response. Expected layout:
             #   VERDICT: Lean
-            #   SUMMARY: Model is 4pp over Pinnacle...
-            #   REASONS:
+            #   SUMMARY: Short angle statement
+            #   MATCHUP:
             #   - Bullet
+            #   - Bullet
+            #   KEY FACTORS:
             #   - Bullet
             #   RISKS:
             #   - Bullet
             # Falls back to legacy "VERDICT: reason" one-liner parse if
-            # Sonnet drifts off format, so old-prompt cached entries
-            # still render something meaningful.
+            # Sonnet drifts off format.
             verdict_map = {"STRONG": "Strong Take", "LEAN": "Lean",
                            "PASS": "Pass", "AVOID": "Avoid"}
             verdict  = None
             summary  = ""
-            reasons  = []
+            matchup  = []
+            factors  = []
             risks    = []
             try:
                 current_section = None
@@ -6612,7 +6633,6 @@ def _queue_ai_verdict_fill(pick):
                         continue
                     upper = line.upper()
                     if upper.startswith("VERDICT"):
-                        # Extract first keyword from VERDICT: xxxx
                         rhs = line.split(":", 1)[1] if ":" in line else ""
                         for w in rhs.upper().split():
                             w2 = w.strip(",.;:")
@@ -6621,27 +6641,32 @@ def _queue_ai_verdict_fill(pick):
                                 break
                         current_section = None
                     elif upper.startswith("SUMMARY"):
-                        summary = (line.split(":", 1)[1] if ":" in line else "").strip()[:180]
+                        summary = (line.split(":", 1)[1] if ":" in line else "").strip()[:200]
                         current_section = None
-                    elif upper.startswith("REASONS"):
-                        current_section = "reasons"
+                    elif upper.startswith("MATCHUP"):
+                        current_section = "matchup"
+                    elif upper.startswith("KEY FACTOR") or upper.startswith("FACTORS"):
+                        current_section = "factors"
                     elif upper.startswith("RISKS"):
                         current_section = "risks"
+                    # Legacy section name — old prompt returned REASONS
+                    # instead of MATCHUP+KEY FACTORS. Map it to matchup.
+                    elif upper.startswith("REASONS"):
+                        current_section = "matchup"
                     elif line.startswith("-") or line.startswith("*") or line.startswith("•"):
                         bullet = line.lstrip("-*• ").strip()
                         if not bullet or bullet.lower() == "none":
                             continue
-                        bullet = bullet[:120]
-                        if current_section == "reasons" and len(reasons) < 3:
-                            reasons.append(bullet)
+                        bullet = bullet[:140]
+                        if current_section == "matchup" and len(matchup) < 3:
+                            matchup.append(bullet)
+                        elif current_section == "factors" and len(factors) < 3:
+                            factors.append(bullet)
                         elif current_section == "risks" and len(risks) < 2:
                             risks.append(bullet)
             except Exception:
                 pass
             if not verdict:
-                # Model drifted off the structured format entirely —
-                # fall back to the old parse to extract whatever it did
-                # say so we don't lose the call completely.
                 first = txt.split(":", 1)[0].strip().upper().split()
                 for w in first:
                     if w in verdict_map:
@@ -6650,20 +6675,18 @@ def _queue_ai_verdict_fill(pick):
                 if not verdict:
                     verdict = "Pass"
                 if not summary:
-                    summary = (txt.split(":", 1)[1].strip() if ":" in txt else txt).strip()[:180]
-            # Legacy field: reason = summary (so old code paths that
-            # read p.ai_reason keep working with new rich cache entries).
-            reason = summary or (reasons[0] if reasons else "")
-            # Reload cache (another thread may have written since we
-            # started), merge, and save.
+                    summary = (txt.split(":", 1)[1].strip() if ":" in txt else txt).strip()[:200]
+            # Legacy field: reason = summary (older code paths read p.ai_reason).
+            reason = summary or (matchup[0] if matchup else "")
             try:
                 cache = _load_ai_verdict_cache()
                 cache[pid] = {
                     "verdict": verdict,
-                    "reason":  reason,          # legacy
-                    "summary": summary,         # new
-                    "reasons": reasons,         # new — list of pro bullets
-                    "risks":   risks,           # new — list of risk bullets
+                    "reason":  reason,          # legacy single-line
+                    "summary": summary,         # one-sentence angle
+                    "matchup": matchup,         # bullets about the specific matchup
+                    "factors": factors,         # bullets about injuries / trends / rest / weather
+                    "risks":   risks,           # bullets about why this bet could lose
                     "ts":      time.time(),
                 }
                 _save_ai_verdict_cache(cache)
@@ -9189,7 +9212,8 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                     p["ai_verdict"] = _av.get("verdict")
                     p["ai_reason"]  = _av.get("reason")
                     p["ai_summary"] = _av.get("summary") or _av.get("reason")
-                    p["ai_reasons"] = _av.get("reasons") or []
+                    p["ai_matchup"] = _av.get("matchup") or []
+                    p["ai_factors"] = _av.get("factors") or []
                     p["ai_risks"]   = _av.get("risks") or []
                     _v = _av.get("verdict")
                     if _v == "Avoid":
