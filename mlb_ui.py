@@ -5038,6 +5038,49 @@ PICKS_TEMPLATE = r"""<!doctype html>
   background: color-mix(in oklab, var(--accent, #8b5cf6) 12%, transparent);
   border-left: 2px solid var(--accent, #8b5cf6);
 }
+/* Collapsible AI mini (shipped 2026-10-24): the <summary> keeps the
+   compact one-liner; the <details> body shows Reasons + Risks bullets. */
+.ai-pick-mini {
+  display: block;    /* overrides the old flex layout so the collapsible body stacks under the summary */
+  padding: 0;
+  overflow: hidden;
+}
+.ai-pick-mini > summary.aim-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 8px;
+  cursor: pointer; user-select: none;
+  list-style: none;
+}
+.ai-pick-mini > summary.aim-head::-webkit-details-marker { display: none; }
+.ai-pick-mini .aim-chev {
+  color: var(--muted-2); font-family: "JetBrains Mono", monospace;
+  font-size: 12px; transition: transform 0.15s ease;
+}
+.ai-pick-mini[open] .aim-chev { transform: rotate(90deg); }
+.ai-pick-mini .aim-body {
+  padding: 6px 10px 8px;
+  border-top: 1px dashed color-mix(in oklab, var(--accent, #8b5cf6) 25%, var(--rule));
+  font-size: 11.5px; line-height: 1.5;
+}
+.ai-pick-mini .aim-summary {
+  color: var(--ink); margin-bottom: 6px; font-style: italic;
+}
+.ai-pick-mini .aim-section { margin-top: 6px; }
+.ai-pick-mini .aim-section-label {
+  font-family: "JetBrains Mono", monospace; font-size: 9.5px;
+  letter-spacing: 0.1em; text-transform: uppercase; font-weight: 600;
+  margin-bottom: 3px;
+}
+.ai-pick-mini .aim-section-label.aim-pro  { color: var(--good); }
+.ai-pick-mini .aim-section-label.aim-risk { color: #ef4444; }
+.ai-pick-mini .aim-section ul {
+  margin: 0; padding-left: 16px;
+  color: var(--muted); font-size: 11px;
+}
+.ai-pick-mini .aim-section ul li { margin: 1px 0; }
+.ai-pick-mini .aim-legacy {
+  color: var(--muted); font-size: 11px; font-style: italic;
+}
 .ai-pick-mini .aim-verd {
   font-family: "JetBrains Mono", monospace;
   font-size: 9px; letter-spacing: 0.1em; font-weight: 600;
@@ -5898,23 +5941,56 @@ PICKS_TEMPLATE = r"""<!doctype html>
             {% endfor %}
             {% if _ai_endorsed %}
               {% for p in _ai_endorsed %}
-                {# Also highlight AI minis if the pick qualifies for
-                   stronger filters so the user sees overlap at a
-                   glance (e.g. an AI Lean that's also a Whale). #}
-                <div class="ai-pick-mini
-                            {{ 'strong-take' if p.ai_verdict == 'Strong Take' else 'lean' }}
-                            {{ 'with-whale' if p.whale else '' }}
-                            {{ 'with-filter2' if p.strong and not p.do_not_bet and not p.model_only else '' }}"
-                     title="{{ p.ai_reason or '' }}{% if p.whale %} | 🐋 Whale{% endif %}{% if p.strong %} | ★ Filter 2.0{% endif %}">
-                  <span class="aim-verd">{{ 'STRONG' if p.ai_verdict == 'Strong Take' else 'LEAN' }}</span>
-                  <span class="aim-pick">{{ p.pick_short }}</span>
-                  {% if p.whale %}<span class="aim-tag whale">&#x1F40B;</span>{% endif %}
-                  {% if p.strong and not p.do_not_bet and not p.model_only %}<span class="aim-tag filter2">&#9733;</span>{% endif %}
-                  {% if p.result == 'W' %}<span class="aim-res W">&#10003;</span>
-                  {% elif p.result == 'L' %}<span class="aim-res L">&#10007;</span>
-                  {% elif p.result == 'P' %}<span class="aim-res P">P</span>
-                  {% endif %}
-                </div>
+                {# Each AI mini is a <details> so the user can expand
+                   to see WHY AI leans this way + what the risks are.
+                   Reasons + risks come in as structured bullet lists
+                   from the Sonnet verdict prompt. The <summary> row
+                   itself keeps the compact one-line layout from
+                   before — only clicking opens the body. #}
+                <details class="ai-pick-mini
+                                {{ 'strong-take' if p.ai_verdict == 'Strong Take' else 'lean' }}
+                                {{ 'with-whale' if p.whale else '' }}
+                                {{ 'with-filter2' if p.strong and not p.do_not_bet and not p.model_only else '' }}">
+                  <summary class="aim-head">
+                    <span class="aim-chev">&rsaquo;</span>
+                    <span class="aim-verd">{{ 'STRONG' if p.ai_verdict == 'Strong Take' else 'LEAN' }}</span>
+                    <span class="aim-pick">{{ p.pick_short }}</span>
+                    {% if p.whale %}<span class="aim-tag whale" title="Also a Whale pick">&#x1F40B;</span>{% endif %}
+                    {% if p.strong and not p.do_not_bet and not p.model_only %}<span class="aim-tag filter2" title="Also a Filter 2.0 pick">&#9733;</span>{% endif %}
+                    {% if p.result == 'W' %}<span class="aim-res W">&#10003;</span>
+                    {% elif p.result == 'L' %}<span class="aim-res L">&#10007;</span>
+                    {% elif p.result == 'P' %}<span class="aim-res P">P</span>
+                    {% endif %}
+                  </summary>
+                  <div class="aim-body">
+                    {% if p.ai_summary %}
+                    <div class="aim-summary">{{ p.ai_summary }}</div>
+                    {% endif %}
+                    {% if p.ai_reasons %}
+                    <div class="aim-section">
+                      <div class="aim-section-label aim-pro">&#10003; Reasons</div>
+                      <ul>
+                        {% for r in p.ai_reasons %}
+                        <li>{{ r }}</li>
+                        {% endfor %}
+                      </ul>
+                    </div>
+                    {% endif %}
+                    {% if p.ai_risks %}
+                    <div class="aim-section">
+                      <div class="aim-section-label aim-risk">&#9888; Risks</div>
+                      <ul>
+                        {% for r in p.ai_risks %}
+                        <li>{{ r }}</li>
+                        {% endfor %}
+                      </ul>
+                    </div>
+                    {% endif %}
+                    {% if not p.ai_reasons and not p.ai_risks and p.ai_reason %}
+                    <div class="aim-legacy">{{ p.ai_reason }}</div>
+                    {% endif %}
+                  </div>
+                </details>
               {% endfor %}
             {% else %}
               <span class="aim-empty">&mdash;</span>
@@ -6381,7 +6457,16 @@ def _ai_verdict_for_pick(pick):
                 return None  # treat as miss → re-fires with new prompt
         except Exception:
             return None
-    return {"verdict": v, "reason": hit.get("reason")}
+    # Return the full structured result when available. Old cache entries
+    # without summary/reasons/risks fall back to the legacy single-reason
+    # string so the UI never breaks mid-migration.
+    return {
+        "verdict": v,
+        "reason":  hit.get("reason"),
+        "summary": hit.get("summary"),
+        "reasons": hit.get("reasons") or [],
+        "risks":   hit.get("risks") or [],
+    }
 
 
 def _queue_ai_verdict_fill(pick):
@@ -6430,14 +6515,27 @@ def _queue_ai_verdict_fill(pick):
                 f"The pick already passed OUR model's +EV filter — your "
                 f"job is to confirm or push back, not to re-apply a market "
                 f"filter. Default to LEAN unless the model clearly misread "
-                f"the matchup. Reply with ONE verdict followed by one short "
-                f"reason (<=15 words):\n"
+                f"the matchup.\n\n"
+                f"Verdicts:\n"
                 f"  STRONG TAKE  — standout edge: model + market agree AND signal >=4, no concerns\n"
-                f"  LEAN         — reasonable edge, bet-worthy at standard stake (DEFAULT if nothing is wrong)\n"
-                f"  PASS         — real red flag the model missed (not just a market disagreement)\n"
-                f"  AVOID        — clear structural reason this bet won't hit (injury, weather, scheduling)\n"
+                f"  LEAN         — reasonable edge, bet-worthy at standard stake (DEFAULT)\n"
+                f"  PASS         — real red flag the model missed (not just market disagreement)\n"
+                f"  AVOID        — clear structural reason this bet won't hit (injury/weather/scheduling)\n\n"
+                f"Reply in EXACTLY this format, nothing else:\n"
+                f"VERDICT: <one of the four verdict words>\n"
+                f"SUMMARY: <one sentence, <=18 words>\n"
+                f"REASONS:\n"
+                f"- <short bullet, <=12 words — specific supporting signal>\n"
+                f"- <short bullet, <=12 words>\n"
+                f"- <short bullet, <=12 words — optional, max 3 bullets>\n"
+                f"RISKS:\n"
+                f"- <short bullet, <=12 words — specific risk to this pick>\n"
+                f"- <short bullet, <=12 words — optional, max 2 bullets>\n"
                 f"\n"
-                f"Format: VERDICT: <reason>"
+                f"Each bullet must be concrete (e.g. 'Starter unconfirmed' or\n"
+                f"'Alt line, DK unverified' — not 'bet responsibly' or vague\n"
+                f"caveats). If a section would be empty (e.g. no clear risks),\n"
+                f"write '- none' instead of leaving it blank."
             )
             try:
                 # max_tokens=2048 (was 160) because Sonnet 5.5 runs
@@ -6489,26 +6587,85 @@ def _queue_ai_verdict_fill(pick):
             if not txt:
                 _AI_COUNTERS["thread_empty_txt"] += 1
                 return
+            # Parse the structured response. Expected layout:
+            #   VERDICT: Lean
+            #   SUMMARY: Model is 4pp over Pinnacle...
+            #   REASONS:
+            #   - Bullet
+            #   - Bullet
+            #   RISKS:
+            #   - Bullet
+            # Falls back to legacy "VERDICT: reason" one-liner parse if
+            # Sonnet drifts off format, so old-prompt cached entries
+            # still render something meaningful.
             verdict_map = {"STRONG": "Strong Take", "LEAN": "Lean",
                            "PASS": "Pass", "AVOID": "Avoid"}
-            first = txt.split(":", 1)[0].strip().upper().split()
-            verdict = None
-            for w in first:
-                if w in verdict_map:
-                    verdict = verdict_map[w]
-                    break
+            verdict  = None
+            summary  = ""
+            reasons  = []
+            risks    = []
+            try:
+                current_section = None
+                for raw_line in txt.splitlines():
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    upper = line.upper()
+                    if upper.startswith("VERDICT"):
+                        # Extract first keyword from VERDICT: xxxx
+                        rhs = line.split(":", 1)[1] if ":" in line else ""
+                        for w in rhs.upper().split():
+                            w2 = w.strip(",.;:")
+                            if w2 in verdict_map:
+                                verdict = verdict_map[w2]
+                                break
+                        current_section = None
+                    elif upper.startswith("SUMMARY"):
+                        summary = (line.split(":", 1)[1] if ":" in line else "").strip()[:180]
+                        current_section = None
+                    elif upper.startswith("REASONS"):
+                        current_section = "reasons"
+                    elif upper.startswith("RISKS"):
+                        current_section = "risks"
+                    elif line.startswith("-") or line.startswith("*") or line.startswith("•"):
+                        bullet = line.lstrip("-*• ").strip()
+                        if not bullet or bullet.lower() == "none":
+                            continue
+                        bullet = bullet[:120]
+                        if current_section == "reasons" and len(reasons) < 3:
+                            reasons.append(bullet)
+                        elif current_section == "risks" and len(risks) < 2:
+                            risks.append(bullet)
+            except Exception:
+                pass
             if not verdict:
-                # Model drifted off the format but at least gave text.
-                # Treat as "Pass" but keep the raw text as the reason so
-                # the operator can see what the model actually said.
-                verdict = "Pass"
-            reason = txt.split(":", 1)[1].strip() if ":" in txt else txt
-            reason = reason.strip()[:200]
+                # Model drifted off the structured format entirely —
+                # fall back to the old parse to extract whatever it did
+                # say so we don't lose the call completely.
+                first = txt.split(":", 1)[0].strip().upper().split()
+                for w in first:
+                    if w in verdict_map:
+                        verdict = verdict_map[w]
+                        break
+                if not verdict:
+                    verdict = "Pass"
+                if not summary:
+                    summary = (txt.split(":", 1)[1].strip() if ":" in txt else txt).strip()[:180]
+            # Legacy field: reason = summary (so old code paths that
+            # read p.ai_reason keep working with new rich cache entries).
+            reason = summary or (reasons[0] if reasons else "")
             # Reload cache (another thread may have written since we
             # started), merge, and save.
             try:
                 cache = _load_ai_verdict_cache()
-                cache[pid] = {"verdict": verdict, "reason": reason, "ts": time.time()}
+                cache[pid] = {
+                    "verdict": verdict,
+                    "reason":  reason,          # legacy
+                    "summary": summary,         # new
+                    "reasons": reasons,         # new — list of pro bullets
+                    "risks":   risks,           # new — list of risk bullets
+                    "ts":      time.time(),
+                }
                 _save_ai_verdict_cache(cache)
                 _AI_COUNTERS["thread_wrote"] += 1
             except Exception as _saverr:
@@ -9031,13 +9188,16 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                 if _av:
                     p["ai_verdict"] = _av.get("verdict")
                     p["ai_reason"]  = _av.get("reason")
+                    p["ai_summary"] = _av.get("summary") or _av.get("reason")
+                    p["ai_reasons"] = _av.get("reasons") or []
+                    p["ai_risks"]   = _av.get("risks") or []
                     _v = _av.get("verdict")
                     if _v == "Avoid":
                         p["do_not_bet"] = True
                     elif _v == "Strong Take":
                         p["signal_score"] = min(5, int(p["signal_score"]) + 1)
                     # "Pass" / "Lean": no behavior change — ai_verdict
-                    # and ai_reason stay on the pick for the UI to show.
+                    # and ai_reasons stay on the pick for the UI to show.
                 else:
                     # Cache miss — fire a background thread to populate
                     # for the NEXT page load. Blocking inline on 10+
