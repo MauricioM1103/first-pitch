@@ -4968,15 +4968,27 @@ PICKS_TEMPLATE = r"""<!doctype html>
 
 .board-wrap {
   background: var(--card); border: 1px solid var(--rule); border-radius: 10px;
-  overflow: hidden;
+  overflow-x: auto;   /* horizontal scroll on mobile instead of layout break */
+  overflow-y: visible;
 }
-.board-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.board-table { width: 100%; border-collapse: collapse; font-size: 12.5px; min-width: 900px; }
+/* Sticky header + filter chips (shipped 2026-10-23). Keeps the
+   column labels and the filter chip row visible when the user
+   scrolls through a long slate — on a 20-game board you can lose
+   context about which column is which. */
 .board-table thead th {
   text-align: left; padding: 10px 12px;
   font-family: "JetBrains Mono", monospace; font-weight: 500;
   font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
   color: var(--muted); border-bottom: 1px solid var(--rule);
   background: var(--surface);
+  position: sticky; top: 0; z-index: 2;
+}
+.filter-chips {
+  position: sticky; top: 0; z-index: 3;
+  background: var(--bg);
+  padding: 8px 0;
+  border-bottom: 1px solid var(--rule);
 }
 .board-table tbody td {
   padding: 12px; border-top: 1px solid var(--rule);
@@ -5604,10 +5616,10 @@ PICKS_TEMPLATE = r"""<!doctype html>
        at quarter-to-half Kelly (5–10% of bankroll) when they appear. #}
     {% if whale_only %}
       <a class="chip whale-chip active" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ linemove_suffix }}"
-         title="Showing only Whale picks (fp ≥ 72%, dec 1.30–1.65, Signal ≥ 4, EV ≥ 1.5%, no risk flags). Click to clear.">&#x1F40B; Whale picks ({{ whale_count }})</a>
+         title="Showing only Whale picks (fp ≥ 72%, dec 1.30–1.65, Signal ≥ 4, EV ≥ 1.5%, no risk flags). Click to clear.">&#x1F40B; Whale ({{ whale_count }})</a>
     {% else %}
       <a class="chip whale-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ linemove_suffix }}&whale=1"
-         title="Show only Whale picks — bankroll-maximum tier. 0–2 picks per typical day meeting fp ≥ 72%, dec 1.30–1.65, Signal ≥ 4, EV ≥ 1.5%, no weather/injury/DNB flags. Sized at quarter-to-half Kelly stake.">&#x1F40B; Whale picks</a>
+         title="Show only Whale picks — bankroll-maximum tier. 0–2 picks per typical day meeting fp ≥ 72%, dec 1.30–1.65, Signal ≥ 4, EV ≥ 1.5%, no weather/injury/DNB flags. Sized at quarter-to-half Kelly stake.">&#x1F40B; Whale{% if whale_count %} ({{ whale_count }}){% endif %}</a>
     {% endif %}
     {# Line-move toggle: show only picks where Pinnacle's devigged prob
        moved toward our side by ≥ 1pp over the last ≤3 days. Sharp money
@@ -6390,12 +6402,15 @@ def _queue_ai_verdict_fill(pick):
                 f"Pick: {pick.get('pick') or '?'}  @  {_dec}  ({pick.get('book') or '?'})\n"
                 f"Model prob: {float(_mc)*100:.1f}%  Pinnacle devig: {float(_pin)*100:.1f}%\n"
                 f"EV: {float(_ev):+.1f}%  Signal composite: {_sig}/5\n\n"
-                f"Reply with ONE of these verdicts followed by one short reason "
-                f"(<=15 words):\n"
-                f"  STRONG TAKE  — exceptional edge, no concerns\n"
-                f"  LEAN         — real edge, standard confidence\n"
-                f"  PASS         — thin edge or specific red flag, skip\n"
-                f"  AVOID        — clear reason this pick won't hit\n"
+                f"The pick already passed OUR model's +EV filter — your "
+                f"job is to confirm or push back, not to re-apply a market "
+                f"filter. Default to LEAN unless the model clearly misread "
+                f"the matchup. Reply with ONE verdict followed by one short "
+                f"reason (<=15 words):\n"
+                f"  STRONG TAKE  — standout edge: model + market agree AND signal >=4, no concerns\n"
+                f"  LEAN         — reasonable edge, bet-worthy at standard stake (DEFAULT if nothing is wrong)\n"
+                f"  PASS         — real red flag the model missed (not just a market disagreement)\n"
+                f"  AVOID        — clear structural reason this bet won't hit (injury, weather, scheduling)\n"
                 f"\n"
                 f"Format: VERDICT: <reason>"
             )
@@ -18729,6 +18744,10 @@ def debug_ai():
         out["api_error"] = f"{type(e).__name__}: {e}"
     # Also exercise the full background-thread flow with a dummy pick so
     # we can confirm _queue_ai_verdict_fill actually writes to cache.
+    # We clean up the debug-probe entry after the test so it doesn't
+    # linger in the cache and skew analytics (the previous version
+    # polluted the cache with debug-probe-{ts} entries that showed up
+    # in the AI tier counts as Lean verdicts).
     try:
         import time as _tm
         dummy_pid = f"debug-probe-{int(_tm.time())}"
@@ -18749,7 +18768,6 @@ def debug_ai():
         pre_cache = _load_ai_verdict_cache()
         pre_count = len(pre_cache)
         _queue_ai_verdict_fill(dummy_pick)
-        # Give the background thread up to 30s to finish and write.
         import time as _tm2
         deadline = _tm2.time() + 30
         got = None
@@ -18759,6 +18777,20 @@ def debug_ai():
             if dummy_pid in cache:
                 got = cache[dummy_pid]
                 break
+        # Clean up the probe entry so it doesn't pollute the cache
+        # (also sweep any older debug-probe-* entries left from
+        # previous probe runs — one-time cleanup, idempotent).
+        try:
+            cache = _load_ai_verdict_cache()
+            removed = 0
+            for stale_pid in [k for k in list(cache.keys())
+                              if isinstance(k, str) and k.startswith("debug-probe-")]:
+                del cache[stale_pid]
+                removed += 1
+            if removed:
+                _save_ai_verdict_cache(cache)
+        except Exception:
+            removed = -1
         out["bg_thread_test"] = {
             "pre_cache_size": pre_count,
             "post_cache_size": len(_load_ai_verdict_cache()),
@@ -18766,6 +18798,7 @@ def debug_ai():
             "wrote_entry":     got is not None,
             "entry":           got,
             "waited_sec":      30 - int(deadline - _tm2.time()),
+            "probe_cleanup":   removed,
         }
     except Exception as e:
         out["bg_thread_test_error"] = f"{type(e).__name__}: {e}"
