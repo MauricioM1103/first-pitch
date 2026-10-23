@@ -9088,30 +9088,70 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
             1 if p.get("model_only") else 0,
         ))
 
-        # Cap NFL / NCAAF alt-line picks at 2 per game. These are the
-        # noisy ones — _expand_alt_line_picks adds up to 2 per side for
-        # main Spread + up to 2 more for 1H Spread, and _model_fill_picks
-        # adds up to 2 Alt Spread + 2 Alt Total. That can stack to 8 alt
-        # chips on one game card. Keep the 2 strongest (by EV, then by
-        # model's fair prob); drop the rest. Non-alt picks are untouched.
-        if row.get("sport_slug") in ("nfl", "ncaaf"):
+        # Alt-line cap + same-pick dedup (shipped 2026-10-23, retuned
+        # 2026-10-24). Rules per the user's "one alt per game, no
+        # duplicates" directive:
+        #
+        #   1) Within the row, dedup picks that have the same
+        #      (market, pick) tuple — e.g. two "Over 2.5 goals" picks
+        #      on the same game shouldn't both render. Keep the one
+        #      with the stronger Signal + EV.
+        #
+        #   2) Alt-line picks capped at 1 per game, UNLESS one Spread
+        #      alt AND one Total alt both qualify — in that case
+        #      allow one of each (2 total). This applies to EVERY
+        #      sport (not just NFL/NCAAF). Previous rule was 2 per
+        #      game regardless of market type, which let two Alt
+        #      Spreads coexist on the same card.
+        #
+        # Non-alt picks (ML, main Spread, main Total, team totals,
+        # 1H markets, BTTS, etc.) still pass through — the cap only
+        # trims the alt-line stack.
+        if row["picks"]:
+            # Step 1 — dedup by (market, pick).
+            seen = {}
+            def _rank(p):
+                try:
+                    sig = int(p.get("signal_score") or 0)
+                except Exception:
+                    sig = 0
+                try:
+                    ev = float(p.get("ev_pct") or 0.0)
+                except (TypeError, ValueError):
+                    ev = 0.0
+                return (sig * 100) + ev
+            for p in row["picks"]:
+                key = (p.get("market") or "", p.get("pick") or "")
+                prev = seen.get(key)
+                if prev is None or _rank(p) > _rank(prev):
+                    seen[key] = p
+            row["picks"] = list(seen.values())
+
+            # Step 2 — alt-line cap. Pick ONE strongest alt per
+            # market type (spread/total). Everything else dropped.
             alt_picks = [p for p in row["picks"] if p.get("source") == "alt"]
             non_alt   = [p for p in row["picks"] if p.get("source") != "alt"]
-            if len(alt_picks) > 2:
-                # Sort DESC by (ev_pct present and value, then fair_prob).
-                # EV-bearing alts (Alt Spread + Alt Total from model-fill)
-                # outrank the informational alts (NFL/NCAAF expand path)
-                # that have ev_pct = None.
+            if alt_picks:
                 def _alt_key(p):
                     ev = p.get("ev_pct")
                     ev_val = float(ev) if ev is not None else -1.0
                     fp = p.get("fair_prob") or 0.0
                     return (-ev_val, -fp)
-                alt_picks.sort(key=_alt_key)
-                alt_picks = alt_picks[:2]
-                # Rebuild row["picks"] with the trimmed alt set, keeping
-                # the original ordering key (market order, model_only).
-                row["picks"] = non_alt + alt_picks
+                def _alt_bucket(p):
+                    """'spread' or 'total' per the alt pick's market category."""
+                    mkt = (p.get("market") or "").lower()
+                    if "total" in mkt:
+                        return "total"
+                    return "spread"
+                buckets = {"spread": [], "total": []}
+                for p in alt_picks:
+                    buckets[_alt_bucket(p)].append(p)
+                kept_alts = []
+                for b in buckets.values():
+                    if b:
+                        b.sort(key=_alt_key)
+                        kept_alts.append(b[0])
+                row["picks"] = non_alt + kept_alts
                 row["picks"].sort(key=lambda p: (
                     -(p.get("signal_score") or 0),
                     _PICK_MARKET_ORDER.get(_market_category(p.get("market")), 9),
@@ -10262,6 +10302,17 @@ def pick_deep_dive():
 
 
 @app.route("/games")
+def picks_landing_games_redirect():
+    """/games used to render the per-sport table layout. Since 2026-10-23
+    the TODAY page (/) renders the same template with the same context,
+    making /games a duplicate URL. Redirect to / so there's only one
+    landing surface; preserve the query string so a bookmarked
+    /games?sport=nfl&ai=1 still lands on the right filtered view."""
+    from flask import redirect as _redirect
+    qs = request.query_string.decode()
+    return _redirect("/" + ("?" + qs if qs else ""), code=301)
+
+
 def picks_landing():
     date_str = request.args.get("date") or datetime.now(CENTRAL).date().isoformat()
     sport_filter = (request.args.get("sport") or "all").lower()
@@ -10305,6 +10356,63 @@ def picks_landing():
     # Signal 3+ OR Whale OR favorable line-move >= +0.5pp, DNB excluded.
     # When toggled, prunes picks that don't meet the union and drops
     # games left with zero picks.
+    # Baseline "quality" filter (shipped 2026-10-24). When NO specific
+    # filter chip is active (the default "All" view), prune picks that
+    # don't belong to at least one of the 5 main filters: Strongest,
+    # Filter 2.0, Whale, Line toward me, or AI endorsed. This drops
+    # the model-only / low-signal noise that otherwise clutters the
+    # board. Each specific-filter chip is a stricter subset of this
+    # baseline, so applying it unconditionally keeps the UX consistent.
+    #
+    # DNB picks still render on the board (styled as crossed-out) so
+    # the user can see when a pick was retracted, but they never match
+    # any of the 5 filters so they don't drive the baseline keep rule.
+    # Picks graded W/L on completed games stay visible regardless of
+    # filter — their status is a result, not a current recommendation.
+    def _passes_main_five(p):
+        if p.get("do_not_bet"):
+            return False
+        if p.get("model_only"):
+            return False  # pure model-only picks are the "noise" the user wants gone
+        # Filter 2.0 / Strongest (Signal >= 3)
+        try:
+            if int(p.get("signal_score") or 0) >= 3:
+                return True
+        except Exception:
+            pass
+        # Whale tier
+        if p.get("whale"):
+            return True
+        # Line movement toward us
+        try:
+            if float(p.get("line_move_pp") or 0.0) >= 0.005:
+                return True
+        except Exception:
+            pass
+        # AI endorsement
+        if p.get("ai_verdict") in ("Strong Take", "Lean"):
+            return True
+        return False
+
+    # Keep DNB picks visible when they still match one of the stronger
+    # pre-DNB signals (user flagged "picks don't go away after result"
+    # — a graded DNB that's a Whale historical record should stay).
+    def _keep_in_baseline(p):
+        if _passes_main_five(p):
+            return True
+        # Graded picks on completed games stay for the record view
+        if p.get("result") in ("W", "L", "P"):
+            return True
+        return False
+
+    for row in board_rows:
+        row["picks"] = [p for p in row.get("picks") or [] if _keep_in_baseline(p)]
+    # Keep rows with no picks visible IF the game is live/final and
+    # had picks earlier (so the completed games still show on the
+    # board even after their picks drop out).
+    board_rows = [r for r in board_rows
+                  if r.get("picks") or (r.get("status") or "") in ("live", "final")]
+
     if strongest_only:
         def _strongest_pick(p):
             if p.get("do_not_bet"):
