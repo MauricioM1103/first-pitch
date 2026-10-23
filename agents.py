@@ -1107,6 +1107,257 @@ def run_line_move_followup():
             "confirmed": confirmed}
 
 
+# ============================================================
+# Agent #2 — Line-shopper (free, no LLM)
+# ============================================================
+# Compares our picks (priced off Pinnacle) against US-book prices
+# from The Odds API (DK / FanDuel / BetMGM / Caesars). When another
+# book has a materially better price (>= +1% decimal), the pick card
+# gets a chip pointing the user to the better book. Also exposes a
+# /cron/line-shop-scan route that batch-logs all current edges to
+# logs/line_shop_findings.json for review.
+#
+# Zero LLM calls — pure math on prices The Odds API already provides.
+# User pays only for the Odds API call quota (configured per their
+# ODDS_API_KEY) which we already use for other UI chips.
+
+_BOOK_PRIORITY = ("draftkings", "fanduel", "betmgm", "caesars")
+_LINESHOP_FINDINGS_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "logs", "line_shop_findings.json",
+)
+
+# Minimum delta (as decimal fraction) over Pinnacle to flag an
+# alt-book as "better price here". +1% delta means 1.95 vs 1.97
+# — real but not noise.
+_LINESHOP_MIN_EDGE = 0.01
+
+
+def _market_to_odds_api_key(market):
+    """Map our market labels to Odds API keys."""
+    m = (market or "").lower()
+    if "moneyline" in m or m == "ml": return "h2h"
+    if "spread" in m or "run line" in m or "puck line" in m: return "spreads"
+    if "total" in m: return "totals"
+    return None
+
+
+def _pick_side_label(pick):
+    """Return the Odds API 'name' field value our pick corresponds to.
+    For moneyline it's the team name. For spread/total it's the side
+    marker ('over'/'under' for totals, team name for spreads)."""
+    sel = (pick.get("pick") or "").strip()
+    # Totals: pick like 'Over 2.5' / 'Under 215.5'
+    low = sel.lower()
+    if low.startswith("over"):  return "over"
+    if low.startswith("under"): return "under"
+    # Spreads / ML: team name is the first word(s) before the number
+    # e.g. 'Kansas City Chiefs -3.5' → 'Kansas City Chiefs'
+    import re as _re
+    cleaned = _re.sub(r"\s*[-+]?\d+(\.\d+)?.*$", "", sel).strip()
+    return cleaned or sel
+
+
+def _match_odds_api_event(oapi_events, home, away):
+    """Find the Odds API event that matches our home/away teams.
+    Our pick carries home_team / away_team; Odds API event keys are
+    tuples of (away_norm, home_norm) using generic_odds._team_key.
+    We import that helper inline to stay backwards-compatible."""
+    try:
+        from generic_odds import _team_key
+    except Exception:
+        return None
+    key = (_team_key(away or ""), _team_key(home or ""))
+    return oapi_events.get(key)
+
+
+def find_best_book_for_pick(pick, oapi_events=None):
+    """Return the best US-book price for ONE pick:
+      {book, decimal, delta_pct}  — delta_pct > 0 means better than
+      the pick's current (Pinnacle) price.
+    Returns None when no US book covers this market, or when every
+    book's price is worse than or equal to Pinnacle's."""
+    market_key = _market_to_odds_api_key(pick.get("market") or "")
+    if not market_key:
+        return None
+    sport_key = pick.get("sport_odds_api_key") or ""
+    if not sport_key:
+        # Look up from sports registry
+        try:
+            import sports
+            cfg = sports.by_slug(pick.get("sport_slug") or "")
+            sport_key = (cfg or {}).get("odds_api_key") or ""
+        except Exception:
+            pass
+    if not sport_key:
+        return None
+
+    try:
+        if oapi_events is None:
+            from generic_odds import fetch_odds_api
+            # Request the richer market set so spreads + totals land too
+            oapi_events = fetch_odds_api(sport_key, markets="h2h,spreads,totals")
+    except Exception:
+        return None
+    if not oapi_events:
+        return None
+
+    event = _match_odds_api_event(oapi_events, pick.get("home_team"),
+                                     pick.get("away_team"))
+    if not event:
+        return None
+
+    side_label = _pick_side_label(pick).lower()
+    books = event.get("books") or {}
+
+    # For spreads/totals we also match on the line (e.g. -3.5 vs -3)
+    want_line = None
+    try:
+        import re as _re
+        m = _re.search(r"[-+]?\d+(\.\d+)?", pick.get("pick") or "")
+        if m:
+            want_line = float(m.group(0))
+    except Exception:
+        pass
+
+    best = None  # (book, decimal)
+    for book_name in _BOOK_PRIORITY:
+        outcomes = (books.get(book_name) or {}).get(market_key) or []
+        for o in outcomes:
+            name = (o.get("name") or "").lower()
+            price = o.get("price")
+            if price is None:
+                continue
+            # Match side
+            if market_key == "h2h":
+                if side_label not in name and name not in side_label:
+                    continue
+            elif market_key == "totals":
+                if side_label not in name:
+                    continue
+                if want_line is not None:
+                    try:
+                        if abs(float(o.get("point") or 0) - want_line) > 0.01:
+                            continue
+                    except Exception:
+                        continue
+            elif market_key == "spreads":
+                if side_label not in name and name not in side_label:
+                    continue
+                if want_line is not None:
+                    try:
+                        if abs(float(o.get("point") or 0) - want_line) > 0.01:
+                            continue
+                    except Exception:
+                        continue
+            try:
+                dec = float(price)
+            except Exception:
+                continue
+            if best is None or dec > best[1]:
+                best = (book_name, dec)
+
+    if not best:
+        return None
+    cur = pick.get("decimal") or 0
+    try:
+        cur = float(cur)
+    except Exception:
+        cur = 0
+    if cur <= 0:
+        return None
+    delta_pct = (best[1] / cur - 1.0) * 100
+    if delta_pct < _LINESHOP_MIN_EDGE * 100:
+        return None
+    return {"book": best[0], "decimal": best[1], "delta_pct": round(delta_pct, 2)}
+
+
+def scan_board_for_better_prices():
+    """Loop today's board, find all picks where a US book beats our
+    Pinnacle price by >= _LINESHOP_MIN_EDGE. Writes findings to the
+    log for later review. Returns summary."""
+    try:
+        import mlb_ui
+        today = datetime.now(mlb_ui.CENTRAL).date()
+        board, _ = mlb_ui._build_board_rows(today.isoformat(), today, "all",
+                                              strong_only=False)
+    except Exception as e:
+        return {"ok": False, "error": f"board build failed: {e}"}
+
+    findings = []
+    # Group picks by sport_key so we only fetch Odds API once per sport
+    by_sport = {}
+    for row in board:
+        for p in row.get("picks") or []:
+            if p.get("model_only") or p.get("do_not_bet"):
+                continue
+            if (p.get("signal_score") or 0) < 3:
+                continue  # only line-shop picks we might actually place
+            # Add home/away/sport context onto the pick
+            p["home_team"] = p.get("home_team") or row.get("home")
+            p["away_team"] = p.get("away_team") or row.get("away")
+            p["sport_slug"] = p.get("sport_slug") or row.get("sport_slug")
+            by_sport.setdefault(p["sport_slug"], []).append(p)
+
+    try:
+        import sports
+        from generic_odds import fetch_odds_api
+    except Exception:
+        return {"ok": False, "error": "sports/generic_odds import failed"}
+
+    for slug, picks in by_sport.items():
+        cfg = sports.by_slug(slug or "")
+        if not cfg:
+            continue
+        sport_key = cfg.get("odds_api_key")
+        if not sport_key:
+            continue
+        try:
+            events = fetch_odds_api(sport_key, markets="h2h,spreads,totals")
+        except Exception:
+            events = {}
+        for p in picks:
+            best = find_best_book_for_pick(p, oapi_events=events)
+            if best:
+                findings.append({
+                    "pid":        p.get("id"),
+                    "sport":      slug,
+                    "match":      f"{p.get('away_team')} @ {p.get('home_team')}",
+                    "market":     p.get("market"),
+                    "pick":       p.get("pick"),
+                    "our_price":  p.get("decimal"),
+                    "best_book":  best["book"],
+                    "best_price": best["decimal"],
+                    "delta_pct":  best["delta_pct"],
+                })
+
+    # Sort by delta descending — biggest edges first
+    findings.sort(key=lambda f: -f["delta_pct"])
+
+    # Save to log
+    try:
+        payload = {
+            "ran_at":   datetime.utcnow().isoformat() + "Z",
+            "findings": findings,
+        }
+        os.makedirs(os.path.dirname(_LINESHOP_FINDINGS_PATH), exist_ok=True)
+        with open(_LINESHOP_FINDINGS_PATH, "w") as f:
+            json.dump(payload, f, indent=2)
+        try:
+            import log_persist
+            log_persist.write_file("logs/line_shop_findings.json",
+                                     json.dumps(payload, indent=2))
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    return {"ok":            True,
+            "count":         len(findings),
+            "sports_scanned":list(by_sport.keys()),
+            "top_findings":  findings[:10]}
+
+
 WEEKLY_AUDIT_PROMPT = """You are auditing our Discord moderator's picks over the last 7
 days. Evidence filter posts only picks with score >= 5 (out of 10),
 timed to each sport's pre-game window.

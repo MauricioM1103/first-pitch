@@ -4820,6 +4820,14 @@ PICKS_TEMPLATE = r"""<!doctype html>
 }
 .pick-move-chip.favorable { color: #22c55e; border-color: color-mix(in oklab, #22c55e 50%, var(--rule)); }
 .pick-move-chip.adverse   { color: #ef4444; border-color: color-mix(in oklab, #ef4444 50%, var(--rule)); }
+.pick-shop-chip {
+  display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px;
+  padding: 1px 6px; border-radius: 10px;
+  border: 1px solid color-mix(in oklab, #22c55e 50%, var(--rule));
+  color: #22c55e; background: color-mix(in oklab, #22c55e 10%, transparent);
+  white-space: nowrap; font-weight: 600;
+}
+.pick-shop-chip small { font-size: 9.5px; opacity: 0.85; font-weight: 500; }
 .pick-signal {
   display: inline-flex; align-items: center; gap: 2px; font-size: 10.5px;
   padding: 1px 6px; border-radius: 10px; border: 1px solid var(--rule);
@@ -5488,6 +5496,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
   .pick-badge-row .strong-star,
   .pick-badge-row .pick-signal,
   .pick-badge-row .pick-move-chip,
+  .pick-badge-row .pick-shop-chip,
   .pick-badge-row .pick-res { margin-left: 26px; flex-shrink: 0; }
   .pick-badge-row .pick-conf + .src-tag,
   .pick-badge-row .src-tag + .strong-star,
@@ -5495,6 +5504,10 @@ PICKS_TEMPLATE = r"""<!doctype html>
   .pick-badge-row .src-tag + .pick-signal,
   .pick-badge-row .pick-signal + .pick-move-chip,
   .pick-badge-row .src-tag + .pick-move-chip,
+  .pick-badge-row .pick-move-chip + .pick-shop-chip,
+  .pick-badge-row .pick-signal + .pick-shop-chip,
+  .pick-badge-row .src-tag + .pick-shop-chip,
+  .pick-badge-row .pick-shop-chip + .pick-res,
   .pick-badge-row .pick-move-chip + .pick-res,
   .pick-badge-row .src-tag + .pick-res,
   .pick-badge-row .strong-star + .pick-res { margin-left: 0; }
@@ -5982,6 +5995,17 @@ PICKS_TEMPLATE = r"""<!doctype html>
                     <span class="pick-move-chip {{ move_sign }}"
                           title="Pinnacle's devigged probability for this side moved by {{ '%+.1f'|format(p.line_move_pp * 100) }}pp since {{ p.line_open_date }} (opening {{ (p.line_open_pinnacle * 100)|round|int }}%). Positive = market moving toward our pick.">
                       {{ '↑' if p.line_move_pp > 0 else '↓' }}{{ '%+.1f'|format(p.line_move_pp * 100) }}pp
+                    </span>
+                  {% endif %}
+                  {# Line-shopper chip (Agent #2, shipped 2026-10-24).
+                     Only renders when a US book (DK/FD/MGM/Caesars)
+                     has a materially better decimal price than
+                     Pinnacle. Shows the book + price + delta so the
+                     user can place the bet where the edge is. #}
+                  {% if p.best_book and p.best_price %}
+                    <span class="pick-shop-chip"
+                          title="Better price available at {{ p.best_book|upper }} ({{ '%.2f'|format(p.best_price) }} vs Pinnacle {{ '%.2f'|format(p.decimal) }}, {{ '%+.1f'|format(p.best_price_delta_pct) }}% edge). Place the bet there for the extra EV.">
+                      &#x1F4B5; {{ p.best_book|upper }} {{ '%.2f'|format(p.best_price) }} <small>({{ '%+.1f'|format(p.best_price_delta_pct) }}%)</small>
                     </span>
                   {% endif %}
                   {# DK and Kalshi cross-book chips moved from the compact
@@ -11133,6 +11157,40 @@ def picks_landing():
             for p in r.get("picks") or []
         )),
     }
+
+    # Line-shopper enrichment (Agent #2, shipped 2026-10-24). Attach
+    # best-US-book price to each pick where a US book beats our
+    # Pinnacle price by >= +1%. Reads from logs/line_shop_findings.json
+    # which /cron/line-shop-scan refreshes every 30 min — no inline
+    # Odds API fetch here (keeps picks_landing fast; the scan cron
+    # does the heavy lifting on its own schedule). Picks get three
+    # new fields: best_book, best_price, best_price_delta_pct.
+    try:
+        import json as _json
+        import os as _os
+        _ls_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                   "logs", "line_shop_findings.json")
+        _ls_data = None
+        try:
+            with open(_ls_path) as f:
+                _ls_data = _json.load(f) or {}
+        except Exception:
+            try:
+                import log_persist as _lp
+                _ls_text, _sha = _lp.read_file("logs/line_shop_findings.json")
+                _ls_data = _json.loads(_ls_text) if _ls_text else {}
+            except Exception:
+                _ls_data = {}
+        _ls_by_pid = {f["pid"]: f for f in (_ls_data.get("findings") or []) if f.get("pid")}
+        for row in board_rows:
+            for p in row.get("picks") or []:
+                hit = _ls_by_pid.get(p.get("id"))
+                if hit:
+                    p["best_book"]            = hit.get("best_book")
+                    p["best_price"]           = hit.get("best_price")
+                    p["best_price_delta_pct"] = hit.get("delta_pct")
+    except Exception:
+        pass
 
     rendered = render_template_string(
         PICKS_TEMPLATE,
@@ -19580,6 +19638,62 @@ def cron_model_tune():
     except Exception as e:
         return Response(_json.dumps({"ok": False,
                                        "error": f"{type(e).__name__}: {e}"}),
+                        status=500, mimetype="application/json")
+
+
+@app.route("/pick/line-shop")
+def pick_line_shop():
+    """Agent #2 — line-shopper (single pick). Pass ?id=<pick_id>.
+    Returns the best US-book price (DK/FD/MGM/Caesars) for this pick
+    vs the current Pinnacle price. Zero LLM cost — just Odds API
+    comparison math. Returns None when no US book beats us."""
+    import json as _json
+    pick_id = (request.args.get("id") or "").strip()
+    if not pick_id:
+        return Response(_json.dumps({"ok": False, "error": "?id= required"}),
+                        status=400, mimetype="application/json")
+    try:
+        today = datetime.now(CENTRAL).date()
+        board, _ = _build_board_rows(today.isoformat(), today, "all",
+                                      strong_only=False)
+        found = None
+        for row in board:
+            for p in row.get("picks") or []:
+                if p.get("id") == pick_id:
+                    p["home_team"] = p.get("home_team") or row.get("home")
+                    p["away_team"] = p.get("away_team") or row.get("away")
+                    p["sport_slug"] = p.get("sport_slug") or row.get("sport_slug")
+                    found = p
+                    break
+            if found: break
+        if not found:
+            return Response(_json.dumps({"ok": False, "error": "pick not found on today's board"}),
+                            status=404, mimetype="application/json")
+        import agents
+        best = agents.find_best_book_for_pick(found)
+        return Response(_json.dumps({"ok": True, "best": best,
+                                       "our_price": found.get("decimal")},
+                                      indent=2),
+                        mimetype="application/json")
+    except Exception as e:
+        return Response(_json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}),
+                        status=500, mimetype="application/json")
+
+
+@app.route("/cron/line-shop-scan")
+def cron_line_shop_scan():
+    """Agent #2 batch scan — walks today's board, logs every pick
+    where a US book beats our Pinnacle price by >= 1%. Writes to
+    logs/line_shop_findings.json. Zero LLM cost. Set up as a 30-min
+    cron so the findings log stays fresh across the day."""
+    import json as _json
+    try:
+        import agents
+        out = agents.scan_board_for_better_prices()
+        return Response(_json.dumps(out, indent=2),
+                        mimetype="application/json")
+    except Exception as e:
+        return Response(_json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}"}),
                         status=500, mimetype="application/json")
 
 
