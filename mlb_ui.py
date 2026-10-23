@@ -4513,6 +4513,102 @@ PICKS_TEMPLATE = r"""<!doctype html>
 .ev-callout code { font-family: "JetBrains Mono", monospace; font-size: 11.5px; color: var(--ink); background: var(--surface); padding: 1px 5px; border-radius: 3px; }
 .ev-callout em { font-style: italic; color: var(--ink); }
 
+/* Day record row (shipped 2026-10-23): per-Signal-tier W-L and
+   units pills shown at the top of TODAY, above the AI Picks
+   explainer. Replaces the old today-tally + Current filter pills. */
+.day-record-row {
+  display: flex; flex-wrap: wrap; gap: 10px;
+  margin: 10px 0 14px;
+}
+.drr-pill {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 12px;
+  background: color-mix(in oklab, var(--bg) 60%, var(--card));
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  font-family: "JetBrains Mono", monospace; font-size: 12px;
+}
+.drr-pill .drr-label {
+  color: var(--muted-2);
+  text-transform: uppercase; letter-spacing: 0.1em; font-size: 10.5px;
+  font-weight: 600;
+}
+.drr-pill .drr-rec { color: var(--ink); font-weight: 600; }
+.drr-pill .drr-units { font-weight: 600; }
+.drr-pill .drr-units.good { color: var(--good); }
+.drr-pill .drr-units.bad  { color: #ef4444; }
+.drr-pill .drr-pending { color: var(--muted-2); font-size: 10.5px; }
+.drr-pill.drr-t5 { border-color: color-mix(in oklab, #f59e0b 40%, var(--rule)); }
+.drr-pill.drr-t5 .drr-label { color: #f59e0b; }
+.drr-pill.drr-t4 { border-color: color-mix(in oklab, var(--good) 40%, var(--rule)); }
+.drr-pill.drr-t4 .drr-label { color: var(--good); }
+.drr-pill.drr-t3 { border-color: color-mix(in oklab, #fbbf24 40%, var(--rule)); }
+.drr-pill.drr-t3 .drr-label { color: #fbbf24; }
+.drr-pill.drr-overall {
+  border-color: var(--accent, #8b5cf6);
+  background: color-mix(in oklab, var(--accent, #8b5cf6) 10%, var(--card));
+}
+.drr-pill.drr-overall .drr-label { color: var(--accent, #8b5cf6); }
+
+/* AI Picks explainer (shipped 2026-10-23): collapsible card at the
+   top of TODAY explaining how the AI Picks column works. Default
+   closed; opens on click to reveal verdict legend + methodology. */
+.ai-picks-explainer {
+  margin-top: 6px;
+  background: color-mix(in oklab, var(--accent, #8b5cf6) 5%, var(--card));
+  border: 1px solid color-mix(in oklab, var(--accent, #8b5cf6) 30%, var(--rule));
+  border-radius: 10px;
+  padding: 10px 14px;
+}
+.ai-picks-explainer summary {
+  display: flex; align-items: center; gap: 8px;
+  cursor: pointer; user-select: none;
+  list-style: none;
+  color: var(--ink); font-weight: 500; font-size: 13.5px;
+}
+.ai-picks-explainer summary::-webkit-details-marker { display: none; }
+.ai-picks-explainer .aie-icon { font-size: 15px; }
+.ai-picks-explainer .aie-title {
+  font-family: "JetBrains Mono", monospace; letter-spacing: 0.04em;
+}
+.ai-picks-explainer .chev {
+  margin-left: auto; color: var(--muted-2);
+  transition: transform 0.15s ease;
+  font-family: "JetBrains Mono", monospace;
+}
+.ai-picks-explainer[open] .chev { transform: rotate(90deg); }
+.ai-picks-explainer .aie-body {
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px dashed color-mix(in oklab, var(--accent, #8b5cf6) 30%, var(--rule));
+  color: var(--muted); font-size: 12.5px; line-height: 1.55;
+}
+.ai-picks-explainer .aie-body p { margin: 0 0 8px; }
+.ai-picks-explainer .aie-body ul { margin: 0 0 10px; padding-left: 22px; }
+.ai-picks-explainer .aie-body li { margin-bottom: 4px; color: var(--ink); font-size: 12.5px; }
+.ai-picks-explainer .aie-verd {
+  padding: 1px 7px; border-radius: 4px;
+  font-family: "JetBrains Mono", monospace; font-size: 10.5px;
+  letter-spacing: 0.08em; text-transform: uppercase; font-weight: 600;
+}
+.ai-picks-explainer .aie-verd.strong {
+  background: color-mix(in oklab, var(--good) 20%, transparent); color: var(--good);
+}
+.ai-picks-explainer .aie-verd.lean {
+  background: color-mix(in oklab, var(--accent, #8b5cf6) 20%, transparent); color: var(--accent, #8b5cf6);
+}
+.ai-picks-explainer .aie-verd.pass {
+  background: color-mix(in oklab, #fbbf24 20%, transparent); color: #fbbf24;
+}
+.ai-picks-explainer .aie-verd.avoid {
+  background: color-mix(in oklab, #ef4444 20%, transparent); color: #ef4444;
+}
+.ai-picks-explainer .aie-foot {
+  margin-top: 10px; padding-top: 8px;
+  border-top: 1px dashed var(--rule);
+  color: var(--muted-2); font-size: 11.5px;
+}
+.ai-picks-explainer .aie-foot b { color: var(--ink); font-weight: 600; }
+
 .model-explain {
   margin-top: 10px;
   background: var(--surface);
@@ -4798,7 +4894,51 @@ PICKS_TEMPLATE = r"""<!doctype html>
 .board-table .col-line    { width: 180px; }
 .board-table .col-close   { width: 150px; }
 .board-table .col-picks   { min-width: 230px; }
+.board-table .col-ai-picks{ width: 170px; vertical-align: top; }
 .board-table .col-view    { width: 70px; text-align: right; }
+
+/* AI Picks column mini-card (shipped 2026-10-23). One compact
+   row per endorsed pick showing the AI verdict + abbreviated pick
+   + result mark. Hover shows the full AI reason via title tooltip.
+   Empty state is a muted em-dash. */
+.ai-pick-mini {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  margin-bottom: 4px;
+  font-size: 11.5px;
+  cursor: help;
+}
+.ai-pick-mini.strong-take {
+  background: color-mix(in oklab, var(--good) 15%, transparent);
+  border-left: 2px solid var(--good);
+}
+.ai-pick-mini.lean {
+  background: color-mix(in oklab, var(--accent, #8b5cf6) 12%, transparent);
+  border-left: 2px solid var(--accent, #8b5cf6);
+}
+.ai-pick-mini .aim-verd {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 9px; letter-spacing: 0.1em; font-weight: 600;
+  padding: 1px 5px; border-radius: 3px;
+}
+.ai-pick-mini.strong-take .aim-verd { color: var(--good); background: color-mix(in oklab, var(--good) 25%, transparent); }
+.ai-pick-mini.lean .aim-verd { color: var(--accent, #8b5cf6); background: color-mix(in oklab, var(--accent, #8b5cf6) 25%, transparent); }
+.ai-pick-mini .aim-pick {
+  color: var(--ink); flex: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ai-pick-mini .aim-res {
+  font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 12px;
+}
+.ai-pick-mini .aim-res.W { color: var(--good); }
+.ai-pick-mini .aim-res.L { color: #ef4444; }
+.ai-pick-mini .aim-res.P { color: var(--muted); }
+.aim-empty { color: var(--muted-2); font-size: 14px; }
+@media (max-width: 900px) {
+  .board-table .col-ai-picks { width: auto; min-width: 130px; }
+  .ai-pick-mini .aim-pick { max-width: 100px; }
+}
 
 .status-chip {
   display: inline-block; padding: 3px 10px; border-radius: 999px;
@@ -5104,20 +5244,72 @@ PICKS_TEMPLATE = r"""<!doctype html>
 <main class="wrap reveal">
   <div class="hero">
     <h1>{{ date_pretty }}</h1>
-    <p class="sub">
-      <b>{{ total_games }}</b> games across <b>{{ sports_with_games }}</b> sports &middot;
-      <b>{{ picks_count }}</b> picks ({{ ev_count }} EV &middot; {{ strong_count }} &#9733; &middot; {{ whale_count }} &#x1F40B; &middot; {{ no_bet_count }} NO BET) &middot;
-      all times Central. Every pick on this board is <b>+EV</b> &mdash; the model's
-      probability times the posted price exceeds 1.0, so the long-run edge is
-      positive. The right-hand chip shows the pick's source:
-      <span class="src-tag ev" style="display:inline-block;margin:0 2px">EV</span>
-      is a market-blended consensus pick,
-      <span class="src-tag model" style="display:inline-block;margin:0 2px">EV</span>
-      (same chip) with a sport sim probability vs. the Pinnacle price, and
-      <span class="src-tag alt" style="display:inline-block;margin:0 2px">ALT</span>
-      is a non-main spread or total we priced off Pinnacle's own alt-line candidate
-      (or an NFL/NCAAF alt-line informational companion with no price &mdash; verify at DK/FD).
-    </p>
+
+    {# Day record row (shipped 2026-10-23): per-Signal-tier W-L and
+       units P&L for today's bet-able picks. Replaces the old
+       today-tally pill + Current filter streak pill — both of those
+       surfaced the same information twice. This row sits above the
+       collapsed explainer per the UI rework. #}
+    {% if tier_tally and tier_tally.overall.picks %}
+    <div class="day-record-row">
+      {% for tier in [5, 4, 3, 'overall'] %}
+      {% set b = tier_tally[tier] %}
+      {% if b.picks %}
+      <span class="drr-pill drr-{{ 't' ~ tier if tier != 'overall' else 'overall' }}">
+        <span class="drr-label">
+          {% if tier == 'overall' %}Today
+          {% else %}{{ tier }}/5{% endif %}
+        </span>
+        <span class="drr-rec">{{ b.W }}&ndash;{{ b.L }}{% if b.P %}&ndash;{{ b.P }}{% endif %}</span>
+        {% if b.settled %}
+          <span class="drr-units {{ 'good' if b.units > 0 else ('bad' if b.units < 0 else '') }}">{{ '%+.2f'|format(b.units) }}u</span>
+        {% endif %}
+        {% if b.pending %}<span class="drr-pending">{{ b.pending }} pending</span>{% endif %}
+      </span>
+      {% endif %}
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    {# Collapsible "How AI Picks work" explainer (shipped 2026-10-23).
+       Default collapsed so returning users see the board immediately.
+       Replaces the old ev-callout + verbose sub text — the detail
+       lives here now, out of the way until requested. #}
+    <details class="ai-picks-explainer">
+      <summary>
+        <span class="aie-icon">&#x1F916;</span>
+        <span class="aie-title">How AI Picks work</span>
+        <span class="chev">&rsaquo;</span>
+      </summary>
+      <div class="aie-body">
+        <p>
+          Every Signal 3+ pick on this board gets sent to a <b>Claude Sonnet</b>
+          verdict pass that reads the matchup + model probability + Pinnacle
+          devig + EV + Signal score and returns one of four verdicts:
+        </p>
+        <ul>
+          <li><b class="aie-verd strong">Strong Take</b> &mdash; exceptional edge, bumps the Signal score +1 and surfaces in the AI Picks column.</li>
+          <li><b class="aie-verd lean">Lean</b> &mdash; real edge at standard confidence, also surfaced in the AI Picks column.</li>
+          <li><b class="aie-verd pass">Pass</b> &mdash; thin edge or specific red flag; stays on the main board but no AI endorsement.</li>
+          <li><b class="aie-verd avoid">Avoid</b> &mdash; a clear reason the pick won't hit; flipped to DO NOT BET.</li>
+        </ul>
+        <p>
+          Calls happen in a background thread (never blocks page load) and
+          each pick is cached for 24h, so the daily API bill stays around
+          $0.50 even on a full board. The AI Picks column on the right
+          shows the subset of today's picks that earned a <b>Strong Take</b>
+          or <b>Lean</b> verdict &mdash; click any card to expand the one-line
+          reasoning. Main picks on the left stay driven by the Signal 0-5
+          composite (EV cushion + line move + prob floor + book agreement +
+          persistence + Kalshi depth); AI is a tiebreaker, not a gatekeeper.
+        </p>
+        <p class="aie-foot">
+          <b>{{ total_games }}</b> games across <b>{{ sports_with_games }}</b> sports &middot;
+          <b>{{ picks_count }}</b> picks ({{ ev_count }} EV &middot; {{ strong_count }} &#9733; &middot; {{ whale_count }} &#x1F40B; &middot; {{ no_bet_count }} NO BET).
+          All times Central. Default is NO BET.
+        </p>
+      </div>
+    </details>
     <div class="ev-callout">
       <strong>What's EV?</strong> <em>Expected value</em> &mdash; the long-run profit per
       $1 risked if you repeated the same bet forever. We compute it as
@@ -5285,7 +5477,8 @@ PICKS_TEMPLATE = r"""<!doctype html>
           <th class="col-score">Score</th>
           <th class="col-line">Line</th>
           <th class="col-close">Close</th>
-          <th class="col-picks">AI Debate</th>
+          <th class="col-picks">Picks</th>
+          <th class="col-ai-picks">AI Picks</th>
           <th class="col-view"></th>
         </tr>
       </thead>
@@ -5380,6 +5573,29 @@ PICKS_TEMPLATE = r"""<!doctype html>
               <span class="no-picks-dash">no pick</span>
             {% endif %}
           </td>
+          <td class="col-ai-picks">
+            {% set _ai_endorsed = [] %}
+            {% for p in row.picks %}
+              {% if p.ai_verdict in ('Strong Take', 'Lean') and not p.do_not_bet %}
+                {% set _ = _ai_endorsed.append(p) %}
+              {% endif %}
+            {% endfor %}
+            {% if _ai_endorsed %}
+              {% for p in _ai_endorsed %}
+                <div class="ai-pick-mini {{ 'strong-take' if p.ai_verdict == 'Strong Take' else 'lean' }}"
+                     title="{{ p.ai_reason or '' }}">
+                  <span class="aim-verd">{{ 'STRONG' if p.ai_verdict == 'Strong Take' else 'LEAN' }}</span>
+                  <span class="aim-pick">{{ p.pick_short }}</span>
+                  {% if p.result == 'W' %}<span class="aim-res W">&#10003;</span>
+                  {% elif p.result == 'L' %}<span class="aim-res L">&#10007;</span>
+                  {% elif p.result == 'P' %}<span class="aim-res P">P</span>
+                  {% endif %}
+                </div>
+              {% endfor %}
+            {% else %}
+              <span class="aim-empty">&mdash;</span>
+            {% endif %}
+          </td>
           <td class="col-view">
             {% if row.picks %}
               <button class="btn-view" onclick="toggleRow('{{ row.id }}')">View</button>
@@ -5388,7 +5604,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
         </tr>
         {% if row.picks %}
         <tr class="row-expanded" id="exp-{{ row.id }}" style="display:none">
-          <td colspan="8">
+          <td colspan="9">
             <div class="expanded-grid">
               {% for p in row.picks %}
                 <div class="pick-detail {{ 'strong' if p.strong else '' }}" data-pick-id="{{ p.id }}">
@@ -8912,40 +9128,27 @@ def today_landing():
         except Exception:
             split_boundary_label = None
 
-    return render_template_string(
-        TODAY_TEMPLATE,
-        fonts_link=FONTS_LINK,
-        shared_style=SHARED_STYLE,
-        sport_strip=render_sport_strip("today"),
-        star_picks=star_picks,
-        ai_picks=ai_picks,
-        also_likes=also_likes,
-        total_games=len(board_rows),
-        scan_time_ms=scan_time_ms,
-        date_str=date_str,
-        date_pretty=d.strftime("%A, %B %d").replace(" 0", " "),
-        prev_date=(d - timedelta(days=1)).isoformat(),
-        next_date=(d + timedelta(days=1)).isoformat(),
-        today=today,
-        is_today=(date_str == today),
-        today_tally=today_tally,
-        tier_tally=tier_tally,
-        board_status_counts={
-            "games":    len(board_rows),
-            "upcoming": sum(1 for r in board_rows if (r.get("status") or "") == "upcoming"),
-            "live":     sum(1 for r in board_rows if (r.get("status") or "") == "live"),
-            "final":    sum(1 for r in board_rows if (r.get("status") or "") == "final"),
-            "debated":  sum(1 for r in board_rows if any(
-                (p.get("ai_verdict") or "") in ("Strong Take", "Lean", "Pass", "Avoid")
-                for p in r.get("picks") or []
-            )),
-        },
-        picks_early=picks_early,
-        picks_late=picks_late,
-        split_boundary_label=split_boundary_label,
-        is_split=bool(picks_early and picks_late),
-        streak=streak,
-    )
+    # TODAY now renders the same combined board the Games tab shows,
+    # with the AI Picks column + collapsible explainer and the day
+    # record pill at the top. The old card-based layout (today_tally
+    # pill, streak pill, also_likes dropdown) was retired because the
+    # user wanted a unified table view across all sports with picks
+    # driven primarily by the AI side-column.
+    #
+    # Pre-work done above (grading backfill, plays_log save of today's
+    # bet-able picks) is still useful — just the rendering now goes
+    # through picks_landing's PICKS_TEMPLATE flow.
+    return picks_landing()
+
+
+# TODAY_TEMPLATE is kept for reference / tooling that might still read
+# the template string, but no live route renders it. All /... requests
+# go through PICKS_TEMPLATE via picks_landing.
+def _unused_render_old_today_template(*args, **kwargs):
+    # kept as a hook if we ever want to restore the card layout for
+    # a specific flag or A/B test — the full state the old render
+    # needed is still being assembled above in today_landing.
+    return render_template_string(TODAY_TEMPLATE, *args, **kwargs)
 
 
 @app.route("/slides")
@@ -9828,6 +10031,53 @@ def picks_landing():
     sports_with_games = len({r["sport_slug"] for r in board_rows})
     today = datetime.now(CENTRAL).date().isoformat()
 
+    # Per-Signal-tier record pill (replaces the old today-tally + streak
+    # pills). Buckets today's bet-able picks by signal_score (3/4/5) and
+    # computes W-L-P + units + ROI per tier. The pnl-panel at the bottom
+    # of the page uses the same tier_tally for the detailed breakdown.
+    def _blank_tier():
+        return {"picks": 0, "W": 0, "L": 0, "P": 0, "pending": 0,
+                "units": 0.0, "risk": 0.0}
+    tier_tally = {5: _blank_tier(), 4: _blank_tier(), 3: _blank_tier(),
+                  "overall": _blank_tier()}
+    for row in board_rows:
+        for p in row.get("picks", []):
+            if p.get("model_only") or p.get("do_not_bet"):
+                continue
+            sig = int(p.get("signal_score") or 0)
+            if sig not in (3, 4, 5):
+                continue
+            buckets = (tier_tally[sig], tier_tally["overall"])
+            r = p.get("result")
+            try:
+                profit = float(p.get("profit_u") or 0.0)
+            except (TypeError, ValueError):
+                profit = 0.0
+            for b in buckets:
+                b["picks"] += 1
+                if r in ("W", "L", "P"):
+                    b[r] += 1
+                    b["units"] += profit
+                    b["risk"] += 1.0
+                elif p.get("_row_status") in ("live", "final"):
+                    b["pending"] += 1
+    for b in tier_tally.values():
+        settled = b["W"] + b["L"] + b["P"]
+        b["settled"] = settled
+        b["win_rate"] = (b["W"] / settled * 100.0) if settled else None
+        b["roi_pct"]  = (b["units"] / b["risk"] * 100.0) if b["risk"] else None
+
+    board_status_counts = {
+        "games":    len(board_rows),
+        "upcoming": sum(1 for r in board_rows if (r.get("status") or "") == "upcoming"),
+        "live":     sum(1 for r in board_rows if (r.get("status") or "") == "live"),
+        "final":    sum(1 for r in board_rows if (r.get("status") or "") == "final"),
+        "debated":  sum(1 for r in board_rows if any(
+            (p.get("ai_verdict") or "") in ("Strong Take", "Lean", "Pass", "Avoid")
+            for p in r.get("picks") or []
+        )),
+    }
+
     return render_template_string(
         PICKS_TEMPLATE,
         fonts_link=FONTS_LINK,
@@ -9855,6 +10105,8 @@ def picks_landing():
         is_today=(date_str == today),
         now=datetime.now(CENTRAL).strftime("%I:%M %p CT").lstrip("0"),
         active_adj=active_adj,
+        tier_tally=tier_tally,
+        board_status_counts=board_status_counts,
     )
 
 
