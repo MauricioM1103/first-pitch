@@ -1,0 +1,7 @@
+[
+  {
+    "ran_at": "2026-10-23T18:15:21.992313Z",
+    "record_data": "  (no Signal 3+ bets in last 7 days)",
+    "analysis": "OVERALL: No Signal 3+ bets were logged in the last 7 days, so there is nothing to evaluate on hit rate, units, or CLV.\n\nOUTPERFORMERS:\n- None. No data. Every bucket is at 0 bets, which is below the 10-bet minimum.\n\nUNDERPERFORMERS:\n- None. No data. Every bucket is at 0 bets, which is below the 10-bet minimum.\n\nSUGGESTED NUDGES:\n- None: insufficient sample in every sport and market bucket. I'm not recommending any weight, threshold, or pause changes.\n\nCONFIDENCE: Not applicable. There is no data to base a view on, so any nudge would be invented.\n\n**Worth checking (not a model nudge):** A zero-bet week could be legitimate, for example an off-season, a thin slate, or a Signal 3+ threshold that rarely fires. It could also be a pipeline problem, such as a failed bet-logging job, a broken query or date filter, or an empty upstream feed. If Signal 3+ normally produces bets in this window, verify the data source before drawing conclusions. If it's real, a longer lookback (30d or more) would give you a usable sample, since 7 days is noisy at typical Signal 3+ volumes. At roughly 50% hit rate, a 10-bet bucket has a standard deviation of about 16pp on hit rate, so weekly bucket results will rarely clear the noise bar on their own."
+  }
+]
