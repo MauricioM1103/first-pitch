@@ -9483,12 +9483,17 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
             #   - Only "Avoid" forces do_not_bet.
             #   - "Pass" / "Lean" are informational on the card.
             #   - "Strong Take" still +1 Signal point.
-            # Cost-tune: only call AI for Signal 3+ picks. Signal 2
-            # picks almost never clear the display filter and burning
-            # a Haiku call per Signal-2 pick costs ~$3-5/mo on busy
-            # days. The AI-only filter (?ai=1) still works since AI
-            # is informed by picks that cleared Signal 3.
-            if ((p.get("signal_score") or 0) >= 3
+            # Cost-tune (re-tuned 2026-10-23): split the gate so we
+            # don't lose AI verdicts that were already paid for.
+            #   - Cache SERVE: any Signal 2+ pick with a book price
+            #     reads its cached AI verdict for free. This keeps
+            #     the AI column populated for every pick the user
+            #     saw yesterday, no new tokens burned.
+            #   - Cache FILL: only Signal 3+ picks queue a new
+            #     Claude call on a cache miss. Signal 2 picks don't
+            #     generate new verdicts (that was the real spend).
+            _sig_now = int(p.get("signal_score") or 0)
+            if (_sig_now >= 2
                     and (p.get("decimal") or 0)
                     and not p.get("model_only")):
                 try:
@@ -9509,12 +9514,10 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                         p["signal_score"] = min(5, int(p["signal_score"]) + 1)
                     # "Pass" / "Lean": no behavior change — ai_verdict
                     # and ai_reasons stay on the pick for the UI to show.
-                else:
-                    # Cache miss — fire a background thread to populate
-                    # for the NEXT page load. Blocking inline on 10+
-                    # synchronous Haiku calls took the server past
-                    # Render's 60s request budget this morning and
-                    # killed workers (UptimeRobot DOWN alerts).
+                elif _sig_now >= 3:
+                    # Cache miss AND signal strong enough to be worth
+                    # a new call — fire a background Claude request.
+                    # Signal 2 misses silently stay unpopulated.
                     try:
                         _queue_ai_verdict_fill(p)
                     except Exception:
