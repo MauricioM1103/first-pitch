@@ -46,6 +46,24 @@ SPORTS = [
         "spread_label": "Spread",
         "team_sport": True,
     },
+    # ---- Basketball ----
+    # NBA kickoff (shipped 2026-10-23). Research doc + model notes
+    # live in nba_model.py. Markets served via generic_odds.py until
+    # the NBA-specific model (nba_model.simulate_game) is wired into
+    # picks.py — until then ML/Spread/Total come from the Pinnacle
+    # devig blended with a flat prior. See nba_model.py for the
+    # research summary and backtest plan.
+    {
+        "slug": "nba",
+        "name": "NBA",
+        "pinnacle_league_id": 487,
+        "odds_api_key": "basketball_nba",
+        "espn_scoreboard": "basketball/nba",
+        "ml_outcomes": 2,
+        "has_halves": True,            # period 1 = 1st half; also 1Q available
+        "spread_label": "Spread",
+        "team_sport": True,
+    },
     # ---- Ice Hockey ----
     {
         "slug": "nhl",
