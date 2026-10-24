@@ -1811,6 +1811,50 @@ def run_live_grader():
     # graded_picks is empty, so the board gets its score overlay on
     # days where no picks have been logged yet. Just skip the early-
     # settle loop in that case.
+    # Integrity sweep (shipped 2026-10-24): any pick that was graded
+    # BEFORE its game started is a bogus result (grader hit a stale
+    # ESPN event or an ID collision). Rewind those back to pending so
+    # the regular grader can take another pass once the game actually
+    # ends. We identify them by comparing start_time to now_dt_utc:
+    # if start_time is in the future (or missing) but result is set,
+    # ungrade.
+    pre_kickoff_fixed = []
+    now_utc = datetime.utcnow()
+    for p in graded_picks:
+        if p.get("result") not in ("W", "L", "P"):
+            continue
+        st = p.get("start_time") or ""
+        if not st:
+            continue
+        try:
+            start_dt = datetime.fromisoformat(st.replace("Z", "+00:00")).replace(tzinfo=None)
+        except Exception:
+            continue
+        # Allow a small grace window after kickoff before considering
+        # a grade legitimate — a pick settled 10+ min after kickoff
+        # is fine (early-settle on Over hit, etc.); anything graded
+        # BEFORE kickoff is wrong.
+        if start_dt > now_utc:
+            prev_result = p.get("result")
+            p["result"] = None
+            p["profit_u"] = None
+            p["graded_at"] = None
+            p["graded_by"] = "integrity_sweep_rewind"
+            pre_kickoff_fixed.append({
+                "id":     p.get("id"),
+                "pick":   p.get("pick"),
+                "sport":  p.get("sport"),
+                "was":    prev_result,
+                "kickoff": start_dt.isoformat() + "Z",
+            })
+    if pre_kickoff_fixed:
+        try:
+            plays_log.write_graded(today_iso,
+                                     {"date": today_iso, "picks": graded_picks})
+            plays_log.invalidate_grade_all_cache()
+        except Exception:
+            pass
+
     # Group by sport for ESPN fetch batching
     by_sport = {}
     for p in graded_picks:
@@ -1977,10 +2021,12 @@ def run_live_grader():
         pass
 
     return {
-        "ok":            True,
-        "today":         today_iso,
-        "sports":        list(by_sport.keys()),
-        "pending_count": sum(len(v) for v in by_sport.values()),
-        "settled_count": len(settled),
-        "settled":       settled,
+        "ok":                True,
+        "today":             today_iso,
+        "sports":            list(by_sport.keys()),
+        "pending_count":     sum(len(v) for v in by_sport.values()),
+        "settled_count":     len(settled),
+        "settled":           settled,
+        "pre_kickoff_fixed": pre_kickoff_fixed,
+        "pre_kickoff_count": len(pre_kickoff_fixed),
     }
