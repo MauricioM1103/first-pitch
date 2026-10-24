@@ -1771,11 +1771,31 @@ def _settle_early(pick, home_score, away_score, period_scores=None):
     return None
 
 
+_LIVE_SCORES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "logs", "live_scores.json")
+
+
+def _write_live_scores(all_scores):
+    """Dump every matched (sport, home, away) → (home_score, away_score)
+    to logs/live_scores.json so the board can overlay them without
+    doing its own ESPN fetch + fuzzy match. Called by run_live_grader."""
+    try:
+        os.makedirs(os.path.dirname(_LIVE_SCORES_PATH), exist_ok=True)
+        payload = {"ran_at": datetime.utcnow().isoformat() + "Z",
+                   "scores": all_scores}
+        with open(_LIVE_SCORES_PATH, "w") as f:
+            json.dump(payload, f)
+    except Exception:
+        pass
+
+
 def run_live_grader():
     """Scan today's picks against ESPN live scores and advance any
     pick that can be settled early (Over/BTTS/TT Over hit mid-game).
     Writes results back to plays_log so /logged + the daily P&L
-    panel reflect them immediately. Returns per-sport counts.
+    panel reflect them immediately. ALSO dumps every match to
+    logs/live_scores.json so the board can overlay scores without
+    repeating the ESPN fetch + fuzzy match. Returns per-sport counts.
 
     Rule-based — no LLM calls. Runs on /cron/dispatch so it ticks
     every 5 min alongside the moderator."""
@@ -1889,6 +1909,61 @@ def run_live_grader():
             plays_log.invalidate_grade_all_cache()
         except Exception:
             pass
+
+    # Live-score dump (broad). Even sports with 0 pending picks (e.g.
+    # a game whose pick already settled) may need live scores for the
+    # board's row display. Walk every sport that has a scoreboard
+    # path, pull ESPN, dump every event's score keyed by sport/home-
+    # token/away-token to logs/live_scores.json. The board reads this
+    # file to overlay scores on its rows without redoing the ESPN
+    # fetch + fuzzy match itself (decouples the board build from
+    # per-sport matcher bugs).
+    try:
+        def _toks_write(name):
+            n = (name or "").lower().strip()
+            if not n:
+                return []
+            out = {n}
+            for w in n.split():
+                if len(w) >= 4:
+                    out.add(w)
+            return sorted(out)
+        live_dump = {}  # sport_slug -> list of {home, away, home_score, away_score, home_tokens, away_tokens}
+        for sport in _sports_lg.SPORTS:
+            path = sport.get("espn_scoreboard")
+            if not path:
+                continue
+            try:
+                evs = plays_log.fetch_scores_espn(path, days_back=1,
+                                                    ref_date=today)
+            except Exception:
+                continue
+            per_sport = []
+            for ev in evs:
+                ht = ev.get("home_team") or ""
+                at = ev.get("away_team") or ""
+                scs = ev.get("scores") or []
+                if not ht or not at or len(scs) < 2:
+                    continue
+                try:
+                    hs = int(float(scs[0].get("score") or 0))
+                    as_ = int(float(scs[1].get("score") or 0))
+                except (TypeError, ValueError):
+                    continue
+                per_sport.append({
+                    "home":          ht,
+                    "away":          at,
+                    "home_score":    hs,
+                    "away_score":    as_,
+                    "home_tokens":   _toks_write(ht),
+                    "away_tokens":   _toks_write(at),
+                })
+            if per_sport:
+                live_dump[sport["slug"]] = per_sport
+        _write_live_scores(live_dump)
+    except Exception:
+        pass
+
     return {
         "ok":            True,
         "today":         today_iso,

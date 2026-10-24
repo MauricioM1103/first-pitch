@@ -11142,13 +11142,68 @@ def picks_landing():
     except Exception:
         pass
 
-    # Live-score backfill (shipped 2026-10-24). ESPN scoreboard
-    # returns the running score for in-progress games — pull it so
-    # the LIVE badge can show "LIVE 2-1" instead of just "LIVE".
-    # Grouped by sport so we hit ESPN at most once per sport. Call
-    # is cached in plays_log._ESPN_CACHE for 10 min so repeated
-    # board builds don't thrash. Only fires for rows that are live
-    # or final AND don't already have a score.
+    # Live-score overlay from the shared file written by Agent #9
+    # (run_live_grader on each /cron/dispatch tick). Decoupled from
+    # the board build so one bad per-sport match in the inline
+    # version can't hide scores across other sports. File is just
+    # a sport→list-of-matches dump with pre-computed team tokens;
+    # we match row to event via token-set intersection on home + opp.
+    try:
+        import json as _json_lv
+        import os as _os_lv
+        _lv_path = _os_lv.path.join(_os_lv.path.dirname(_os_lv.path.abspath(__file__)),
+                                      "logs", "live_scores.json")
+        _lv_data = {}
+        try:
+            with open(_lv_path) as _lf:
+                _lv_data = (_json_lv.load(_lf) or {}).get("scores") or {}
+        except Exception:
+            _lv_data = {}
+        def _lv_toks(name):
+            n = (name or "").lower().strip()
+            if not n:
+                return set()
+            t = {n}
+            for w in n.split():
+                if len(w) >= 4:
+                    t.add(w)
+            return t
+        for row in board_rows:
+            if (row.get("status") or "") not in ("live", "final"):
+                continue
+            if row.get("score_home") is not None:
+                continue
+            slug = row.get("sport_slug") or ""
+            events = _lv_data.get(slug) or []
+            if not events:
+                continue
+            r_h = _lv_toks(row.get("home"))
+            r_a = _lv_toks(row.get("away"))
+            for ev in events:
+                e_h = set(ev.get("home_tokens") or [])
+                e_a = set(ev.get("away_tokens") or [])
+                # row home ↔ event home, row away ↔ event away
+                if (r_h & e_h) and (r_a & e_a):
+                    row["score_home"] = ev["home_score"]
+                    row["score_away"] = ev["away_score"]
+                    for p in row.get("picks") or []:
+                        p["row_score_home"] = ev["home_score"]
+                        p["row_score_away"] = ev["away_score"]
+                    break
+                # or row home ↔ event away, row away ↔ event home
+                if (r_h & e_a) and (r_a & e_h):
+                    row["score_home"] = ev["away_score"]
+                    row["score_away"] = ev["home_score"]
+                    for p in row.get("picks") or []:
+                        p["row_score_home"] = ev["away_score"]
+                        p["row_score_away"] = ev["home_score"]
+                    break
+    except Exception:
+        pass
+
+    # (DEPRECATED inline ESPN fetch below — kept for reference while
+    #  the file-based overlay above is being validated. Removed in a
+    #  follow-up once we confirm the file is populated reliably.)
     try:
         import plays_log as _pl_live
         _live_rows_needing_score = [r for r in board_rows
