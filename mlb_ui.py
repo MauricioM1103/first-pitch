@@ -11227,6 +11227,40 @@ def picks_landing():
     except Exception:
         pass
 
+    # Icon qualification pass (shipped 2026-10-24). Compute whether
+    # each pick carries at least one of the filter icons the UI shows
+    # on the pick card (Strongest / Filter 2.0 / Whale / AI / Line+ /
+    # DNB). Picks without any icon are not useful — they're model
+    # noise that slipped past _keep_in_baseline. Drop them unless
+    # they have a graded result (keep graded records visible).
+    def _pick_has_any_icon(p):
+        try:
+            sig = int(p.get("signal_score") or 0)
+        except Exception:
+            sig = 0
+        is_strongest = (not p.get("do_not_bet")) and (
+            sig >= 3 or p.get("whale")
+            or (float(p.get("line_move_pp") or 0.0) >= 0.005))
+        is_filter2 = (bool(p.get("strong"))
+                      and not p.get("do_not_bet")
+                      and not p.get("model_only"))
+        is_ai = (p.get("ai_verdict") in ("Strong Take", "Lean")
+                 and not p.get("do_not_bet"))
+        is_linemove = (float(p.get("line_move_pp") or 0.0) >= 0.01)
+        return (is_strongest or is_filter2 or p.get("whale")
+                or is_ai or is_linemove
+                or p.get("do_not_bet")
+                or p.get("result") in ("W", "L", "P"))
+    for row in board_rows:
+        row["picks"] = [p for p in (row.get("picks") or [])
+                        if _pick_has_any_icon(p)]
+    # Prune now-empty rows (same rule as before — live/final rows
+    # stay for context, but if ALL picks dropped and the game isn't
+    # in-flight, the row goes).
+    board_rows = [r for r in board_rows
+                  if r.get("picks")
+                  or (r.get("status") or "") in ("live", "final")]
+
     # Tag each pick with `discord_queued` so the UI can show a 📢
     # badge next to the LIVE/W/L result for picks the moderator would
     # post. Mirror agents.run_moderator_tick's eligibility rules:
@@ -20210,6 +20244,74 @@ def _resolve_discord_webhook_mlb(settings):
     if url:
         return url
     return (settings.get("discord_webhook_url") or "").strip()
+
+
+@app.route("/debug/live-scores")
+def debug_live_scores():
+    """Diagnose the live-score backfill. Pass ?sport=<slug> to limit.
+    Returns per-sport fetch counts, matched/unmatched games, and the
+    team-name tokens being compared."""
+    import json as _json
+    sport_slug = (request.args.get("sport") or "").strip().lower() or None
+    try:
+        today = datetime.now(CENTRAL).date()
+        board, _ = _build_board_rows(today.isoformat(), today, "all",
+                                      strong_only=False)
+    except Exception as e:
+        return Response(_json.dumps({"ok": False, "error": f"board build: {e}"}),
+                        status=500, mimetype="application/json")
+    import plays_log as _pl
+    import sports as _sp
+    def _toks(name):
+        n = (name or "").lower().strip()
+        if not n: return []
+        t = {n}
+        for w in n.split():
+            if len(w) >= 4: t.add(w)
+        return sorted(t)
+    out_sports = {}
+    for sport_cfg in _sp.SPORTS:
+        slug = sport_cfg["slug"]
+        if sport_slug and slug != sport_slug:
+            continue
+        rows_for_sport = [r for r in board if r.get("sport_slug") == slug
+                          and (r.get("status") or "") in ("live", "final")]
+        if not rows_for_sport:
+            continue
+        espn_path = sport_cfg.get("espn_scoreboard")
+        try:
+            events = _pl.fetch_scores_espn(espn_path, days_back=1, ref_date=today)
+        except Exception as e:
+            events = []
+            out_sports[slug] = {"error": str(e)}
+            continue
+        ev_names = []
+        for ev in events:
+            teams = ev.get("teams") or []
+            if len(teams) >= 2:
+                ev_names.append({
+                    "home": teams[0].get("name"),
+                    "away": teams[1].get("name"),
+                    "home_score": teams[0].get("score"),
+                    "away_score": teams[1].get("score"),
+                })
+        out_sports[slug] = {
+            "espn_path": espn_path,
+            "events_fetched": len(events),
+            "espn_events": ev_names[:8],
+            "board_rows": [{
+                "home": r.get("home"),
+                "away": r.get("away"),
+                "status": r.get("status"),
+                "score_home": r.get("score_home"),
+                "score_away": r.get("score_away"),
+                "home_tokens": _toks(r.get("home")),
+                "away_tokens": _toks(r.get("away")),
+            } for r in rows_for_sport[:8]],
+        }
+    return Response(_json.dumps({"ok": True, "sports": out_sports},
+                                 indent=2),
+                    mimetype="application/json")
 
 
 @app.route("/pick/force-post")
