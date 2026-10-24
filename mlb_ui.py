@@ -20301,6 +20301,40 @@ def debug_live_scores():
                     "home_score": scores[0].get("score"),
                     "away_score": scores[1].get("score"),
                 })
+        # Also run the actual matcher inline so we can see per-row
+        # what hits/misses.
+        _ev_by_token = {}
+        for _ev in events:
+            _ht = _ev.get("home_team") or ""
+            _at = _ev.get("away_team") or ""
+            scores = _ev.get("scores") or []
+            if not _ht or not _at or len(scores) < 2:
+                continue
+            for t in _toks(_ht):
+                _ev_by_token.setdefault(t, []).append(("home", _at, _ht))
+            for t in _toks(_at):
+                _ev_by_token.setdefault(t, []).append(("away", _ht, _at))
+        row_matches = []
+        for r in rows_for_sport[:8]:
+            hts = _toks(r.get("home"))
+            ats = _toks(r.get("away"))
+            match = None
+            for tok in hts:
+                cands = _ev_by_token.get(tok) or []
+                for role, opp, me in cands:
+                    opp_toks = _toks(opp)
+                    if any(t in opp_toks for t in ats):
+                        match = {"matched_via_token": tok,
+                                 "espn_home_or_away": role,
+                                 "espn_opp": opp,
+                                 "espn_me": me}
+                        break
+                if match:
+                    break
+            row_matches.append({
+                "row": f"{r.get('away')} @ {r.get('home')}",
+                "match": match,
+            })
         out_sports[slug] = {
             "espn_path": espn_path,
             "events_fetched": len(events),
@@ -20314,6 +20348,7 @@ def debug_live_scores():
                 "home_tokens": _toks(r.get("home")),
                 "away_tokens": _toks(r.get("away")),
             } for r in rows_for_sport[:8]],
+            "row_matches": row_matches,
         }
     return Response(_json.dumps({"ok": True, "sports": out_sports},
                                  indent=2),
