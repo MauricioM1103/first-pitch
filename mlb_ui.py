@@ -5422,6 +5422,42 @@ PICKS_TEMPLATE = r"""<!doctype html>
   border: 1px solid var(--rule);
   border-radius: 4px;
 }
+/* Discord-queued + Discord-sent (shipped 2026-10-24). Discord blurple
+   (#7289da). "Queued" is softer / dashed; "sent" is solid + has the
+   check prefix. Both sit flush with the LIVE / FINAL / W / L badge. */
+.pick-badge-row .pick-res.discord-queued {
+  color: #7289da; font-size: 11px; font-weight: 700;
+  padding: 1px 5px; margin-left: 4px;
+  border: 1px dashed color-mix(in oklab, #7289da 55%, var(--rule));
+  border-radius: 4px;
+  background: color-mix(in oklab, #7289da 8%, transparent);
+}
+.pick-badge-row .pick-res.discord-sent {
+  color: #7289da; font-size: 11px; font-weight: 700;
+  padding: 1px 5px; margin-left: 4px;
+  border: 1px solid #7289da;
+  border-radius: 4px;
+  background: color-mix(in oklab, #7289da 15%, transparent);
+}
+/* DNB pick card — compact + highlighted red so the "do not bet"
+   flag is unmissable without blowing up the layout. Reduce padding,
+   font, and chip visibility; dim the pick label but keep the DNB
+   icon bold. (shipped 2026-10-24) */
+.pick-badge-row.do-not-bet-pick {
+  padding: 4px 8px;                 /* tightened from the default */
+  background: color-mix(in oklab, #ef4444 7%, transparent);
+  border-left: 3px solid color-mix(in oklab, #ef4444 70%, var(--rule));
+  opacity: 0.85;
+}
+.pick-badge-row.do-not-bet-pick .pick-lbl { font-size: 11.5px; color: var(--muted); text-decoration: line-through; }
+.pick-badge-row.do-not-bet-pick .pick-conf,
+.pick-badge-row.do-not-bet-pick .src-tag,
+.pick-badge-row.do-not-bet-pick .pick-signal,
+.pick-badge-row.do-not-bet-pick .pick-move-chip,
+.pick-badge-row.do-not-bet-pick .pick-shop-chip { opacity: 0.55; font-size: 9.5px; }
+.pick-badge-row.do-not-bet-pick .fi-dnb {
+  color: #ef4444; font-size: 13px; margin-right: 2px;
+}
 @keyframes pick-live-pulse {
   0%, 100% { opacity: 1; }
   50%      { opacity: 0.45; }
@@ -6103,9 +6139,20 @@ PICKS_TEMPLATE = r"""<!doctype html>
                     {# Push counts as a loss per the no-push policy #}
                     <span class="pick-res L" title="{{ 'Push (counted as loss)' if p.result == 'P' else 'Lost' }}">&#10007;</span>
                   {% elif p._row_status == 'live' %}
-                    <span class="pick-res live" title="Game is live — awaiting final score">&#9679; LIVE</span>
+                    <span class="pick-res live" title="Game is live{% if p.row_score_home is not none %} — {{ p.row_score_away|int }}-{{ p.row_score_home|int }}{% endif %} — awaiting final score">
+                      &#9679; LIVE{% if p.row_score_home is not none %} {{ p.row_score_away|int }}-{{ p.row_score_home|int }}{% endif %}
+                    </span>
                   {% elif p._row_status == 'final' %}
                     <span class="pick-res final" title="Game ended — grading on next refresh">FINAL</span>
+                  {% endif %}
+                  {# Discord status badge (shipped 2026-10-24): shows
+                     when a pick cleared the moderator's dynamic bar
+                     and either will post (📢) or already posted (✓📢).
+                     Hidden on DNB / already-settled picks. #}
+                  {% if p.discord_posted %}
+                    <span class="pick-res discord-sent" title="Posted to Discord moderator feed earlier today">&#10003;&#x1F4E2;</span>
+                  {% elif p.discord_queued and p.result not in ('W','L','P') %}
+                    <span class="pick-res discord-queued" title="Queued for Discord moderator — will post when game enters its pre-game window">&#x1F4E2;</span>
                   {% endif %}
                 </div>
               {% endfor %}
@@ -11094,6 +11141,108 @@ def picks_landing():
                     })
     except Exception:
         pass
+
+    # Live-score backfill (shipped 2026-10-24). ESPN scoreboard
+    # returns the running score for in-progress games — pull it so
+    # the LIVE badge can show "LIVE 2-1" instead of just "LIVE".
+    # Grouped by sport so we hit ESPN at most once per sport. Call
+    # is cached in plays_log._ESPN_CACHE for 10 min so repeated
+    # board builds don't thrash. Only fires for rows that are live
+    # or final AND don't already have a score.
+    try:
+        import plays_log as _pl_live
+        _live_rows_needing_score = [r for r in board_rows
+                                      if (r.get("status") or "") in ("live", "final")
+                                      and r.get("score_home") is None]
+        if _live_rows_needing_score:
+            _by_sport = {}
+            for r in _live_rows_needing_score:
+                _by_sport.setdefault(r.get("sport_slug"), []).append(r)
+            for sport_slug, rows_for_sport in _by_sport.items():
+                sport_cfg = sports.by_slug(sport_slug or "")
+                espn_path = (sport_cfg or {}).get("espn_scoreboard")
+                if not espn_path:
+                    continue
+                try:
+                    events = _pl_live.fetch_scores_espn(espn_path, days_back=1,
+                                                         ref_date=view_date)
+                except Exception:
+                    events = []
+                # Index events by (home_lower, away_lower)
+                _ev_by_key = {}
+                for _ev in events:
+                    teams = _ev.get("teams") or []
+                    if len(teams) < 2:
+                        continue
+                    _h = (teams[0].get("name") or "").lower().strip()
+                    _a = (teams[1].get("name") or "").lower().strip()
+                    try:
+                        _hs = int(float(teams[0].get("score") or 0))
+                        _as = int(float(teams[1].get("score") or 0))
+                    except (TypeError, ValueError):
+                        continue
+                    _ev_by_key[(_h, _a)] = (_hs, _as)
+                    # also index swapped order in case home/away ordering differs
+                    _ev_by_key[(_a, _h)] = (_as, _hs)
+                for r in rows_for_sport:
+                    _hk = (r.get("home") or "").lower().strip()
+                    _ak = (r.get("away") or "").lower().strip()
+                    sc = _ev_by_key.get((_hk, _ak))
+                    if sc is not None:
+                        r["score_home"] = sc[0]
+                        r["score_away"] = sc[1]
+                        # Propagate to picks so the LIVE badge renders
+                        for p in r.get("picks") or []:
+                            p["row_score_home"] = sc[0]
+                            p["row_score_away"] = sc[1]
+    except Exception:
+        pass
+
+    # Tag each pick with `discord_queued` so the UI can show a 📢
+    # badge next to the LIVE/W/L result for picks the moderator would
+    # post. Mirror agents.run_moderator_tick's eligibility rules:
+    # not DNB / model-only, clears the dynamic evidence bar, and
+    # hasn't already been posted today.
+    try:
+        import agents as _ag
+        import json as _json_dq
+        import os as _os_dq
+        news_state = _ag._load_news_state() if hasattr(_ag, "_load_news_state") else None
+        # Load posted-today set from the moderator's dedup file so
+        # already-posted picks get a different badge than queued.
+        _posted_today_dq = set()
+        try:
+            _dq_path = _os_dq.path.join(_os_dq.path.dirname(_os_dq.path.abspath(__file__)),
+                                          "logs", "discord_posted_individual.json")
+            with open(_dq_path) as _f_dq:
+                _posted_today_dq = set((_json_dq.load(_f_dq) or {}).keys())
+        except Exception:
+            pass
+        for _row in board_rows:
+            for _p in (_row.get("picks") or []):
+                if _p.get("do_not_bet") or _p.get("model_only"):
+                    _p["discord_queued"] = False
+                    continue
+                try:
+                    _score, _ = _ag.compute_evidence_score(_p, news_state=news_state)
+                except Exception:
+                    _score = 0
+                _bar = _ag._evidence_bar_for(_p)
+                _p["discord_queued"] = _score >= _bar
+                _p["discord_posted"] = _p.get("id") in _posted_today_dq
+    except Exception:
+        pass
+
+    # Drop UPCOMING rows that have no picks — these are future games
+    # where we never emitted any Signal-3+ pick. They add noise to
+    # the board. Live/final rows stay even when picks is empty
+    # (per the user's "don't delete it if it just went blank during
+    # a live game" rule — the backfill loop above already restored
+    # live/final picks from plays_log when we had them, so empty
+    # live/final rows mean the game legitimately had no picks).
+    board_rows = [r for r in board_rows
+                  if (r.get("picks")
+                      or (r.get("status") or "") in ("live", "final"))]
 
     if strongest_only:
         def _strongest_pick(p):
