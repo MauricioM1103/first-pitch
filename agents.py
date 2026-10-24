@@ -984,7 +984,7 @@ Evidence {score}/10 — {reason_tags}  |  Tipoff in {mins_to_tip} min
 """
 
 
-def resend_picks_posted_after(hour_ct=15, webhook_url=None):
+def resend_picks_posted_after(hour_ct=15, webhook_url=None, dry=False):
     """Force-resend every pick that was posted to Discord today after
     the given CT hour (default 3pm CT), in the current embed format.
     Pulls the pick list from today's logged plays_log file and the
@@ -1032,6 +1032,20 @@ def resend_picks_posted_after(hour_ct=15, webhook_url=None):
         pick = picks_by_id.get(pid)
         if not pick:
             missing.append(pid)
+            continue
+        if dry:
+            # Just report what body_text + available fields WOULD be sent.
+            resent.append({
+                "pid":           pid,
+                "has_ai_matchup": bool(pick.get("ai_matchup")),
+                "has_ai_factors": bool(pick.get("ai_factors")),
+                "has_ai_risks":   bool(pick.get("ai_risks")),
+                "ai_matchup_len": len(pick.get("ai_matchup") or []),
+                "ai_factors_len": len(pick.get("ai_factors") or []),
+                "ai_risks_len":   len(pick.get("ai_risks") or []),
+                "ai_verdict":     pick.get("ai_verdict"),
+                "keys_sample":    sorted(pick.keys())[:30],
+            })
             continue
         try:
             r = post_individual_pick(pick, webhook_url=webhook_url,

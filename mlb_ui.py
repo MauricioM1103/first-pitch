@@ -20326,7 +20326,8 @@ def discord_resend_after():
         hour = 15
     try:
         import agents
-        r = agents.resend_picks_posted_after(hour_ct=hour)
+        dry = (request.args.get("dry") or "") in ("1", "true", "yes")
+        r = agents.resend_picks_posted_after(hour_ct=hour, dry=dry)
         return Response(_json.dumps(r, indent=2),
                         mimetype="application/json")
     except Exception as e:
