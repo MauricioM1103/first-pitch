@@ -496,10 +496,13 @@ def rate_limit_remaining_sec():
     return int(r) if r > 0 else 0
 
 
-def send_discord_image(webhook_url, png_bytes, filename, message=""):
+def send_discord_image(webhook_url, png_bytes, filename, message="",
+                        return_id=False):
     """POST a PNG to a Discord webhook via multipart. Returns True on
-    success. Discord webhooks accept files up to ~25MB; our PNGs are
-    typically ~80-120 KB.
+    success (or the message_id when return_id=True — uses ?wait=true
+    so Discord returns the created message so we can delete it later).
+    Discord webhooks accept files up to ~25MB; our PNGs are typically
+    ~80-120 KB.
 
     If a shared rate-limit cooldown is active (triggered when a prior
     call got HTTP 429), returns False without hitting the webhook so
@@ -522,15 +525,26 @@ def send_discord_image(webhook_url, png_bytes, filename, message=""):
         parts.append(png_bytes)
         parts.append(f'\r\n--{boundary}--\r\n'.encode())
         body = b''.join(parts)
-        req = Request(webhook_url, data=body, method="POST", headers={
+        url = webhook_url + ("?wait=true" if return_id else "")
+        req = Request(url, data=body, method="POST", headers={
             "Content-Type": f"multipart/form-data; boundary={boundary}",
             # Discord webhooks reject requests without a User-Agent
             # with a 403; always include one.
             "User-Agent": "cheeks-model/1.0 (+https://cheeks-model.onrender.com)",
         })
         try:
-            urlopen(req, timeout=15).close()
-            return True
+            resp = urlopen(req, timeout=15)
+            if return_id:
+                try:
+                    rb = json.loads(resp.read())
+                    return rb.get("id")
+                except Exception:
+                    return True
+                finally:
+                    resp.close()
+            else:
+                resp.close()
+                return True
         except HTTPError as _he:
             # HTTPError is raised on 4xx/5xx. Trip the cooldown on 429
             # so other calls in this process don't hammer the webhook.
@@ -539,6 +553,233 @@ def send_discord_image(webhook_url, png_bytes, filename, message=""):
             return False
     except Exception:
         return False
+
+
+# ===========================================================
+# Pick card PNG renderer (shipped 2026-10-24 v2)
+# ===========================================================
+# Renders a single pick as a ~1200x420 PNG — sport color sidebar,
+# large pick label + odds, pills for Signal/Evidence/Tipoff/AI,
+# chip row for firing signals, optional shop chip. Paired with the
+# analysis text body in one Discord message so each pick lands as
+# a clean visual card instead of a text wall.
+
+_PICK_CARD_BG       = (43, 45, 49)      # Discord dark
+_PICK_CARD_INK      = (255, 255, 255)
+_PICK_CARD_INK_DIM  = (185, 187, 190)
+_PICK_CARD_INK_FAINT = (120, 122, 128)
+_PICK_CARD_PILL_BG  = (56, 58, 64)
+_PICK_CARD_GOOD     = (87, 242, 135)
+_PICK_CARD_LINE     = (60, 62, 68)
+
+_PICK_CARD_SPORT_RGB = {
+    "mlb":    (200, 16, 46),
+    "nfl":    (1, 51, 105),
+    "ncaaf":  (139, 34, 0),
+    "nba":    (201, 8, 42),
+    "nhl":    (0, 51, 160),
+    "ufc":    (210, 10, 10),
+    "epl":    (61, 25, 91),
+    "laliga": (238, 135, 7),
+    "ligamx": (0, 132, 61),
+    "ucl":    (0, 30, 84),
+    "europa": (255, 102, 0),
+}
+
+
+def _pc_font(size, bold=False):
+    """Load a font — Segoe UI on Windows, DejaVu on Linux (Render)."""
+    import sys as _sys
+    if _sys.platform.startswith("win"):
+        cands = ["C:/Windows/Fonts/segoeuib.ttf" if bold else "C:/Windows/Fonts/segoeui.ttf",
+                 "C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf"]
+    else:
+        cands = ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold
+                   else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]
+    for p in cands:
+        try:
+            if os.path.exists(p):
+                return ImageFont.truetype(p, size)
+        except Exception:
+            continue
+    try:
+        return ImageFont.load_default()
+    except Exception:
+        return None
+
+
+def _pc_pill(draw, x, y, text, font, fg=_PICK_CARD_INK,
+              bg=_PICK_CARD_PILL_BG, pad=(14, 7)):
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    w, h = tw + pad[0] * 2, th + pad[1] * 2
+    try:
+        draw.rounded_rectangle([x, y, x + w, y + h], radius=h // 2, fill=bg)
+    except Exception:
+        draw.rectangle([x, y, x + w, y + h], fill=bg)
+    draw.text((x + pad[0], y + pad[1] - bbox[1]), text, font=font, fill=fg)
+    return x + w
+
+
+def render_pick_card_png(pick):
+    """Return PNG bytes for one pick card. `pick` keys we read:
+    sport_name, sport_slug, pick, decimal, signal_score, evidence_score,
+    mins_to_tip, ai_verdict, best_book, best_price, best_price_delta_pct,
+    reasons, start_time (ISO)."""
+    if not _PIL_OK:
+        return None
+    W, H = 1200, 440
+    canvas = Image.new("RGB", (W, H), _PICK_CARD_BG)
+    draw   = ImageDraw.Draw(canvas, "RGBA")
+
+    sport_slug = (pick.get("sport_slug") or "").lower()
+    sidebar = _PICK_CARD_SPORT_RGB.get(sport_slug, (114, 137, 218))
+    draw.rectangle([0, 0, 10, H], fill=sidebar)
+
+    pad_x = 36
+    y = 32
+    sport = (pick.get("sport_name") or sport_slug or "?").upper()
+    draw.text((pad_x, y), sport, font=_pc_font(20, bold=True),
+               fill=_PICK_CARD_INK_DIM)
+    y += 32
+
+    # Pick label + odds
+    pick_label = pick.get("pick") or "?"
+    f_pick = _pc_font(44, bold=True)
+    max_w = W - pad_x - 240
+    try:
+        bbox = draw.textbbox((0, 0), pick_label, font=f_pick)
+        if bbox[2] > max_w:
+            while bbox[2] > max_w and len(pick_label) > 10:
+                pick_label = pick_label[:-2]
+                bbox = draw.textbbox((0, 0), pick_label + "...", font=f_pick)
+            pick_label = pick_label + "..."
+    except Exception:
+        pass
+    draw.text((pad_x, y), pick_label, font=f_pick, fill=_PICK_CARD_INK)
+
+    dec = pick.get("decimal")
+    odds_s = f"@ {dec:.2f}" if dec else "@ ?"
+    f_odds = _pc_font(56, bold=True)
+    try:
+        obbox = draw.textbbox((0, 0), odds_s, font=f_odds)
+        odds_w = obbox[2] - obbox[0]
+    except Exception:
+        odds_w = 200
+    draw.text((W - pad_x - odds_w, y - 4), odds_s, font=f_odds,
+               fill=_PICK_CARD_GOOD)
+    y += 68
+    draw.rectangle([pad_x, y + 8, W - pad_x, y + 9], fill=_PICK_CARD_LINE)
+    y += 24
+
+    # Pills row: Signal / Evidence / Tipoff / AI
+    f_pill = _pc_font(22, bold=True)
+    sig  = pick.get("signal_score")
+    ev   = pick.get("evidence_score")
+    mins = pick.get("mins_to_tip")
+    px = pad_x
+    sig_fg = _PICK_CARD_GOOD if (sig or 0) >= 4 else _PICK_CARD_INK
+    px = _pc_pill(draw, px, y, f"Signal {sig}/5" if sig is not None else "Signal —",
+                   f_pill, fg=sig_fg)
+    px += 12
+    px = _pc_pill(draw, px, y, f"Evidence {ev}/10" if ev is not None else "Evidence —",
+                   f_pill, fg=_PICK_CARD_INK)
+    px += 12
+    # Relative tipoff
+    if mins is not None:
+        if mins < 60:
+            tip_rel = f"Tip in {mins}m"
+        else:
+            tip_rel = f"Tip in {mins // 60}h{mins % 60}m"
+    else:
+        tip_rel = "Tipoff —"
+    px = _pc_pill(draw, px, y, tip_rel, f_pill, fg=_PICK_CARD_INK_DIM)
+    px += 12
+    # Absolute tipoff time if start_time present
+    st = pick.get("start_time") or ""
+    tip_abs = ""
+    if st:
+        try:
+            from datetime import datetime as _dt
+            tz = None
+            try:
+                from zoneinfo import ZoneInfo
+                tz = ZoneInfo("America/Chicago")
+            except Exception:
+                pass
+            d = _dt.fromisoformat(st.replace("Z", "+00:00"))
+            if tz is not None:
+                d = d.astimezone(tz)
+            tip_abs = d.strftime("%-I:%M %p CT") if sys_posix() else d.strftime("%#I:%M %p CT")
+        except Exception:
+            tip_abs = ""
+    if tip_abs:
+        px = _pc_pill(draw, px, y, tip_abs, f_pill, fg=_PICK_CARD_INK_DIM)
+        px += 12
+    # AI verdict
+    aiv = pick.get("ai_verdict") or ""
+    if aiv in ("Lean", "Strong Take"):
+        ai_bg = (14, 165, 233, 60) if aiv == "Lean" else (34, 197, 94, 70)
+        px = _pc_pill(draw, px, y, f"AI: {aiv}", f_pill,
+                       fg=_PICK_CARD_INK, bg=ai_bg)
+    y += 56
+
+    # Signals-firing chip row
+    reasons = pick.get("reasons") or []
+    if reasons:
+        f_chip = _pc_font(18)
+        rx = pad_x
+        for r in reasons:
+            rx = _pc_pill(draw, rx, y, r, f_chip, fg=_PICK_CARD_INK_DIM,
+                           bg=(45, 47, 52), pad=(10, 5))
+            rx += 8
+        y += 42
+
+    # Shop chip
+    bb = pick.get("best_book")
+    bp = pick.get("best_price")
+    bd = pick.get("best_price_delta_pct")
+    if bb and bp:
+        f_shop = _pc_font(20, bold=True)
+        txt = f"$ Shop: {str(bb).upper()} {bp:.2f}"
+        if bd:
+            txt += f"  ({bd:+.1f}%)"
+        _pc_pill(draw, pad_x, y, txt, f_shop,
+                  fg=_PICK_CARD_GOOD, bg=(32, 60, 44))
+        y += 42
+
+    # Footer
+    draw.text((pad_x, H - 28),
+               "cheeks-model  ·  evidence-filtered pick",
+               font=_pc_font(14), fill=_PICK_CARD_INK_FAINT)
+
+    import io as _io
+    buf = _io.BytesIO()
+    canvas.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def sys_posix():
+    import sys as _s
+    return not _s.platform.startswith("win")
+
+
+def send_pick_card(webhook_url, pick, body_text, return_id=True):
+    """Send a pick as PNG header + text analysis body in ONE Discord
+    message. Returns the message_id on success (or True / False)."""
+    png = render_pick_card_png(pick)
+    if not png:
+        # PIL missing — fall back to text-only
+        return post_text(webhook_url, body_text, return_id=return_id)
+    # Trim body if it would push the message over Discord's 2000-char
+    # content cap.
+    body = body_text or ""
+    if len(body) > 1900:
+        body = body[:1897] + "..."
+    pid = (pick.get("id") or "pick").replace("/", "_")[:48]
+    filename = f"{pid}.png"
+    return send_discord_image(webhook_url, png, filename,
+                                message=body, return_id=return_id)
 
 
 def post_text(webhook_url, message, return_id=False):

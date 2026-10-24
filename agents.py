@@ -1159,42 +1159,16 @@ def post_individual_pick(pick, webhook_url=None, allow_replay=False):
     score, reasons = compute_evidence_score(pick)
     mins = _minutes_to_game_start(pick.get("start_time") or "")
 
-    sport_slug = (pick.get("sport_slug") or "").lower()
-    sport      = (pick.get("sport_name") or sport_slug or "?").upper()
-    pick_t     = pick.get("pick") or "?"
-    dec        = pick.get("decimal")
-    dec_s      = f"{dec:.2f}" if dec else "?"
-    sig        = pick.get("signal_score")
-    ai_v       = pick.get("ai_verdict") or ""
+    # Attach computed fields the PNG renderer reads.
+    pick["evidence_score"] = score
+    pick["mins_to_tip"]    = mins
+    pick["reasons"]        = reasons
 
-    # Build the Discord embed (color sidebar + separate fields) so
-    # each pick is a clean visual card instead of a wall of text.
-    # Fields marked `inline: True` sit side-by-side (3 per row);
-    # inline=False gets a full-width row. Discord renders at most
-    # 25 fields and ~6000 chars total across the embed.
-    fields = []
-    # Top info row — side by side
-    fields.append({"name": "Signal",   "value": f"{sig}/5" if sig is not None else "—", "inline": True})
-    fields.append({"name": "Evidence", "value": f"{score}/10",                           "inline": True})
-    fields.append({"name": "Tipoff",   "value": (f"{mins} min" if mins is not None else "—"), "inline": True})
-    if reasons:
-        fields.append({"name": "Signals firing",
-                        "value": " · ".join(f"`{r}`" for r in reasons),
-                        "inline": False})
-    if ai_v in ("Lean", "Strong Take"):
-        fields.append({"name": "AI verdict", "value": f"**{ai_v}**", "inline": True})
-    if pick.get("best_book") and pick.get("best_price"):
-        bb  = str(pick.get("best_book")).upper()
-        bp  = pick.get("best_price")
-        pct = pick.get("best_price_delta_pct") or 0.0
-        fields.append({"name": "Shop (US books)",
-                        "value": f"**{bb}** {bp:.2f} ({pct:+.1f}% vs Pinnacle)",
-                        "inline": True})
-
-    # AI bullets as separate fields so each is visually distinct.
-    def _bullets_as_value(items, emoji, cap=1000):
+    # Compose the text body (analysis sections only — header info is
+    # now in the PNG card). Bullets rendered as emoji-led lines.
+    def _bullets(items, emoji, cap=600):
         if not items:
-            return None
+            return ""
         if isinstance(items, str):
             items = [items]
         lines = []
@@ -1203,26 +1177,23 @@ def post_individual_pick(pick, webhook_url=None, allow_replay=False):
             if it:
                 lines.append(f"{emoji} {it}")
         text = "\n".join(lines).strip()
-        if not text:
-            return None
-        return text[:cap - 3] + "..." if len(text) > cap else text
-    m = _bullets_as_value(pick.get("ai_matchup"), "🎯")
-    f = _bullets_as_value(pick.get("ai_factors"), "📋")
-    r = _bullets_as_value(pick.get("ai_risks"),   "⚠")
-    if m: fields.append({"name": "Matchup",     "value": m, "inline": False})
-    if f: fields.append({"name": "Key factors", "value": f, "inline": False})
-    if r: fields.append({"name": "Risks",       "value": r, "inline": False})
+        return (text[:cap - 3] + "...") if len(text) > cap else text
 
-    embed = {
-        "title":  f"{sport} · {pick_t}",
-        "description": f"**@ {dec_s}**",
-        "color":  discord_bot.sport_embed_color(sport_slug),
-        "fields": fields,
-        "footer": {"text": "cheeks-model · evidence-filtered pick"},
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-    }
+    m_block = _bullets(pick.get("ai_matchup"), "🎯")
+    f_block = _bullets(pick.get("ai_factors"), "📋")
+    r_block = _bullets(pick.get("ai_risks"),   "⚠")
+    body_parts = []
+    if m_block:
+        body_parts.append("**Matchup**\n" + m_block)
+    if f_block:
+        body_parts.append("**Key factors**\n" + f_block)
+    if r_block:
+        body_parts.append("**Risks**\n" + r_block)
+    body_text = "\n\n".join(body_parts)
 
-    msg_id = discord_bot.post_embed(webhook_url, embed)
+    # Send PNG card + text body as ONE Discord message
+    msg_id = discord_bot.send_pick_card(webhook_url, pick, body_text,
+                                          return_id=True)
     ok = bool(msg_id)
     # Record immediately so a concurrent tick (UptimeRobot + manual
     # curl + Render internal) can't double-post. The moderator loop
