@@ -20312,8 +20312,25 @@ def _resolve_discord_webhook_mlb(settings):
 def debug_live_scores():
     """Diagnose the live-score backfill. Pass ?sport=<slug> to limit.
     Returns per-sport fetch counts, matched/unmatched games, and the
-    team-name tokens being compared."""
+    team-name tokens being compared. Also dumps the contents of
+    logs/live_scores.json (written by Agent #9) so we can tell if
+    the file-based path has fresh data."""
     import json as _json
+    # Also dump the shared file written by Agent #9's live grader
+    _lv_file_state = {}
+    try:
+        import os as _os_dbg
+        _lv_path = _os_dbg.path.join(_os_dbg.path.dirname(_os_dbg.path.abspath(__file__)),
+                                       "logs", "live_scores.json")
+        try:
+            with open(_lv_path) as _lf:
+                _lv_file_state = _json.load(_lf) or {}
+        except FileNotFoundError:
+            _lv_file_state = {"error": "file does not exist"}
+        except Exception as _le:
+            _lv_file_state = {"error": f"{type(_le).__name__}: {_le}"}
+    except Exception:
+        pass
     sport_slug = (request.args.get("sport") or "").strip().lower() or None
     try:
         today = datetime.now(CENTRAL).date()
@@ -20408,7 +20425,9 @@ def debug_live_scores():
             } for r in rows_for_sport[:8]],
             "row_matches": row_matches,
         }
-    return Response(_json.dumps({"ok": True, "sports": out_sports},
+    return Response(_json.dumps({"ok": True,
+                                   "sports": out_sports,
+                                   "live_scores_file": _lv_file_state},
                                  indent=2),
                     mimetype="application/json")
 
