@@ -11186,16 +11186,20 @@ def picks_landing():
                     return toks
                 _ev_by_token = {}  # token -> (home_team, away_team, hs, as)
                 for _ev in events:
-                    teams = _ev.get("teams") or []
-                    if len(teams) < 2:
+                    # plays_log parser emits teams as "scores" (not
+                    # "teams" — easy miss) and the home/away names are
+                    # available at the top level too. Use those directly
+                    # since they're already strings.
+                    _ht = _ev.get("home_team") or ""
+                    _at = _ev.get("away_team") or ""
+                    scores = _ev.get("scores") or []
+                    if not _ht or not _at or len(scores) < 2:
                         continue
                     try:
-                        _hs = int(float(teams[0].get("score") or 0))
-                        _as = int(float(teams[1].get("score") or 0))
+                        _hs = int(float(scores[0].get("score") or 0))
+                        _as = int(float(scores[1].get("score") or 0))
                     except (TypeError, ValueError):
                         continue
-                    _ht = teams[0].get("name") or ""
-                    _at = teams[1].get("name") or ""
                     for tok in _team_tokens(_ht):
                         _ev_by_token.setdefault(tok, []).append(
                             ("home", _at, _hs, _as))
@@ -20287,13 +20291,15 @@ def debug_live_scores():
             continue
         ev_names = []
         for ev in events:
-            teams = ev.get("teams") or []
-            if len(teams) >= 2:
+            scores = ev.get("scores") or []
+            ht = ev.get("home_team") or ""
+            at = ev.get("away_team") or ""
+            if ht and at and len(scores) >= 2:
                 ev_names.append({
-                    "home": teams[0].get("name"),
-                    "away": teams[1].get("name"),
-                    "home_score": teams[0].get("score"),
-                    "away_score": teams[1].get("score"),
+                    "home": ht,
+                    "away": at,
+                    "home_score": scores[0].get("score"),
+                    "away_score": scores[1].get("score"),
                 })
         out_sports[slug] = {
             "espn_path": espn_path,
