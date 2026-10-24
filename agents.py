@@ -1807,9 +1807,10 @@ def run_live_grader():
     today_iso = today.isoformat()
     graded_file = plays_log.read_graded(today_iso) or {}
     graded_picks = graded_file.get("picks") or []
-    if not graded_picks:
-        return {"ok": True, "today": today_iso,
-                "note": "no logged picks for today"}
+    # NOTE: we still proceed to the live-score dump below even when
+    # graded_picks is empty, so the board gets its score overlay on
+    # days where no picks have been logged yet. Just skip the early-
+    # settle loop in that case.
     # Group by sport for ESPN fetch batching
     by_sport = {}
     for p in graded_picks:
@@ -1818,6 +1819,7 @@ def run_live_grader():
         slug = p.get("sport") or ""
         by_sport.setdefault(slug, []).append(p)
     settled = []
+    # Early-settle loop (only runs when we have pending picks)
     for slug, picks in by_sport.items():
         sport = _sports_lg.by_slug(slug)
         if not sport:
