@@ -984,6 +984,50 @@ Evidence {score}/10 — {reason_tags}  |  Tipoff in {mins_to_tip} min
 """
 
 
+def delete_my_posts_today(webhook_url=None):
+    """Delete every pick the moderator posted today whose message_id
+    we captured. Also prunes the dedup state for those picks so they
+    can re-post in the new format. Returns a result dict with the
+    deleted count. Uses the webhook's own ?wait=true/DELETE flow so
+    no bot token is required."""
+    try:
+        import mlb_ui
+        import discord_bot
+    except Exception:
+        return {"ok": False, "error": "mlb_ui / discord_bot import failed"}
+    if not webhook_url:
+        try:
+            settings = mlb_ui._load_settings()
+            webhook_url = _resolve_discord_webhook(settings)
+        except Exception:
+            webhook_url = None
+    if not webhook_url:
+        return {"ok": False, "error": "no webhook configured"}
+    today_iso = datetime.utcnow().date().isoformat()
+    posted_state = _load_posted_state()
+    deleted = []
+    skipped = []
+    for pid, entry in list(posted_state.items()):
+        if entry.get("day") != today_iso:
+            continue
+        msg_id = entry.get("message_id")
+        if not msg_id:
+            skipped.append({"pid": pid, "reason": "no_message_id"})
+            # Prune dedup anyway so a re-post can happen
+            del posted_state[pid]
+            continue
+        if discord_bot.delete_webhook_message(webhook_url, msg_id):
+            deleted.append({"pid": pid, "message_id": msg_id})
+            del posted_state[pid]
+        else:
+            skipped.append({"pid": pid, "reason": "delete_failed",
+                             "message_id": msg_id})
+    _save_posted_state(posted_state)
+    return {"ok": True, "deleted_count": len(deleted),
+            "skipped_count": len(skipped),
+            "deleted": deleted[:20], "skipped": skipped[:20]}
+
+
 def _fmt_bullets(items, emoji):
     """Format a list of bullet strings as 'emoji text' lines.
     Returns empty string if items is empty / None so the caller
@@ -1047,70 +1091,91 @@ def post_individual_pick(pick, webhook_url=None, allow_replay=False):
     score, reasons = compute_evidence_score(pick)
     mins = _minutes_to_game_start(pick.get("start_time") or "")
 
-    sport  = (pick.get("sport_name") or pick.get("sport_slug") or "?").upper()
-    pick_t = pick.get("pick") or "?"
-    dec    = pick.get("decimal")
-    dec_s  = f"{dec:.2f}" if dec else "?"
-    sig    = pick.get("signal_score")
-    ai_v   = pick.get("ai_verdict") or ""
+    sport_slug = (pick.get("sport_slug") or "").lower()
+    sport      = (pick.get("sport_name") or sport_slug or "?").upper()
+    pick_t     = pick.get("pick") or "?"
+    dec        = pick.get("decimal")
+    dec_s      = f"{dec:.2f}" if dec else "?"
+    sig        = pick.get("signal_score")
+    ai_v       = pick.get("ai_verdict") or ""
 
-    # Header block
-    header_lines = [f"**{sport} · {pick_t}** @ {dec_s}"]
-    bits = [f"Evidence **{score}/10**"]
+    # Build the Discord embed (color sidebar + separate fields) so
+    # each pick is a clean visual card instead of a wall of text.
+    # Fields marked `inline: True` sit side-by-side (3 per row);
+    # inline=False gets a full-width row. Discord renders at most
+    # 25 fields and ~6000 chars total across the embed.
+    fields = []
+    # Top info row — side by side
+    fields.append({"name": "Signal",   "value": f"{sig}/5" if sig is not None else "—", "inline": True})
+    fields.append({"name": "Evidence", "value": f"{score}/10",                           "inline": True})
+    fields.append({"name": "Tipoff",   "value": (f"{mins} min" if mins is not None else "—"), "inline": True})
     if reasons:
-        bits.append(", ".join(reasons))
-    if sig is not None:
-        bits.append(f"Signal **{sig}/5**")
-    if mins is not None:
-        bits.append(f"Tipoff in **{mins} min**")
-    header_lines.append("  |  ".join(bits))
+        fields.append({"name": "Signals firing",
+                        "value": " · ".join(f"`{r}`" for r in reasons),
+                        "inline": False})
     if ai_v in ("Lean", "Strong Take"):
-        header_lines.append(f"**AI verdict:** {ai_v}")
-
-    # Full AI bullets (matchup / factors / risks). Fall back to short
-    # placeholder only when the field is entirely missing.
-    matchup_block = _fmt_bullets(pick.get("ai_matchup"), "🎯")
-    factor_block  = _fmt_bullets(pick.get("ai_factors"), "📋")
-    risk_block    = _fmt_bullets(pick.get("ai_risks"),   "⚠")
-    body_parts = ["\n".join(header_lines)]
-    if matchup_block:
-        body_parts.append("**Matchup**\n" + matchup_block)
-    if factor_block:
-        body_parts.append("**Key factors**\n" + factor_block)
-    if risk_block:
-        body_parts.append("**Risks**\n" + risk_block)
-
-    # Line-shop best-book chip if a US book beats us materially
+        fields.append({"name": "AI verdict", "value": f"**{ai_v}**", "inline": True})
     if pick.get("best_book") and pick.get("best_price"):
-        bb   = str(pick.get("best_book")).upper()
-        bp   = pick.get("best_price")
-        pct  = pick.get("best_price_delta_pct") or 0.0
-        body_parts.append(
-            f"💵 Shop: **{bb}** at {bp:.2f} ({pct:+.1f}% vs Pinnacle)"
-        )
+        bb  = str(pick.get("best_book")).upper()
+        bp  = pick.get("best_price")
+        pct = pick.get("best_price_delta_pct") or 0.0
+        fields.append({"name": "Shop (US books)",
+                        "value": f"**{bb}** {bp:.2f} ({pct:+.1f}% vs Pinnacle)",
+                        "inline": True})
 
-    body = "\n\n".join(body_parts)
-    # Discord 2000-char hard cap — trim trailing section if needed.
-    if len(body) > 1900:
-        body = body[:1897] + "..."
-    ok = discord_bot.post_text(webhook_url, body)
+    # AI bullets as separate fields so each is visually distinct.
+    def _bullets_as_value(items, emoji, cap=1000):
+        if not items:
+            return None
+        if isinstance(items, str):
+            items = [items]
+        lines = []
+        for it in items:
+            it = (it or "").strip().lstrip("-•*").strip()
+            if it:
+                lines.append(f"{emoji} {it}")
+        text = "\n".join(lines).strip()
+        if not text:
+            return None
+        return text[:cap - 3] + "..." if len(text) > cap else text
+    m = _bullets_as_value(pick.get("ai_matchup"), "🎯")
+    f = _bullets_as_value(pick.get("ai_factors"), "📋")
+    r = _bullets_as_value(pick.get("ai_risks"),   "⚠")
+    if m: fields.append({"name": "Matchup",     "value": m, "inline": False})
+    if f: fields.append({"name": "Key factors", "value": f, "inline": False})
+    if r: fields.append({"name": "Risks",       "value": r, "inline": False})
+
+    embed = {
+        "title":  f"{sport} · {pick_t}",
+        "description": f"**@ {dec_s}**",
+        "color":  discord_bot.sport_embed_color(sport_slug),
+        "fields": fields,
+        "footer": {"text": "cheeks-model · evidence-filtered pick"},
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+    }
+
+    msg_id = discord_bot.post_embed(webhook_url, embed)
+    ok = bool(msg_id)
     # Record immediately so a concurrent tick (UptimeRobot + manual
     # curl + Render internal) can't double-post. The moderator loop
     # also records, but doing it here closes the race entirely.
+    # Also store message_id so delete_my_posts can clean up later.
     if ok and pid:
         try:
             posted_state = _load_posted_state()
             posted_state[pid] = {
-                "posted_at": datetime.utcnow().isoformat() + "Z",
-                "score":     score,
-                "reasons":   reasons,
-                "mins":      mins,
-                "day":       datetime.utcnow().date().isoformat(),
+                "posted_at":   datetime.utcnow().isoformat() + "Z",
+                "score":       score,
+                "reasons":     reasons,
+                "mins":        mins,
+                "day":         datetime.utcnow().date().isoformat(),
+                "message_id":  msg_id if isinstance(msg_id, str) else None,
+                "webhook_tail": (webhook_url or "")[-24:],
             }
             _save_posted_state(posted_state)
         except Exception:
             pass
-    return {"ok": bool(ok), "posted_text": body, "score": score,
+    return {"ok": ok, "message_id": msg_id, "score": score,
             "reasons": reasons, "mins_to_tip": mins}
 
 

@@ -20313,6 +20313,26 @@ def cron_line_shop_scan():
                         status=500, mimetype="application/json")
 
 
+@app.route("/discord/delete-today", methods=["POST", "GET"])
+def discord_delete_today():
+    """Delete every pick the moderator posted today (whose message_id
+    we captured) via the webhook's own DELETE endpoint — no bot
+    token required. Also clears the dedup state so those picks can
+    repost in the new embed format on the next moderator tick.
+    Useful after a format change (e.g. switching from text to
+    embeds) to start the channel fresh for today."""
+    import json as _json
+    try:
+        import agents
+        r = agents.delete_my_posts_today()
+        return Response(_json.dumps(r, indent=2),
+                        mimetype="application/json")
+    except Exception as e:
+        return Response(_json.dumps({"ok": False,
+                                       "error": f"{type(e).__name__}: {e}"}),
+                        status=500, mimetype="application/json")
+
+
 @app.route("/discord/dedup-sweep")
 def discord_dedup_sweep():
     """Scan the Discord channel's recent history and delete any

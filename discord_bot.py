@@ -541,10 +541,11 @@ def send_discord_image(webhook_url, png_bytes, filename, message=""):
         return False
 
 
-def post_text(webhook_url, message):
+def post_text(webhook_url, message, return_id=False):
     """POST a plain-text message to a Discord webhook. Returns True on
-    success. Used for the intro and daily preamble so viewers get the
-    'why' before the slides. Respects the shared 429 cooldown."""
+    success (or the message_id when return_id=True — uses ?wait=true
+    to force Discord to return the created message so we can delete
+    it later). Respects the shared 429 cooldown."""
     if not webhook_url or not message:
         return False
     if _rate_limit_active():
@@ -553,19 +554,134 @@ def post_text(webhook_url, message):
         from urllib.request import Request, urlopen
         from urllib.error import HTTPError as _HE
         data = json.dumps({"content": message}).encode()
-        req = Request(webhook_url, data=data, method="POST", headers={
+        url = webhook_url + ("?wait=true" if return_id else "")
+        req = Request(url, data=data, method="POST", headers={
             "Content-Type": "application/json",
             "User-Agent": "cheeks-model/1.0 (+https://cheeks-model.onrender.com)",
         })
         try:
-            urlopen(req, timeout=15).close()
-            return True
+            resp = urlopen(req, timeout=15)
+            if return_id:
+                try:
+                    body = json.loads(resp.read())
+                    return body.get("id")
+                except Exception:
+                    return True
+                finally:
+                    resp.close()
+            else:
+                resp.close()
+                return True
         except _HE as _he:
             if getattr(_he, "code", 0) == 429:
                 _trip_rate_limit("post_text_429")
             return False
     except Exception:
         return False
+
+
+# Sport color sidebar for Discord embeds — picks a distinct color so
+# viewers can tell at a glance which league the pick is for.
+_SPORT_EMBED_COLORS = {
+    "mlb":    0xC8102E,   # red
+    "nfl":    0x013369,   # NFL blue
+    "ncaaf":  0x8B2200,   # college maroon
+    "nba":    0xC9082A,   # NBA red
+    "nhl":    0x0033A0,   # NHL blue
+    "ufc":    0xD20A0A,   # UFC red
+    "epl":    0x3D195B,   # EPL purple
+    "laliga": 0xEE8707,   # La Liga orange
+    "ligamx": 0x00843D,   # Liga MX green
+    "ucl":    0x001E54,   # Champions League dark blue
+    "europa": 0xFF6600,   # Europa League orange
+}
+
+
+def post_embed(webhook_url, embed, content="", return_id=True):
+    """POST a Discord embed (rich formatted card with color sidebar
+    + fields). Returns the message_id on success so the caller can
+    store it for later editing or deletion.
+
+    `embed` is a dict shaped per Discord's embed object spec:
+    https://discord.com/developers/docs/resources/channel#embed-object
+
+    Example:
+      post_embed(url, {
+        "title":  "LIGA MX · BTTS Yes @ 1.71",
+        "color":  0x00843D,
+        "fields": [
+          {"name": "Signal / Evidence", "value": "5/5 · 4/10", "inline": True},
+          {"name": "AI verdict", "value": "Lean", "inline": True},
+          {"name": "Matchup", "value": "...", "inline": False},
+        ],
+        "footer": {"text": "cheeks-model"},
+      })
+    """
+    if not webhook_url or not embed:
+        return False
+    if _rate_limit_active():
+        return False
+    try:
+        from urllib.request import Request, urlopen
+        from urllib.error import HTTPError as _HE
+        payload = {"embeds": [embed]}
+        if content:
+            payload["content"] = content
+        data = json.dumps(payload).encode()
+        url = webhook_url + ("?wait=true" if return_id else "")
+        req = Request(url, data=data, method="POST", headers={
+            "Content-Type": "application/json",
+            "User-Agent": "cheeks-model/1.0 (+https://cheeks-model.onrender.com)",
+        })
+        try:
+            resp = urlopen(req, timeout=15)
+            if return_id:
+                try:
+                    body = json.loads(resp.read())
+                    return body.get("id")
+                except Exception:
+                    return True
+                finally:
+                    resp.close()
+            else:
+                resp.close()
+                return True
+        except _HE as _he:
+            if getattr(_he, "code", 0) == 429:
+                _trip_rate_limit("post_embed_429")
+            return False
+    except Exception:
+        return False
+
+
+def delete_webhook_message(webhook_url, message_id):
+    """Delete a message the webhook sent. Only works for messages
+    whose IDs we previously captured (via post_text(return_id=True)
+    or post_embed). Returns True on success."""
+    if not webhook_url or not message_id:
+        return False
+    try:
+        from urllib.request import Request, urlopen
+        from urllib.error import HTTPError as _HE
+        url = webhook_url.rstrip("/") + f"/messages/{message_id}"
+        req = Request(url, method="DELETE", headers={
+            "User-Agent": "cheeks-model/1.0 (+https://cheeks-model.onrender.com)",
+        })
+        try:
+            urlopen(req, timeout=15).close()
+            return True
+        except _HE as _he:
+            # 404 = already deleted (fine), 429 = rate-limited
+            if getattr(_he, "code", 0) == 429:
+                _trip_rate_limit("delete_message_429")
+            return False
+    except Exception:
+        return False
+
+
+def sport_embed_color(sport_slug):
+    """Return the embed sidebar color for a sport slug (hex int)."""
+    return _SPORT_EMBED_COLORS.get((sport_slug or "").lower(), 0x7289da)
 
 
 _INTRO_MESSAGE = (
