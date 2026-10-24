@@ -1661,3 +1661,239 @@ def run_weekly_moderator_audit():
         discord_bot.post_text(webhook,
             f":bar_chart: **Weekly moderator audit**\n\n```\n{table}```\n\n{reply}")
     return {"ok": True, "data": table, "analysis": reply or "(no reply)"}
+
+
+# ============================================================
+# Agent #9 — Live board grader (rule-based, no LLM)
+# ============================================================
+# Walks today's live/final rows, matches to ESPN running scores,
+# and advances pick results that can be settled deterministically
+# BEFORE the game ends:
+#   - Over X.5: current total > X.5     → W
+#   - Under X.5: game ended + total < X.5 → W (full-time only)
+#   - Team Total Over X.5: team > X.5   → W (early-settle)
+#   - BTTS Yes: both teams scored       → W (early-settle)
+#   - Period markets (1H/F5/P1): once that period closes
+#
+# Writes to plays_log so the records view picks it up alongside the
+# post-game grader. Called from /cron/dispatch so it runs every tick.
+# ============================================================
+
+import re as _re_lg
+
+
+def _parse_total_line(pick_text):
+    """Pull ('over'|'under', line_float) from a pick like 'Over 2.5'."""
+    m = _re_lg.search(r"(over|under)\s+([0-9]+(?:\.[0-9]+)?)",
+                       (pick_text or "").lower())
+    if not m:
+        return None, None
+    return m.group(1), float(m.group(2))
+
+
+def _settle_early(pick, home_score, away_score, period_scores=None):
+    """Return 'W' if this pick is deterministically a win given the
+    current scores, else None. Only returns W; L/P wait for full-time
+    because an Over can still cash late. Period_scores is a list of
+    {num, home, away} dicts for sports with linescores (NFL/NBA/NHL)."""
+    market = (pick.get("market") or "").lower()
+    pick_text = (pick.get("pick") or "")
+    pick_lc = pick_text.lower()
+    try:
+        h = int(home_score or 0)
+        a = int(away_score or 0)
+    except (TypeError, ValueError):
+        return None
+    tot = h + a
+
+    # Full-game Total
+    if "total" in market and "team" not in market and "1h" not in market and "p1" not in market:
+        side, line = _parse_total_line(pick_text)
+        if side == "over" and line is not None and tot > line:
+            return "W"
+
+    # Team Total
+    if "team total" in market or "tt" in market:
+        side, line = _parse_total_line(pick_text)
+        if side == "over" and line is not None:
+            # Identify which team the pick is for by name presence
+            ht = (pick.get("home_team") or "").lower()
+            at = (pick.get("away_team") or "").lower()
+            team_score = None
+            if ht and ht in pick_lc:
+                team_score = h
+            elif at and at in pick_lc:
+                team_score = a
+            if team_score is not None and team_score > line:
+                return "W"
+
+    # BTTS Yes — settle as soon as both teams have scored
+    if "btts" in market and "yes" in pick_lc:
+        if h >= 1 and a >= 1:
+            return "W"
+
+    # 1H / P1 / F5 Over — once that period closes with a cleared total
+    if period_scores:
+        if "1h" in market or "first half" in market or "p1" in market or "period 1" in market or "f5" in market:
+            # 1H = first 2 quarters (NFL/NBA), first period (NHL), F5 (MLB)
+            # We only have confident 1H/P1 data when the period is complete.
+            # For 1H in football/basketball: use first 2 linescores if present.
+            # For P1 (NHL): first linescore.
+            # For F5 (MLB): sum of innings 1-5 if 5+ innings played.
+            side, line = _parse_total_line(pick_text)
+            if side == "over" and line is not None:
+                try:
+                    if "1h" in market or "first half" in market:
+                        # NFL/NBA 1H = 2 periods
+                        if len(period_scores) >= 2:
+                            p1h = sum(int(ps.get("home") or 0) + int(ps.get("away") or 0)
+                                       for ps in period_scores[:2])
+                            if p1h > line:
+                                return "W"
+                    elif "p1" in market or "period 1" in market:
+                        if len(period_scores) >= 1:
+                            p1 = (int(period_scores[0].get("home") or 0)
+                                   + int(period_scores[0].get("away") or 0))
+                            # Only settle if the period is actually CLOSED
+                            # (period 2 has started or period 1's score is
+                            # the final one).
+                            closed = len(period_scores) >= 2
+                            if closed and p1 > line:
+                                return "W"
+                    elif "f5" in market:
+                        if len(period_scores) >= 5:
+                            f5 = sum(int(ps.get("home") or 0) + int(ps.get("away") or 0)
+                                      for ps in period_scores[:5])
+                            if f5 > line:
+                                return "W"
+                except (TypeError, ValueError):
+                    pass
+    return None
+
+
+def run_live_grader():
+    """Scan today's picks against ESPN live scores and advance any
+    pick that can be settled early (Over/BTTS/TT Over hit mid-game).
+    Writes results back to plays_log so /logged + the daily P&L
+    panel reflect them immediately. Returns per-sport counts.
+
+    Rule-based — no LLM calls. Runs on /cron/dispatch so it ticks
+    every 5 min alongside the moderator."""
+    import mlb_ui
+    import plays_log
+    import sports as _sports_lg
+
+    today = datetime.now(mlb_ui.CENTRAL).date()
+    today_iso = today.isoformat()
+    graded_file = plays_log.read_graded(today_iso) or {}
+    graded_picks = graded_file.get("picks") or []
+    if not graded_picks:
+        return {"ok": True, "today": today_iso,
+                "note": "no logged picks for today"}
+    # Group by sport for ESPN fetch batching
+    by_sport = {}
+    for p in graded_picks:
+        if p.get("result") in ("W", "L", "P"):
+            continue  # already settled
+        slug = p.get("sport") or ""
+        by_sport.setdefault(slug, []).append(p)
+    settled = []
+    for slug, picks in by_sport.items():
+        sport = _sports_lg.by_slug(slug)
+        if not sport:
+            continue
+        espn_path = sport.get("espn_scoreboard")
+        if not espn_path:
+            continue
+        try:
+            events = plays_log.fetch_scores_espn(espn_path,
+                                                   days_back=1,
+                                                   ref_date=today)
+        except Exception:
+            continue
+        # Index events by team name (fuzzy)
+        def _toks(name):
+            n = (name or "").lower().strip()
+            if not n: return set()
+            t = {n}
+            for w in n.split():
+                if len(w) >= 4: t.add(w)
+            return t
+        _by_tok = {}
+        for ev in events:
+            ht = ev.get("home_team") or ""
+            at = ev.get("away_team") or ""
+            if not ht or not at: continue
+            for t in _toks(ht):
+                _by_tok.setdefault(t, []).append(("home", at, ht, ev))
+            for t in _toks(at):
+                _by_tok.setdefault(t, []).append(("away", ht, at, ev))
+        for pick in picks:
+            ht = pick.get("home_team") or ""
+            at = pick.get("away_team") or ""
+            if not ht or not at:
+                continue
+            ht_toks = _toks(ht)
+            at_toks = _toks(at)
+            found_ev = None
+            for tok in ht_toks:
+                for role, opp, _me, ev in _by_tok.get(tok, []):
+                    if any(t in _toks(opp) for t in at_toks):
+                        # Pull home/away scores from event
+                        scores = ev.get("scores") or []
+                        if len(scores) < 2:
+                            continue
+                        try:
+                            if role == "home":
+                                hs = int(float(scores[0].get("score") or 0))
+                                ascore = int(float(scores[1].get("score") or 0))
+                            else:
+                                ascore = int(float(scores[0].get("score") or 0))
+                                hs = int(float(scores[1].get("score") or 0))
+                        except (TypeError, ValueError):
+                            continue
+                        found_ev = (ev, hs, ascore)
+                        break
+                if found_ev:
+                    break
+            if not found_ev:
+                continue
+            ev, hs, ascore = found_ev
+            # Try early-settle
+            period_scores = ev.get("innings") or []
+            res = _settle_early(pick, hs, ascore,
+                                 period_scores=period_scores)
+            if res == "W":
+                pick["result"] = "W"
+                try:
+                    dec = float(pick.get("decimal") or 1.0)
+                except (TypeError, ValueError):
+                    dec = 1.0
+                pick["profit_u"] = dec - 1.0 if dec > 1.0 else 0.0
+                pick["graded_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+                pick["graded_by"] = "live_grader_early"
+                settled.append({
+                    "id":    pick.get("id"),
+                    "pick":  pick.get("pick"),
+                    "sport": slug,
+                    "score": f"{ascore}-{hs}",
+                })
+    # Persist if we settled anything
+    if settled:
+        try:
+            plays_log.write_graded(today_iso,
+                                     {"date": today_iso, "picks": graded_picks})
+        except Exception:
+            pass
+        try:
+            plays_log.invalidate_grade_all_cache()
+        except Exception:
+            pass
+    return {
+        "ok":            True,
+        "today":         today_iso,
+        "sports":        list(by_sport.keys()),
+        "pending_count": sum(len(v) for v in by_sport.values()),
+        "settled_count": len(settled),
+        "settled":       settled,
+    }

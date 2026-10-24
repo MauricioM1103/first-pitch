@@ -11207,27 +11207,30 @@ def picks_landing():
                         _ev_by_token.setdefault(tok, []).append(
                             ("away", _ht, _hs, _as))
                 for r in rows_for_sport:
-                    _hk_toks = _team_tokens(r.get("home") or "")
-                    _ak_toks = _team_tokens(r.get("away") or "")
-                    found = None
-                    for tok in _hk_toks:
-                        for cand in _ev_by_token.get(tok, []):
-                            role, opp, hs, as_ = cand
-                            # Confirm the opponent matches too.
-                            if any(t in _team_tokens(opp) for t in _ak_toks):
-                                if role == "home":
-                                    found = (hs, as_)
-                                else:
-                                    found = (as_, hs)
+                    try:
+                        _hk_toks = _team_tokens(r.get("home") or "")
+                        _ak_toks = _team_tokens(r.get("away") or "")
+                        found = None
+                        for tok in _hk_toks:
+                            for cand in _ev_by_token.get(tok, []):
+                                role, opp, hs, as_ = cand
+                                # Confirm the opponent matches too.
+                                if any(t in _team_tokens(opp) for t in _ak_toks):
+                                    if role == "home":
+                                        found = (hs, as_)
+                                    else:
+                                        found = (as_, hs)
+                                    break
+                            if found:
                                 break
-                        if found:
-                            break
-                    if found is not None:
-                        r["score_home"] = found[0]
-                        r["score_away"] = found[1]
-                        for p in r.get("picks") or []:
-                            p["row_score_home"] = found[0]
-                            p["row_score_away"] = found[1]
+                        if found is not None:
+                            r["score_home"] = found[0]
+                            r["score_away"] = found[1]
+                            for p in r.get("picks") or []:
+                                p["row_score_home"] = found[0]
+                                p["row_score_away"] = found[1]
+                    except Exception:
+                        continue  # one bad row doesn't kill the sport
     except Exception:
         pass
 
@@ -20650,9 +20653,10 @@ def cron_dispatch():
         pass
 
     actions = ["heartbeat"]
-    # Fire the moderator tick in-band (not every call — rate-limit to
-    # once per ~4 min so a 1-min cron doesn't hammer the board build).
     mod_result = None
+    grader_result = None
+    # Fire the moderator tick + live grader in-band. Rate-limited to
+    # once per ~4 min so a 1-min cron doesn't hammer the board build.
     try:
         import time as _t
         now_ts = _t.time()
@@ -20660,10 +20664,20 @@ def cron_dispatch():
         if now_ts - last >= 240:  # 4 min
             setattr(cron_dispatch, "_last_mod_tick_ts", now_ts)
             import agents
-            mod_result = agents.run_moderator_tick()
-            actions.append("moderator_tick")
-    except Exception as _me:
-        mod_result = {"ok": False, "error": f"{type(_me).__name__}: {_me}"}
+            try:
+                mod_result = agents.run_moderator_tick()
+                actions.append("moderator_tick")
+            except Exception as _me:
+                mod_result = {"ok": False, "error": f"{type(_me).__name__}: {_me}"}
+            # Live grader runs on every tick that fires the moderator
+            # too — early-settles mid-game Over / BTTS / TT Over picks.
+            try:
+                grader_result = agents.run_live_grader()
+                actions.append("live_grader")
+            except Exception as _ge:
+                grader_result = {"ok": False, "error": f"{type(_ge).__name__}: {_ge}"}
+    except Exception:
+        pass
 
     return Response(json.dumps({
         "ok": True,
@@ -20671,6 +20685,7 @@ def cron_dispatch():
         "actions": actions,
         "now_ct": now_ct.isoformat(),
         "moderator": mod_result,
+        "live_grader": grader_result,
     }, default=str), mimetype="application/json")
 
 
