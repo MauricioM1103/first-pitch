@@ -20311,12 +20311,12 @@ def cron_prebuild():
 
 @app.route("/cron/dispatch")
 def cron_dispatch():
-    """RETIRED 2026-10-23. Legacy slate dispatcher (agenda + 3 slate
-    PNGs + EOD + result alerts) replaced by Agent #8 moderator
-    (/cron/moderator-tick) and Agent #4 EOD recap (/cron/eod-recap).
-
-    Kept returning 200 so UptimeRobot monitors stay green; records a
-    heartbeat for /healthz. No Discord posts fire from here anymore."""
+    """RETIRED 2026-10-23 as the slate dispatcher. Now a thin forwarder
+    that piggybacks on whatever cron is already hitting this URL (the
+    legacy UptimeRobot pings every 5 min) and calls the moderator tick
+    so the operator doesn't have to configure a separate monitor for
+    /cron/moderator-tick. Rate-limited to one moderator call per
+    4 minutes so pings coming in faster don't thrash."""
     now_ct = datetime.now(CENTRAL)
     try:
         import time as _tbeat
@@ -20327,12 +20327,29 @@ def cron_dispatch():
                        "now_ct": now_ct.isoformat()}, _hf)
     except Exception:
         pass
+
+    actions = ["heartbeat"]
+    # Fire the moderator tick in-band (not every call — rate-limit to
+    # once per ~4 min so a 1-min cron doesn't hammer the board build).
+    mod_result = None
+    try:
+        import time as _t
+        now_ts = _t.time()
+        last = getattr(cron_dispatch, "_last_mod_tick_ts", 0.0)
+        if now_ts - last >= 240:  # 4 min
+            setattr(cron_dispatch, "_last_mod_tick_ts", now_ts)
+            import agents
+            mod_result = agents.run_moderator_tick()
+            actions.append("moderator_tick")
+    except Exception as _me:
+        mod_result = {"ok": False, "error": f"{type(_me).__name__}: {_me}"}
+
     return Response(json.dumps({
         "ok": True,
-        "retired": True,
-        "replaced_by": ["/cron/moderator-tick", "/cron/eod-recap"],
-        "actions": ["heartbeat"],
+        "retired_slate": True,
+        "actions": actions,
         "now_ct": now_ct.isoformat(),
+        "moderator": mod_result,
     }, default=str), mimetype="application/json")
 
 
