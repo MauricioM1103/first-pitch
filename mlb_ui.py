@@ -591,10 +591,12 @@ header {
   letter-spacing: 0.08em; text-transform: uppercase;
 }
 
-/* Primary top bar: brand | centered tabs | theme toggle */
+/* Primary top bar: centered primary tabs (brand lives in the sticky
+   header above). Flex instead of grid now that the brand sibling is
+   gone — simpler, and centers the tabs cleanly on any viewport. */
 .sport-strip-inner.primary-nav {
-  display: grid; grid-template-columns: auto 1fr auto;
-  align-items: center; gap: 16px; padding: 12px 0;
+  display: flex; justify-content: center; align-items: center;
+  gap: 16px; padding: 10px 0;
 }
 .brand {
   font-family: "JetBrains Mono", monospace;
@@ -812,8 +814,10 @@ FONTS_LINK = _FONTS  # keep historical name; THEME_SCRIPT appended below
 
 
 _PRIMARY_SECTIONS = [
+    # "Games" (/games) was dropped — it 302-redirects to / which is
+    # already the Today tab, so showing both in the nav was pure
+    # confusion. The /games route still works for any old bookmarks.
     ("today",    "Today",       "/"),
-    ("games",    "Games",       "/games"),
     ("1h_goals", "1H Goals",    "/first-half"),
     ("analysis", "AI Analysis", "/ai-analysis"),
     ("results",  "Results",     "/logged"),
@@ -836,16 +840,22 @@ def render_sport_strip(active_slug):
     analysis, backtest) lights up LAB. This lets the old call sites keep
     passing their legacy slug names while the new 4-tab nav highlights
     the right primary section."""
-    # Normalize legacy slugs to the new primary-tab slugs
+    # Normalize legacy slugs to the new primary-tab slugs. "picks" was
+    # the old "games" tab but has rolled into the TODAY landing (/games
+    # now 302-redirects to /), so any lingering 'picks' slug maps to
+    # today.
     if active_slug == "picks":
-        active_slug = "games"
+        active_slug = "today"
     elif active_slug == "logged":
         active_slug = "results"
     elif active_slug in _LAB_SLUGS:
         active_slug = "lab"
     active_primary = active_slug if active_slug in {s[0] for s in _PRIMARY_SECTIONS} else None
+    # Brand text intentionally omitted — the sticky <header> above
+    # already renders the "Betting Tools" brand in italic. Repeating
+    # it in the sport-strip (as "BETTING TOOLS" caps) is pure
+    # duplication of the same label on two consecutive rows.
     parts = ['<div class="sport-strip"><div class="wrap sport-strip-inner primary-nav">']
-    parts.append('<a class="brand" href="/">BETTING TOOLS</a>')
     parts.append('<nav class="primary-tabs">')
     for key, label, href in _PRIMARY_SECTIONS:
         cls = "sport-pill active" if key == active_primary else "sport-pill"
@@ -5965,7 +5975,10 @@ PICKS_TEMPLATE = r"""<!doctype html>
           </td>
           <td class="col-score">
             {% if row.score_home is not none %}
-              <span class="score-away">{{ row.score_away }}</span><span class="score-dash">&ndash;</span>{{ row.score_home }}
+              {# Cast to int — ESPN sometimes returns scores as floats
+                 (1.0) which renders as "1.0 - 1.0" for soccer; integer
+                 cast gives the clean "1 - 1" format. #}
+              <span class="score-away">{{ row.score_away|int }}</span><span class="score-dash">&ndash;</span>{{ row.score_home|int }}
             {% else %}
               <span class="pending">&mdash;</span>
             {% endif %}
@@ -11439,7 +11452,7 @@ def picks_landing():
         PICKS_TEMPLATE,
         fonts_link=FONTS_LINK,
         shared_style=SHARED_STYLE,
-        sport_strip=render_sport_strip("picks"),
+        sport_strip=render_sport_strip("today"),
         board_rows=board_rows,
         sport_counts=sport_counts,
         sport_filter=sport_filter,
