@@ -9623,52 +9623,63 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
             # analysis for ANY game via the AI Analysis tab.
             # Serve-from-cache rules still apply to any Signal 2+
             # pick so prior-paid verdicts keep rendering.
-            _sig_now = int(p.get("signal_score") or 0)
+            # Wrapped in try/except so one bad pick field can't 500
+            # the whole page build.
             try:
-                _lmp_now = float(p.get("line_move_pp") or 0.0)
-            except (TypeError, ValueError):
-                _lmp_now = 0.0
-            # Count non-AI icons the pick ALREADY earns at this stage
-            # (model_only picks aren't eligible either way).
-            _ai_icons = 0
-            if _sig_now >= 3 or p.get("whale") or _lmp_now >= 0.005:
-                _ai_icons += 1   # Strongest
-            if (p.get("strong") and not p.get("model_only")):
-                _ai_icons += 1   # Filter 2.0
-            if p.get("whale"):
-                _ai_icons += 1   # Whale (independent)
-            if _lmp_now >= 0.01:
-                _ai_icons += 1   # Line+
-            _qualifies_for_ai = (_sig_now >= 2
-                                  and (p.get("decimal") or 0)
-                                  and not p.get("model_only"))
-            _qualifies_for_new_ai = (_ai_icons >= 2
+                try:
+                    _sig_now = int(p.get("signal_score") or 0)
+                except (TypeError, ValueError):
+                    _sig_now = 0
+                try:
+                    _lmp_now = float(p.get("line_move_pp") or 0.0)
+                except (TypeError, ValueError):
+                    _lmp_now = 0.0
+                # Count non-AI icons the pick ALREADY earns at this stage
+                # (model_only picks aren't eligible either way).
+                _ai_icons = 0
+                if _sig_now >= 3 or p.get("whale") or _lmp_now >= 0.005:
+                    _ai_icons += 1   # Strongest
+                if (p.get("strong") and not p.get("model_only")):
+                    _ai_icons += 1   # Filter 2.0
+                if p.get("whale"):
+                    _ai_icons += 1   # Whale (independent)
+                if _lmp_now >= 0.01:
+                    _ai_icons += 1   # Line+
+                _qualifies_for_ai = (_sig_now >= 2
                                       and (p.get("decimal") or 0)
                                       and not p.get("model_only"))
-            if _qualifies_for_ai:
-                try:
-                    _av = _ai_verdict_for_pick(p)
-                except Exception:
-                    _av = None
-                if _av:
-                    p["ai_verdict"] = _av.get("verdict")
-                    p["ai_reason"]  = _av.get("reason")
-                    p["ai_summary"] = _av.get("summary") or _av.get("reason")
-                    p["ai_matchup"] = _av.get("matchup") or []
-                    p["ai_factors"] = _av.get("factors") or []
-                    p["ai_risks"]   = _av.get("risks") or []
-                    _v = _av.get("verdict")
-                    if _v == "Avoid":
-                        p["do_not_bet"] = True
-                    elif _v == "Strong Take":
-                        p["signal_score"] = min(5, int(p["signal_score"]) + 1)
-                elif _qualifies_for_new_ai:
-                    # Cache miss AND the pick will land on the board
-                    # — worth paying for a new Claude call.
+                _qualifies_for_new_ai = (_ai_icons >= 2
+                                          and (p.get("decimal") or 0)
+                                          and not p.get("model_only"))
+                if _qualifies_for_ai:
                     try:
-                        _queue_ai_verdict_fill(p)
+                        _av = _ai_verdict_for_pick(p)
                     except Exception:
-                        pass
+                        _av = None
+                    if _av:
+                        p["ai_verdict"] = _av.get("verdict")
+                        p["ai_reason"]  = _av.get("reason")
+                        p["ai_summary"] = _av.get("summary") or _av.get("reason")
+                        p["ai_matchup"] = _av.get("matchup") or []
+                        p["ai_factors"] = _av.get("factors") or []
+                        p["ai_risks"]   = _av.get("risks") or []
+                        _v = _av.get("verdict")
+                        if _v == "Avoid":
+                            p["do_not_bet"] = True
+                        elif _v == "Strong Take":
+                            try:
+                                p["signal_score"] = min(5, int(p["signal_score"]) + 1)
+                            except (TypeError, ValueError):
+                                pass
+                    elif _qualifies_for_new_ai:
+                        # Cache miss AND the pick will land on the
+                        # board — worth paying for a new Claude call.
+                        try:
+                            _queue_ai_verdict_fill(p)
+                        except Exception:
+                            pass
+            except Exception:
+                pass
             if p.get("model_only"):
                 p["strong"] = False
                 p["whale"]  = False
