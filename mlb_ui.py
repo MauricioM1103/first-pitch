@@ -757,7 +757,15 @@ footer {
   .controls {
     width: 100%; order: 3;
     justify-content: flex-start;
+    /* Keep API pill + prev-arrow + date picker + next-arrow on one
+       row even on narrow screens. If they overflow, scroll inside
+       the controls strip instead of pushing the right arrow onto
+       its own row below the date picker. */
+    flex-wrap: nowrap; overflow-x: auto;
+    -webkit-overflow-scrolling: touch; scrollbar-width: none;
   }
+  .controls::-webkit-scrollbar { display: none; }
+  .controls > * { flex-shrink: 0; }
   .btn, input[type=date] {
     height: 40px; min-width: 40px; font-size: 14px;
   }
