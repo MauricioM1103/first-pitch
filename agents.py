@@ -984,6 +984,160 @@ Evidence {score}/10 — {reason_tags}  |  Tipoff in {mins_to_tip} min
 """
 
 
+def scan_ui_integrity():
+    """Walk today's rendered board and flag any pick that violates the
+    display rules. Catches regressions where a code change lets picks
+    slip past the filter without the required icons. Returns a report
+    the operator can read + the agent can act on.
+
+    Checks:
+      - every pick on the board has >= 2 non-AI filter icons
+        (Strongest / Filter 2.0 / Whale / Line+ / DNB) OR a graded
+        result OR is on a live/final game
+      - no pick has result W/L/P but start_time is in the future
+      - no pick is missing sport_slug
+      - no pick on a live game has start_time more than 8h in the past
+        (likely a stale row)
+      - live rows ARE getting scores from the live_scores.json file
+    """
+    import mlb_ui
+    import plays_log
+    today = datetime.now(mlb_ui.CENTRAL).date()
+    today_iso = today.isoformat()
+    try:
+        board_rows, _ = mlb_ui._build_board_rows(today_iso, today, "all",
+                                                   strong_only=False)
+    except Exception as e:
+        return {"ok": False, "error": f"board build failed: {e}"}
+
+    issues = []
+    pick_count = 0
+    rows_checked = 0
+    now_utc = datetime.utcnow()
+
+    def _non_ai_icons(p):
+        try:
+            sig = int(p.get("signal_score") or 0)
+        except Exception:
+            sig = 0
+        try:
+            lmp = float(p.get("line_move_pp") or 0.0)
+        except Exception:
+            lmp = 0.0
+        n = 0
+        if (not p.get("do_not_bet")) and (sig >= 3 or p.get("whale") or lmp >= 0.005):
+            n += 1   # Strongest
+        if p.get("strong") and not p.get("do_not_bet") and not p.get("model_only"):
+            n += 1   # Filter 2.0
+        if p.get("whale"):
+            n += 1
+        if lmp >= 0.01:
+            n += 1   # Line+
+        if p.get("do_not_bet"):
+            n += 1
+        return n
+
+    for row in board_rows:
+        rows_checked += 1
+        status = row.get("status") or ""
+        for p in (row.get("picks") or []):
+            pick_count += 1
+            pid = p.get("id") or "?"
+            # Rule 1: must carry >= 2 icons (unless graded or on live/final game)
+            if (not p.get("result") in ("W", "L", "P")
+                    and status not in ("live", "final")):
+                icons = _non_ai_icons(p)
+                if icons < 2:
+                    issues.append({
+                        "pid": pid,
+                        "pick": p.get("pick"),
+                        "sport": p.get("sport_slug"),
+                        "kind": "fewer_than_2_icons",
+                        "icons": icons,
+                        "signal": p.get("signal_score"),
+                        "whale": p.get("whale"),
+                        "line_move_pp": p.get("line_move_pp"),
+                        "strong": p.get("strong"),
+                    })
+            # Rule 2: graded result but game not started yet
+            if p.get("result") in ("W", "L", "P"):
+                st = p.get("start_time") or ""
+                try:
+                    sd = datetime.fromisoformat(st.replace("Z", "+00:00")).replace(tzinfo=None)
+                    if sd > now_utc:
+                        issues.append({
+                            "pid": pid, "pick": p.get("pick"),
+                            "sport": p.get("sport_slug"),
+                            "kind": "graded_before_kickoff",
+                            "result": p.get("result"),
+                            "kickoff_utc": sd.isoformat() + "Z",
+                        })
+                except Exception:
+                    pass
+            # Rule 3: missing sport_slug
+            if not p.get("sport_slug"):
+                issues.append({
+                    "pid": pid, "pick": p.get("pick"),
+                    "kind": "missing_sport_slug",
+                })
+        # Rule 4: live row with stale start_time (> 8h ago, probably not live)
+        if status == "live":
+            st = row.get("start_time") or ""
+            try:
+                sd = datetime.fromisoformat(st.replace("Z", "+00:00")).replace(tzinfo=None)
+                age_h = (now_utc - sd).total_seconds() / 3600
+                if age_h > 8:
+                    issues.append({
+                        "pid": None,
+                        "pick": None,
+                        "sport": row.get("sport_slug"),
+                        "kind": "stale_live_row",
+                        "home": row.get("home"),
+                        "away": row.get("away"),
+                        "age_hours": round(age_h, 1),
+                    })
+            except Exception:
+                pass
+
+    # Live-score file freshness check
+    try:
+        import os as _os_ls
+        _lv_path = _os_ls.path.join(_os_ls.path.dirname(_os_ls.path.abspath(__file__)),
+                                      "logs", "live_scores.json")
+        import json as _json_ls
+        with open(_lv_path) as _lf:
+            _lv = _json_ls.load(_lf) or {}
+        _ran_at = (_lv.get("ran_at") or "")
+        if _ran_at:
+            try:
+                _ra = datetime.fromisoformat(_ran_at.replace("Z", "")).replace(tzinfo=None)
+                _age = (now_utc - _ra).total_seconds() / 60
+                if _age > 15:
+                    issues.append({
+                        "kind": "stale_live_scores_file",
+                        "age_minutes": round(_age, 1),
+                        "last_ran": _ran_at,
+                    })
+            except Exception:
+                pass
+        else:
+            issues.append({"kind": "live_scores_file_never_written"})
+    except FileNotFoundError:
+        issues.append({"kind": "live_scores_file_missing"})
+    except Exception:
+        pass
+
+    return {
+        "ok":             True,
+        "ran_at":         now_utc.isoformat() + "Z",
+        "today":          today_iso,
+        "rows_checked":   rows_checked,
+        "picks_checked":  pick_count,
+        "issue_count":    len(issues),
+        "issues":         issues[:40],
+    }
+
+
 def resend_picks_posted_after(hour_ct=15, webhook_url=None, dry=False):
     """Force-resend every pick that was posted to Discord today after
     the given CT hour (default 3pm CT), in the current embed format.

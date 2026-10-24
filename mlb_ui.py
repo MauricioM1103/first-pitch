@@ -20404,6 +20404,54 @@ def _resolve_discord_webhook_mlb(settings):
     return (settings.get("discord_webhook_url") or "").strip()
 
 
+@app.route("/debug/bust-cache")
+def debug_bust_cache():
+    """Force-clear in-process caches so the next render pulls fresh
+    data. Useful right after a deploy when you want the new code's
+    output visible immediately instead of waiting out the 120s board
+    cache / 60s HTML cache. Does NOT purge Cloudflare — hit the page
+    with ?cb=<anything> or hard-refresh to bypass that too."""
+    import json as _json
+    try:
+        _BOARD_CACHE.clear()
+    except Exception:
+        pass
+    try:
+        _RENDER_CACHE.clear()
+    except Exception:
+        pass
+    try:
+        import plays_log
+        plays_log.invalidate_grade_all_cache()
+    except Exception:
+        pass
+    try:
+        import plays_log
+        plays_log._ESPN_CACHE.clear()
+    except Exception:
+        pass
+    return Response(_json.dumps({"ok": True,
+                                   "cleared": ["board_cache", "render_cache",
+                                                 "espn_cache", "grade_cache"]},
+                                 indent=2), mimetype="application/json")
+
+
+@app.route("/debug/ui-integrity")
+def debug_ui_integrity():
+    """Run the UI integrity sweep on-demand. Returns the full report
+    including every pick that violates the display rules."""
+    import json as _json
+    try:
+        import agents
+        r = agents.scan_ui_integrity()
+        return Response(_json.dumps(r, indent=2),
+                        mimetype="application/json")
+    except Exception as e:
+        return Response(_json.dumps({"ok": False,
+                                       "error": f"{type(e).__name__}: {e}"}),
+                        status=500, mimetype="application/json")
+
+
 @app.route("/debug/picks-trace")
 def debug_picks_trace():
     """Try to render picks_landing and return the full exception
@@ -20846,8 +20894,10 @@ def cron_dispatch():
     actions = ["heartbeat"]
     mod_result = None
     grader_result = None
-    # Fire the moderator tick + live grader in-band. Rate-limited to
-    # once per ~4 min so a 1-min cron doesn't hammer the board build.
+    integrity_result = None
+    # Fire the moderator tick + live grader + UI integrity scan
+    # in-band. Rate-limited to once per ~4 min so a 1-min cron
+    # doesn't hammer the board build.
     try:
         import time as _t
         now_ts = _t.time()
@@ -20860,13 +20910,19 @@ def cron_dispatch():
                 actions.append("moderator_tick")
             except Exception as _me:
                 mod_result = {"ok": False, "error": f"{type(_me).__name__}: {_me}"}
-            # Live grader runs on every tick that fires the moderator
-            # too — early-settles mid-game Over / BTTS / TT Over picks.
             try:
                 grader_result = agents.run_live_grader()
                 actions.append("live_grader")
             except Exception as _ge:
                 grader_result = {"ok": False, "error": f"{type(_ge).__name__}: {_ge}"}
+            # UI integrity sweep — walks the live board + flags any
+            # pick that violates display rules (missing icons, graded
+            # before kickoff, orphan rows, stale live-scores file).
+            try:
+                integrity_result = agents.scan_ui_integrity()
+                actions.append("ui_integrity")
+            except Exception as _ie:
+                integrity_result = {"ok": False, "error": f"{type(_ie).__name__}: {_ie}"}
     except Exception:
         pass
 
@@ -20877,6 +20933,7 @@ def cron_dispatch():
         "now_ct": now_ct.isoformat(),
         "moderator": mod_result,
         "live_grader": grader_result,
+        "ui_integrity": integrity_result,
     }, default=str), mimetype="application/json")
 
 
