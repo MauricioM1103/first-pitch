@@ -10973,7 +10973,7 @@ def picks_landing():
             try:
                 from flask import make_response as _mkr
                 _r = _mkr(_rc_hit[1])
-                _r.headers["Cache-Control"] = "public, max-age=30, stale-while-revalidate=120"
+                _r.headers["Cache-Control"] = "public, max-age=10, stale-while-revalidate=20"
                 _r.headers["Vary"] = "Accept-Encoding"
                 _r.headers["X-Render-Cache"] = "HIT"
                 return _r
@@ -11138,34 +11138,27 @@ def picks_landing():
                     # Fields the template needs: pick, market, decimal,
                     # signal_score, ev_pct, result, profit_u, id,
                     # home/away teams, _row_status for the badge.
-                    _row.setdefault("picks", []).append({
-                        "id":            _pid,
-                        "pick":          _lp.get("pick"),
-                        "market":        _lp.get("market"),
-                        "decimal":       _lp.get("decimal"),
-                        "american":      _lp.get("american"),
-                        "fair_prob":     _lp.get("fair_prob"),
-                        "ev_pct":        _lp.get("ev_pct"),
-                        "signal_score":  _lp.get("signal_score"),
-                        "result":        _lp.get("result"),       # W/L/P or None
-                        "profit_u":      _lp.get("profit_u"),
-                        "sport_slug":    _row.get("sport_slug"),
-                        "sport_name":    _row.get("sport_name"),
-                        "home_team":     _row.get("home"),
-                        "away_team":     _row.get("away"),
-                        "start_time":    _row.get("start_time"),
-                        "ai_verdict":    _lp.get("ai_verdict"),
-                        "ai_matchup":    _lp.get("ai_matchup") or [],
-                        "ai_factors":    _lp.get("ai_factors") or [],
-                        "ai_risks":      _lp.get("ai_risks") or [],
-                        "source":        _lp.get("source") or "logged",
-                        "model_only":    False,
-                        "do_not_bet":    False,
-                        "_row_status":   _rs,
-                        "_backfilled":   True,
+                    # Start from the ENTIRE logged pick dict so we
+                    # preserve strong / whale / line_move_pp / signal
+                    # fields that the 2-icon filter checks. Previously
+                    # we whitelisted a handful of fields and the
+                    # backfilled picks lost their `strong` flag,
+                    # so the icon-filter dropped every pick the
+                    # moment its game went live.
+                    _bf = dict(_lp)
+                    _bf.update({
+                        "sport_slug":     _row.get("sport_slug"),
+                        "sport_name":     _row.get("sport_name"),
+                        "home_team":      _row.get("home"),
+                        "away_team":      _row.get("away"),
+                        "start_time":     _row.get("start_time"),
+                        "model_only":     False,
+                        "_row_status":    _rs,
+                        "_backfilled":    True,
                         "row_score_home": _row.get("score_home"),
                         "row_score_away": _row.get("score_away"),
                     })
+                    _row.setdefault("picks", []).append(_bf)
     except Exception:
         pass
 
@@ -11347,13 +11340,19 @@ def picks_landing():
         return n
     def _pick_qualifies_for_board(p):
         try:
-            # Keep graded picks for the record view, and keep DNBs so
-            # the user can see what was retracted. Everything else
-            # needs >= 2 non-AI icons.
+            # Always keep graded picks (W/L/P) for the record view.
             if p.get("result") in ("W", "L", "P"):
                 return True
+            # Always keep DNBs so the user can see what was retracted.
             if p.get("do_not_bet"):
                 return True
+            # ALWAYS keep picks whose game is in-flight — a pick that
+            # cleared the filter pre-game shouldn't disappear when the
+            # market moves to in-play. Also covers backfilled picks
+            # pulled from plays_log for live/final rows.
+            if p.get("_row_status") in ("live", "final"):
+                return True
+            # Pre-game picks need >= 2 non-AI icons.
             return _non_ai_icon_count(p) >= 2
         except Exception:
             return True  # don't 500 on bad fields
@@ -11842,7 +11841,7 @@ def picks_landing():
     try:
         from flask import make_response as _make_response
         resp = _make_response(rendered)
-        resp.headers["Cache-Control"] = "public, max-age=30, stale-while-revalidate=120"
+        resp.headers["Cache-Control"] = "public, max-age=10, stale-while-revalidate=20"
         resp.headers["Vary"] = "Accept-Encoding"
         return resp
     except Exception:
