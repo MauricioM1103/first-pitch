@@ -20404,6 +20404,27 @@ def _resolve_discord_webhook_mlb(settings):
     return (settings.get("discord_webhook_url") or "").strip()
 
 
+@app.route("/debug/picks-trace")
+def debug_picks_trace():
+    """Try to render picks_landing and return the full exception
+    trace instead of a generic 500. Short-circuit for debugging
+    which code path blows up on today's data."""
+    import json as _json
+    import traceback as _tb
+    try:
+        resp = picks_landing()
+        return Response(_json.dumps({"ok": True,
+                                       "note": "no exception",
+                                       "status_code": getattr(resp, "status_code", None)}),
+                        mimetype="application/json")
+    except Exception as e:
+        tb = _tb.format_exc()
+        return Response(_json.dumps({"ok": False,
+                                       "error": f"{type(e).__name__}: {e}",
+                                       "trace": tb}, indent=2),
+                        status=200, mimetype="application/json")
+
+
 @app.route("/debug/live-scores")
 def debug_live_scores():
     """Diagnose the live-score backfill. Pass ?sport=<slug> to limit.
