@@ -809,12 +809,16 @@ _DEFAULT_PREGAME_WINDOW = (45, 150)
 # convergence we'd otherwise want from AI+/Line+/Kalshi+.
 #
 #   Signal 5 ⇒ evidence >= 3
-#   Signal 4 ⇒ evidence >= 4
-#   Signal 0-3 ⇒ evidence >= 5
+#   Signal 4 ⇒ evidence >= 3
+#   Signal 3 ⇒ evidence >= 4   (tuned down from 5 on 2026-10-24 so
+#                                 Signal 3 + AI + News-clean + any
+#                                 one corroborating signal posts —
+#                                 quiet-slate days were posting zero)
+#   Signal 0-2 ⇒ evidence >= 5
 #
 # Keeps the quality bar high while letting a 5/5 pick with just one
-# supporting signal (e.g. AI+ or Line+) through — matches the user's
-# "strong Signal shouldn't need the full stack" directive.
+# supporting signal (e.g. AI+ or Line+) through, and a 3/5 pick with
+# three convergent signals (AI + Whale + News-clean = 4) through too.
 _EVIDENCE_POST_THRESHOLD = 5  # back-compat; still used for stats labels
 
 
@@ -827,6 +831,8 @@ def _evidence_bar_for(pick):
     if sig >= 5:
         return 3
     if sig >= 4:
+        return 3
+    if sig >= 3:
         return 4
     return 5
 
