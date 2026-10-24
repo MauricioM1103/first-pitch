@@ -278,6 +278,21 @@ def save_daily_picks(date_str, picks, overwrite_today=True):
             # Anchor snapshots: frozen EV + signal + filter judgment at
             # each daily checkpoint (12 AM / 3 AM / 11 AM / 4 PM CT).
             "anchors":            anchors,
+            # AI breakdown fields (shipped 2026-10-24 v3). Preserved so
+            # the Discord moderator's resend + the /logged tab's AI
+            # record view can rebuild the matchup/factors/risks body
+            # without re-querying Claude. Lists stay as lists; strings
+            # as strings.
+            "ai_verdict":         p.get("ai_verdict"),
+            "ai_reason":          p.get("ai_reason"),
+            "ai_summary":         p.get("ai_summary"),
+            "ai_matchup":         p.get("ai_matchup") or [],
+            "ai_factors":         p.get("ai_factors") or [],
+            "ai_risks":           p.get("ai_risks") or [],
+            # Signal composite — persisted so historical reads see the
+            # same score the live board rendered at save time.
+            "signal_score":       p.get("signal_score"),
+            "whale":              bool(p.get("whale")),
         }
     # Carry anchors forward for picks that disappeared from the live
     # feed (post-kickoff). The merged_by_id already includes them from

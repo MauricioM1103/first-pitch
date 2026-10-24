@@ -1004,6 +1004,22 @@ def resend_picks_posted_after(hour_ct=15, webhook_url=None, dry=False):
         return {"ok": False, "error": "mlb_ui / plays_log import failed"}
     today = datetime.now(mlb_ui.CENTRAL).date()
     today_iso = today.isoformat()
+    # Pull from the LIVE board — picks there carry the AI bullets
+    # (served from the 24h verdict cache). The saved plays_log file
+    # historically dropped those fields, so pulling from there gave
+    # us empty body_text. Fall back to graded if a pick isn't on
+    # today's live board (game already ended + Pinnacle dropped it).
+    live_by_id = {}
+    try:
+        board_rows, _ = mlb_ui._build_board_rows(today_iso, today, "all",
+                                                   strong_only=False)
+        for row in board_rows:
+            for p in (row.get("picks") or []):
+                _pid = p.get("id")
+                if _pid:
+                    live_by_id[_pid] = p
+    except Exception:
+        pass
     graded_file = plays_log.read_graded(today_iso) or {}
     graded_picks = graded_file.get("picks") or []
     posted_state = _load_posted_state()
@@ -1024,8 +1040,15 @@ def resend_picks_posted_after(hour_ct=15, webhook_url=None, dry=False):
             continue
         if posted_at >= cutoff_utc:
             posted_pids.append(pid)
-    # Build pick dict map for lookup
+    # Build pick dict map for lookup — prefer live board (has AI
+    # bullets); fall back to the saved graded file for anything the
+    # live board no longer carries.
     picks_by_id = {p.get("id"): p for p in graded_picks if p.get("id")}
+    for _pid, _lp in live_by_id.items():
+        # Merge: start from the saved pick, overlay the live fields
+        # on top so AI bullets + current pricing come through.
+        base = picks_by_id.get(_pid) or {}
+        picks_by_id[_pid] = {**base, **_lp}
     resent = []
     missing = []
     for pid in posted_pids:
