@@ -11370,12 +11370,12 @@ def picks_landing():
                             if p.get("_board_qualifies")]
     except Exception:
         pass
-    # Prune now-empty rows (same rule as before — live/final rows
-    # stay for context, but if ALL picks dropped and the game isn't
-    # in-flight, the row goes).
-    board_rows = [r for r in board_rows
-                  if r.get("picks")
-                  or (r.get("status") or "") in ("live", "final")]
+    # Prune every empty row — upcoming, live, OR final (shipped
+    # 2026-10-24 v3 per user request). If the pick didn't survive
+    # the 2-icon filter, don't show the game. Graded picks always
+    # pass the filter so completed-pick rows still render with their
+    # W/L records.
+    board_rows = [r for r in board_rows if r.get("picks")]
 
     # Tag each pick with `discord_queued` so the UI can show a 📢
     # badge next to the LIVE/W/L result for picks the moderator would
