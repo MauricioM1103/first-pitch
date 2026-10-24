@@ -11168,33 +11168,62 @@ def picks_landing():
                                                          ref_date=view_date)
                 except Exception:
                     events = []
-                # Index events by (home_lower, away_lower)
-                _ev_by_key = {}
+                # Build a flat index of events keyed by every team-name
+                # token the parsed event exposes, so fuzzy matching
+                # covers "Pittsburgh" vs "Pittsburgh Panthers" vs "Pitt"
+                # without a sport-specific nickname table.
+                def _team_tokens(name):
+                    n = (name or "").lower().strip()
+                    if not n:
+                        return set()
+                    toks = {n}
+                    # Add word-level pieces to catch "Pittsburgh" from
+                    # "Pittsburgh Panthers"; drop short-tail (len<4)
+                    # tokens so "FC" / "AFC" / "SC" don't false-match.
+                    for w in n.split():
+                        if len(w) >= 4:
+                            toks.add(w)
+                    return toks
+                _ev_by_token = {}  # token -> (home_team, away_team, hs, as)
                 for _ev in events:
                     teams = _ev.get("teams") or []
                     if len(teams) < 2:
                         continue
-                    _h = (teams[0].get("name") or "").lower().strip()
-                    _a = (teams[1].get("name") or "").lower().strip()
                     try:
                         _hs = int(float(teams[0].get("score") or 0))
                         _as = int(float(teams[1].get("score") or 0))
                     except (TypeError, ValueError):
                         continue
-                    _ev_by_key[(_h, _a)] = (_hs, _as)
-                    # also index swapped order in case home/away ordering differs
-                    _ev_by_key[(_a, _h)] = (_as, _hs)
+                    _ht = teams[0].get("name") or ""
+                    _at = teams[1].get("name") or ""
+                    for tok in _team_tokens(_ht):
+                        _ev_by_token.setdefault(tok, []).append(
+                            ("home", _at, _hs, _as))
+                    for tok in _team_tokens(_at):
+                        _ev_by_token.setdefault(tok, []).append(
+                            ("away", _ht, _hs, _as))
                 for r in rows_for_sport:
-                    _hk = (r.get("home") or "").lower().strip()
-                    _ak = (r.get("away") or "").lower().strip()
-                    sc = _ev_by_key.get((_hk, _ak))
-                    if sc is not None:
-                        r["score_home"] = sc[0]
-                        r["score_away"] = sc[1]
-                        # Propagate to picks so the LIVE badge renders
+                    _hk_toks = _team_tokens(r.get("home") or "")
+                    _ak_toks = _team_tokens(r.get("away") or "")
+                    found = None
+                    for tok in _hk_toks:
+                        for cand in _ev_by_token.get(tok, []):
+                            role, opp, hs, as_ = cand
+                            # Confirm the opponent matches too.
+                            if any(t in _team_tokens(opp) for t in _ak_toks):
+                                if role == "home":
+                                    found = (hs, as_)
+                                else:
+                                    found = (as_, hs)
+                                break
+                        if found:
+                            break
+                    if found is not None:
+                        r["score_home"] = found[0]
+                        r["score_away"] = found[1]
                         for p in r.get("picks") or []:
-                            p["row_score_home"] = sc[0]
-                            p["row_score_away"] = sc[1]
+                            p["row_score_home"] = found[0]
+                            p["row_score_away"] = found[1]
     except Exception:
         pass
 
