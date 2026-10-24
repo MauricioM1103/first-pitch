@@ -621,14 +621,64 @@ def _pc_pill(draw, x, y, text, font, fg=_PICK_CARD_INK,
     return x + w
 
 
+def _pc_fit_odds(draw, text, max_w=260, target_size=56, min_size=32):
+    """Shrink odds font until it fits a max width. Returns (font, width)."""
+    for size in (target_size, 48, 40, min_size):
+        f = _pc_font(size, bold=True)
+        try:
+            w = draw.textbbox((0, 0), text, font=f)[2]
+        except Exception:
+            w = max_w
+        if w <= max_w:
+            return f, w
+    f = _pc_font(min_size, bold=True)
+    try:
+        return f, draw.textbbox((0, 0), text, font=f)[2]
+    except Exception:
+        return f, max_w
+
+
+def _pc_fit_pick_label(draw, text, max_w,
+                        target_size=44, min_size=22):
+    """Fit the pick label without truncation. Try shrinking the font
+    through 44→40→36→32→28→24→22. If it STILL doesn't fit at 22pt,
+    wrap into two lines at a natural word break. Never adds '...' —
+    the line/total number must stay readable."""
+    for size in (target_size, 40, 36, 32, 28, 24, min_size):
+        f = _pc_font(size, bold=True)
+        try:
+            w = draw.textbbox((0, 0), text, font=f)[2]
+        except Exception:
+            w = max_w + 1
+        if w <= max_w:
+            return [text], f, size
+    # Wrap into 2 lines on the latest word-break that fits
+    f = _pc_font(min_size, bold=True)
+    words = text.split()
+    for i in range(len(words), 0, -1):
+        head = " ".join(words[:i])
+        try:
+            if draw.textbbox((0, 0), head, font=f)[2] <= max_w:
+                tail = " ".join(words[i:])
+                return [head, tail], f, min_size
+        except Exception:
+            continue
+    return [text], f, min_size
+
+
 def render_pick_card_png(pick):
     """Return PNG bytes for one pick card. `pick` keys we read:
     sport_name, sport_slug, pick, decimal, signal_score, evidence_score,
     mins_to_tip, ai_verdict, best_book, best_price, best_price_delta_pct,
-    reasons, start_time (ISO)."""
+    reasons, start_time (ISO).
+
+    v3 (2026-10-24): auto-shrinks + wraps the pick label so long lines
+    like 'Over 237.5 (ALT · from main O/U 239.5)' or 'BTTS Yes & Over
+    2.5 Goals' stay fully readable. Never truncates with '...'. The
+    odds number also shrinks if the line gets very long."""
     if not _PIL_OK:
         return None
-    W, H = 1200, 440
+    W, H = 1200, 460
     canvas = Image.new("RGB", (W, H), _PICK_CARD_BG)
     draw   = ImageDraw.Draw(canvas, "RGBA")
 
@@ -643,34 +693,29 @@ def render_pick_card_png(pick):
                fill=_PICK_CARD_INK_DIM)
     y += 32
 
-    # Pick label + odds
-    pick_label = pick.get("pick") or "?"
-    f_pick = _pc_font(44, bold=True)
-    max_w = W - pad_x - 240
-    try:
-        bbox = draw.textbbox((0, 0), pick_label, font=f_pick)
-        if bbox[2] > max_w:
-            while bbox[2] > max_w and len(pick_label) > 10:
-                pick_label = pick_label[:-2]
-                bbox = draw.textbbox((0, 0), pick_label + "...", font=f_pick)
-            pick_label = pick_label + "..."
-    except Exception:
-        pass
-    draw.text((pad_x, y), pick_label, font=f_pick, fill=_PICK_CARD_INK)
-
+    # Odds FIRST (right-aligned) so we know how much width is left
+    # for the pick label.
     dec = pick.get("decimal")
     odds_s = f"@ {dec:.2f}" if dec else "@ ?"
-    f_odds = _pc_font(56, bold=True)
-    try:
-        obbox = draw.textbbox((0, 0), odds_s, font=f_odds)
-        odds_w = obbox[2] - obbox[0]
-    except Exception:
-        odds_w = 200
-    draw.text((W - pad_x - odds_w, y - 4), odds_s, font=f_odds,
+    f_odds, odds_w = _pc_fit_odds(draw, odds_s, max_w=260)
+
+    # Pick label — fit to available width without truncation
+    pick_label = pick.get("pick") or "?"
+    max_w_label = W - pad_x - odds_w - 36  # 36px gap between label + odds
+    lines, f_pick, pick_size = _pc_fit_pick_label(draw, pick_label,
+                                                    max_w_label)
+    line_h = pick_size + 6
+    for i, line in enumerate(lines):
+        draw.text((pad_x, y + i * line_h), line, font=f_pick,
+                   fill=_PICK_CARD_INK)
+    label_block_h = len(lines) * line_h
+    # Odds vertically centered against the (possibly 2-line) label block
+    odds_y = y + (label_block_h - pick_size) // 2 - 8
+    draw.text((W - pad_x - odds_w, odds_y), odds_s, font=f_odds,
                fill=_PICK_CARD_GOOD)
-    y += 68
-    draw.rectangle([pad_x, y + 8, W - pad_x, y + 9], fill=_PICK_CARD_LINE)
-    y += 24
+    y += label_block_h + 20
+    draw.rectangle([pad_x, y, W - pad_x, y + 1], fill=_PICK_CARD_LINE)
+    y += 20
 
     # Pills row: Signal / Evidence / Tipoff / AI
     f_pill = _pc_font(22, bold=True)
