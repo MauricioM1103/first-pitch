@@ -6268,7 +6268,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
                     {% if p.strong %}<span class="strong-badge">&#9733; STRONG</span>{% endif %}
                   </div>
                   <div class="pick-stats-detail">
-                    <span><span class="label">Model</span><b>{{ (p.fair_prob * 100)|round|int }}%</b></span>
+                    {% if p.fair_prob is not none %}<span><span class="label">Model</span><b>{{ (p.fair_prob * 100)|round|int }}%</b></span>{% endif %}
                     {% if p.pinnacle_prob %}<span><span class="label">Pinnacle</span><b>{{ (p.pinnacle_prob * 100)|round|int }}%</b></span>{% endif %}
                     {% if p.consensus_prob %}<span><span class="label">Consensus</span><b>{{ (p.consensus_prob * 100)|round|int }}%</b></span>{% endif %}
                     <span>
