@@ -20313,6 +20313,28 @@ def cron_line_shop_scan():
                         status=500, mimetype="application/json")
 
 
+@app.route("/discord/resend-after", methods=["POST", "GET"])
+def discord_resend_after():
+    """Force-resend today's picks posted after a given CT hour in the
+    current embed format. Pass ?hour=15 (default) for picks posted
+    after 3pm CT. Useful after switching the post format to refresh
+    the channel without waiting for new picks."""
+    import json as _json
+    try:
+        hour = int(request.args.get("hour") or 15)
+    except Exception:
+        hour = 15
+    try:
+        import agents
+        r = agents.resend_picks_posted_after(hour_ct=hour)
+        return Response(_json.dumps(r, indent=2),
+                        mimetype="application/json")
+    except Exception as e:
+        return Response(_json.dumps({"ok": False,
+                                       "error": f"{type(e).__name__}: {e}"}),
+                        status=500, mimetype="application/json")
+
+
 @app.route("/discord/delete-today", methods=["POST", "GET"])
 def discord_delete_today():
     """Delete every pick the moderator posted today (whose message_id

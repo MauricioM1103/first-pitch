@@ -984,6 +984,74 @@ Evidence {score}/10 — {reason_tags}  |  Tipoff in {mins_to_tip} min
 """
 
 
+def resend_picks_posted_after(hour_ct=15, webhook_url=None):
+    """Force-resend every pick that was posted to Discord today after
+    the given CT hour (default 3pm CT), in the current embed format.
+    Pulls the pick list from today's logged plays_log file and the
+    moderator's posted_state, filters by posted_at >= hour_ct CT,
+    then calls post_individual_pick(allow_replay=True) on each.
+
+    Useful after a format change (e.g. switching from text to
+    embeds) to re-send today's picks in the new look. Does NOT
+    delete the originals — webhook self-delete only works for
+    message IDs we captured, and older posts predate that.
+    Operator can manually delete the old text posts OR use
+    /discord/dedup-sweep if a bot token is configured."""
+    try:
+        import mlb_ui
+        import plays_log
+    except Exception:
+        return {"ok": False, "error": "mlb_ui / plays_log import failed"}
+    today = datetime.now(mlb_ui.CENTRAL).date()
+    today_iso = today.isoformat()
+    graded_file = plays_log.read_graded(today_iso) or {}
+    graded_picks = graded_file.get("picks") or []
+    posted_state = _load_posted_state()
+    cutoff_ct = datetime.combine(today,
+                                   datetime.min.time().replace(hour=hour_ct),
+                                   tzinfo=mlb_ui.CENTRAL)
+    cutoff_utc = cutoff_ct.astimezone().replace(tzinfo=None)
+    # datetime.utcnow() is naive UTC — compare to cutoff_utc (naive)
+    posted_pids = []
+    for pid, entry in posted_state.items():
+        if entry.get("day") != today_iso:
+            continue
+        posted_at_str = entry.get("posted_at") or ""
+        try:
+            posted_at = datetime.fromisoformat(
+                posted_at_str.replace("Z", "")).replace(tzinfo=None)
+        except Exception:
+            continue
+        if posted_at >= cutoff_utc:
+            posted_pids.append(pid)
+    # Build pick dict map for lookup
+    picks_by_id = {p.get("id"): p for p in graded_picks if p.get("id")}
+    resent = []
+    missing = []
+    for pid in posted_pids:
+        pick = picks_by_id.get(pid)
+        if not pick:
+            missing.append(pid)
+            continue
+        try:
+            r = post_individual_pick(pick, webhook_url=webhook_url,
+                                      allow_replay=True)
+            resent.append({"pid": pid, "ok": r.get("ok"),
+                            "message_id": r.get("message_id")})
+        except Exception as e:
+            resent.append({"pid": pid, "ok": False,
+                            "error": f"{type(e).__name__}: {e}"})
+    return {
+        "ok":           True,
+        "today":        today_iso,
+        "cutoff_ct":    f"{hour_ct:02d}:00 CT",
+        "candidate_count": len(posted_pids),
+        "resent_count": sum(1 for r in resent if r.get("ok")),
+        "resent":       resent,
+        "missing_from_log": missing,
+    }
+
+
 def delete_my_posts_today(webhook_url=None):
     """Delete every pick the moderator posted today whose message_id
     we captured. Also prunes the dedup state for those picks so they
