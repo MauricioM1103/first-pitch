@@ -9614,19 +9614,38 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
             #   - Only "Avoid" forces do_not_bet.
             #   - "Pass" / "Lean" are informational on the card.
             #   - "Strong Take" still +1 Signal point.
-            # Cost-tune (re-tuned 2026-10-23): split the gate so we
-            # don't lose AI verdicts that were already paid for.
-            #   - Cache SERVE: any Signal 2+ pick with a book price
-            #     reads its cached AI verdict for free. This keeps
-            #     the AI column populated for every pick the user
-            #     saw yesterday, no new tokens burned.
-            #   - Cache FILL: only Signal 3+ picks queue a new
-            #     Claude call on a cache miss. Signal 2 picks don't
-            #     generate new verdicts (that was the real spend).
+            # Cost-tune (re-tuned 2026-10-24 v3): only fire the AI
+            # breakdown for picks that will qualify for the main
+            # board (>= 2 non-AI filter icons). Signal 2 picks and
+            # single-icon Signal 3 picks don't get a new AI call —
+            # they'd be filtered off the board anyway, so paying for
+            # the analysis is waste. Users can still request AI
+            # analysis for ANY game via the AI Analysis tab.
+            # Serve-from-cache rules still apply to any Signal 2+
+            # pick so prior-paid verdicts keep rendering.
             _sig_now = int(p.get("signal_score") or 0)
-            if (_sig_now >= 2
-                    and (p.get("decimal") or 0)
-                    and not p.get("model_only")):
+            try:
+                _lmp_now = float(p.get("line_move_pp") or 0.0)
+            except (TypeError, ValueError):
+                _lmp_now = 0.0
+            # Count non-AI icons the pick ALREADY earns at this stage
+            # (model_only picks aren't eligible either way).
+            _ai_icons = 0
+            if _sig_now >= 3 or p.get("whale") or _lmp_now >= 0.005:
+                _ai_icons += 1   # Strongest
+            if (p.get("strong") and not p.get("model_only")):
+                _ai_icons += 1   # Filter 2.0
+            if p.get("whale"):
+                _ai_icons += 1   # Whale (independent)
+            if _lmp_now >= 0.01:
+                _ai_icons += 1   # Line+
+            _qualifies_for_ai = (_sig_now >= 2
+                                  and (p.get("decimal") or 0)
+                                  and not p.get("model_only"))
+            _qualifies_for_new_ai = (_ai_icons >= 2
+                                      and (p.get("decimal") or 0)
+                                      and not p.get("model_only"))
+            if _qualifies_for_ai:
                 try:
                     _av = _ai_verdict_for_pick(p)
                 except Exception:
@@ -9643,12 +9662,9 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                         p["do_not_bet"] = True
                     elif _v == "Strong Take":
                         p["signal_score"] = min(5, int(p["signal_score"]) + 1)
-                    # "Pass" / "Lean": no behavior change — ai_verdict
-                    # and ai_reasons stay on the pick for the UI to show.
-                elif _sig_now >= 3:
-                    # Cache miss AND signal strong enough to be worth
-                    # a new call — fire a background Claude request.
-                    # Signal 2 misses silently stay unpopulated.
+                elif _qualifies_for_new_ai:
+                    # Cache miss AND the pick will land on the board
+                    # — worth paying for a new Claude call.
                     try:
                         _queue_ai_verdict_fill(p)
                     except Exception:
@@ -11289,41 +11305,58 @@ def picks_landing():
     except Exception:
         pass
 
-    # Icon qualification pass (shipped 2026-10-24). Compute whether
-    # each pick carries at least one of the filter icons the UI shows
-    # on the pick card (Strongest / Filter 2.0 / Whale / AI / Line+ /
-    # DNB). Picks without any icon are not useful — they're model
-    # noise that slipped past _keep_in_baseline. Drop them unless
-    # they have a graded result (keep graded records visible).
-    def _pick_has_any_icon(p):
+    # Icon qualification pass (retuned 2026-10-24 v2). The board now
+    # requires each pick to carry >= 2 filter icons EXCLUDING AI, so
+    # a pick needs multi-signal convergence to make it on. Icons that
+    # count: Strongest, Filter 2.0, Whale, Line+, DNB. (AI endorsement
+    # is intentionally excluded from the count — users said AI should
+    # be a bonus, not a path to qualification.) Graded picks + DNB
+    # always stay for context. Also lowers total pick count naturally.
+    def _non_ai_icon_count(p):
         try:
-            try:
-                sig = int(p.get("signal_score") or 0)
-            except (TypeError, ValueError):
-                sig = 0
-            try:
-                lmp = float(p.get("line_move_pp") or 0.0)
-            except (TypeError, ValueError):
-                lmp = 0.0
-            is_strongest = (not p.get("do_not_bet")) and (
-                sig >= 3 or p.get("whale") or lmp >= 0.005)
-            is_filter2 = (bool(p.get("strong"))
-                          and not p.get("do_not_bet")
-                          and not p.get("model_only"))
-            is_ai = (p.get("ai_verdict") in ("Strong Take", "Lean")
-                     and not p.get("do_not_bet"))
-            is_linemove = (lmp >= 0.01)
-            return (is_strongest or is_filter2 or p.get("whale")
-                    or is_ai or is_linemove
-                    or p.get("do_not_bet")
-                    or p.get("result") in ("W", "L", "P"))
+            sig = int(p.get("signal_score") or 0)
+        except (TypeError, ValueError):
+            sig = 0
+        try:
+            lmp = float(p.get("line_move_pp") or 0.0)
+        except (TypeError, ValueError):
+            lmp = 0.0
+        n = 0
+        is_strongest = (not p.get("do_not_bet")) and (
+            sig >= 3 or p.get("whale") or lmp >= 0.005)
+        is_filter2 = (bool(p.get("strong"))
+                      and not p.get("do_not_bet")
+                      and not p.get("model_only"))
+        is_linemove = (lmp >= 0.01)
+        if is_strongest: n += 1
+        if is_filter2:   n += 1
+        if p.get("whale"): n += 1
+        if is_linemove:  n += 1
+        if p.get("do_not_bet"): n += 1
+        return n
+    def _pick_qualifies_for_board(p):
+        try:
+            # Keep graded picks for the record view, and keep DNBs so
+            # the user can see what was retracted. Everything else
+            # needs >= 2 non-AI icons.
+            if p.get("result") in ("W", "L", "P"):
+                return True
+            if p.get("do_not_bet"):
+                return True
+            return _non_ai_icon_count(p) >= 2
         except Exception:
-            # Any field-shape issue → keep the pick, don't 500 the page
-            return True
+            return True  # don't 500 on bad fields
     try:
         for row in board_rows:
+            # Stash qualification result on each pick so the AI-trigger
+            # path below can read it (saves recomputing).
+            for p in (row.get("picks") or []):
+                try:
+                    p["_board_qualifies"] = _pick_qualifies_for_board(p)
+                except Exception:
+                    p["_board_qualifies"] = True
             row["picks"] = [p for p in (row.get("picks") or [])
-                            if _pick_has_any_icon(p)]
+                            if p.get("_board_qualifies")]
     except Exception:
         pass
     # Prune now-empty rows (same rule as before — live/final rows

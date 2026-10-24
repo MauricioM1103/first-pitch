@@ -1912,6 +1912,16 @@ def run_live_grader():
         except Exception:
             pass
 
+    # Also run the regular post-game backfill so pending picks from
+    # the last couple of days get re-graded on this tick. Keeps the
+    # /logged tab's records fresh without the user having to visit
+    # the page. Cheap — grade_pending_backfill short-circuits games
+    # that haven't ended yet.
+    try:
+        plays_log.grade_pending_backfill(days_back=3, grace_hours=1)
+    except Exception:
+        pass
+
     # Live-score dump (broad). Even sports with 0 pending picks (e.g.
     # a game whose pick already settled) may need live scores for the
     # board's row display. Walk every sport that has a scoreboard
