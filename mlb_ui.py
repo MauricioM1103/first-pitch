@@ -11297,25 +11297,35 @@ def picks_landing():
     # they have a graded result (keep graded records visible).
     def _pick_has_any_icon(p):
         try:
-            sig = int(p.get("signal_score") or 0)
+            try:
+                sig = int(p.get("signal_score") or 0)
+            except (TypeError, ValueError):
+                sig = 0
+            try:
+                lmp = float(p.get("line_move_pp") or 0.0)
+            except (TypeError, ValueError):
+                lmp = 0.0
+            is_strongest = (not p.get("do_not_bet")) and (
+                sig >= 3 or p.get("whale") or lmp >= 0.005)
+            is_filter2 = (bool(p.get("strong"))
+                          and not p.get("do_not_bet")
+                          and not p.get("model_only"))
+            is_ai = (p.get("ai_verdict") in ("Strong Take", "Lean")
+                     and not p.get("do_not_bet"))
+            is_linemove = (lmp >= 0.01)
+            return (is_strongest or is_filter2 or p.get("whale")
+                    or is_ai or is_linemove
+                    or p.get("do_not_bet")
+                    or p.get("result") in ("W", "L", "P"))
         except Exception:
-            sig = 0
-        is_strongest = (not p.get("do_not_bet")) and (
-            sig >= 3 or p.get("whale")
-            or (float(p.get("line_move_pp") or 0.0) >= 0.005))
-        is_filter2 = (bool(p.get("strong"))
-                      and not p.get("do_not_bet")
-                      and not p.get("model_only"))
-        is_ai = (p.get("ai_verdict") in ("Strong Take", "Lean")
-                 and not p.get("do_not_bet"))
-        is_linemove = (float(p.get("line_move_pp") or 0.0) >= 0.01)
-        return (is_strongest or is_filter2 or p.get("whale")
-                or is_ai or is_linemove
-                or p.get("do_not_bet")
-                or p.get("result") in ("W", "L", "P"))
-    for row in board_rows:
-        row["picks"] = [p for p in (row.get("picks") or [])
-                        if _pick_has_any_icon(p)]
+            # Any field-shape issue → keep the pick, don't 500 the page
+            return True
+    try:
+        for row in board_rows:
+            row["picks"] = [p for p in (row.get("picks") or [])
+                            if _pick_has_any_icon(p)]
+    except Exception:
+        pass
     # Prune now-empty rows (same rule as before — live/final rows
     # stay for context, but if ALL picks dropped and the game isn't
     # in-flight, the row goes).
