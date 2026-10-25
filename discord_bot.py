@@ -666,58 +666,177 @@ def _pc_fit_pick_label(draw, text, max_w,
     return [text], f, min_size
 
 
-def render_pick_card_png(pick):
-    """Return PNG bytes for one pick card. `pick` keys we read:
-    sport_name, sport_slug, pick, decimal, signal_score, evidence_score,
-    mins_to_tip, ai_verdict, best_book, best_price, best_price_delta_pct,
-    reasons, start_time (ISO).
+def _pc_wrap_text(draw, text, font, max_w):
+    """Word-wrap `text` to lines <= max_w pixels wide."""
+    words = text.split()
+    lines, cur = [], ""
+    for w in words:
+        test = (cur + " " + w).strip()
+        try:
+            fits = draw.textbbox((0, 0), test, font=font)[2] <= max_w
+        except Exception:
+            fits = len(test) * 10 <= max_w
+        if fits:
+            cur = test
+        else:
+            if cur:
+                lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines
 
-    v3 (2026-10-24): auto-shrinks + wraps the pick label so long lines
-    like 'Over 237.5 (ALT · from main O/U 239.5)' or 'BTTS Yes & Over
-    2.5 Goals' stay fully readable. Never truncates with '...'. The
-    odds number also shrinks if the line gets very long."""
+
+def render_pick_card_png(pick):
+    """Return PNG bytes for one pick card. v6 — full card with game
+    header (Away @ Home), pick + odds, pills, chips, and the full
+    MATCHUP / KEY FACTORS / RISKS analysis sections baked into the
+    PNG so the Discord post is a single visual unit (no separate
+    text body needed). Height auto-fits content.
+
+    Whale picks (`pick['whale'] == True`) get a cyan 🐋 banner,
+    a thicker cyan sidebar, and a soft outer glow so they're
+    immediately distinguishable from regular picks."""
     if not _PIL_OK:
         return None
-    W, H = 1200, 460
-    canvas = Image.new("RGB", (W, H), _PICK_CARD_BG)
-    draw   = ImageDraw.Draw(canvas, "RGBA")
+
+    W = 1200
+    pad_x = 36
+    section_gap = 24
+    bullet_gap = 10
+    is_whale = bool(pick.get("whale"))
+    whale_banner_h = 54 if is_whale else 0
+    _WHALE_BLUE = (56, 189, 248)
+
+    # ---- MEASURE PHASE (dry layout) ----
+    tmp = Image.new("RGB", (W, 100), _PICK_CARD_BG)
+    md = ImageDraw.Draw(tmp)
 
     sport_slug = (pick.get("sport_slug") or "").lower()
-    sidebar = _PICK_CARD_SPORT_RGB.get(sport_slug, (114, 137, 218))
-    draw.rectangle([0, 0, 10, H], fill=sidebar)
-
-    pad_x = 36
-    y = 32
     sport = (pick.get("sport_name") or sport_slug or "?").upper()
-    draw.text((pad_x, y), sport, font=_pc_font(20, bold=True),
-               fill=_PICK_CARD_INK_DIM)
-    y += 32
+    away = pick.get("away_team") or ""
+    home = pick.get("home_team") or ""
 
-    # Odds FIRST (right-aligned) so we know how much width is left
-    # for the pick label.
+    y = whale_banner_h + 28
+    y += 36                        # SPORT + GAME row
+    y += 20                        # divider
+
+    pick_label = pick.get("pick") or "?"
     dec = pick.get("decimal")
     odds_s = f"@ {dec:.2f}" if dec else "@ ?"
-    f_odds, odds_w = _pc_fit_odds(draw, odds_s, max_w=260)
-
-    # Pick label — fit to available width without truncation
-    pick_label = pick.get("pick") or "?"
-    max_w_label = W - pad_x - odds_w - 36  # 36px gap between label + odds
-    lines, f_pick, pick_size = _pc_fit_pick_label(draw, pick_label,
+    f_odds, odds_w = _pc_fit_odds(md, odds_s, max_w=260)
+    max_w_label = W - pad_x - odds_w - 36
+    lines, f_pick, pick_size = _pc_fit_pick_label(md, pick_label,
                                                     max_w_label)
+    y += len(lines) * (pick_size + 6)
+    y += 20                        # divider
+    y += 56                        # pills row
+    reasons = pick.get("reasons") or []
+    if reasons:
+        y += 42
+    bb = pick.get("best_book"); bp = pick.get("best_price")
+    if bb and bp:
+        y += 42
+
+    f_bullet = _pc_font(20, bold=False)
+
+    def _measure(items):
+        if not items:
+            return 0
+        h = 34  # section title
+        if isinstance(items, str):
+            items = [items]
+        for it in items:
+            txt = (it or "").strip().lstrip("-•*").strip()
+            if not txt:
+                continue
+            wrapped = _pc_wrap_text(md, txt, f_bullet, max_w=W - pad_x * 2 - 32)
+            h += len(wrapped) * 28 + bullet_gap
+        return h + 10
+
+    matchup = pick.get("ai_matchup") or []
+    factors = pick.get("ai_factors") or []
+    risks   = pick.get("ai_risks")   or []
+    y += section_gap
+    y += _measure(matchup) + _measure(factors) + _measure(risks)
+    y += 48                        # footer area
+    H = max(y + 20, 500)
+
+    # ---- DRAW PHASE ----
+    canvas = Image.new("RGB", (W, H), _PICK_CARD_BG)
+    draw = ImageDraw.Draw(canvas, "RGBA")
+
+    if is_whale:
+        # Top banner
+        draw.rectangle([0, 0, W, whale_banner_h], fill=(14, 165, 233))
+        draw.rectangle([0, whale_banner_h - 2, W, whale_banner_h],
+                        fill=_WHALE_BLUE)
+        f_whale = _pc_font(26, bold=True)
+        txt = "🐋  WHALE PICK  ·  bankroll-max tier"
+        try:
+            bw = draw.textbbox((0, 0), txt, font=f_whale)[2]
+        except Exception:
+            bw = 500
+        draw.text((W // 2 - bw // 2, 12), txt, font=f_whale,
+                   fill=(10, 20, 40))
+        # Thicker cyan sidebar
+        draw.rectangle([0, whale_banner_h, 14, H], fill=_WHALE_BLUE)
+        # Soft outer glow
+        try:
+            from PIL import ImageFilter as _If
+            glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            gd = ImageDraw.Draw(glow)
+            for i, alpha in enumerate([40, 80, 120]):
+                gd.rectangle([i, whale_banner_h + i, W - 1 - i, H - 1 - i],
+                              outline=(56, 189, 248, alpha), width=1)
+            glow = glow.filter(_If.GaussianBlur(2))
+            canvas.paste(glow, (0, 0), glow)
+        except Exception:
+            pass
+    else:
+        sidebar = _PICK_CARD_SPORT_RGB.get(sport_slug, (114, 137, 218))
+        draw.rectangle([0, 0, 10, H], fill=sidebar)
+
+    # Row 1: SPORT tag + GAME header
+    y = whale_banner_h + 28
+    f_tag = _pc_font(20, bold=True)
+    draw.text((pad_x, y), sport, font=f_tag, fill=_PICK_CARD_INK_DIM)
+    try:
+        sport_w = draw.textbbox((0, 0), sport, font=f_tag)[2]
+    except Exception:
+        sport_w = 60
+    if away and home:
+        game_txt = f"{away}  @  {home}"
+        f_game = _pc_font(20, bold=False)
+        # Shrink the game text if it's too long
+        try:
+            while draw.textbbox((0, 0), game_txt, font=f_game)[2] > W - pad_x * 2 - sport_w - 24:
+                new_size = f_game.size - 2 if hasattr(f_game, "size") else 16
+                if new_size < 14:
+                    break
+                f_game = _pc_font(new_size, bold=False)
+        except Exception:
+            pass
+        draw.text((pad_x + sport_w + 16, y + 2), game_txt,
+                   font=f_game, fill=_PICK_CARD_INK)
+    y += 36
+    draw.rectangle([pad_x, y, W - pad_x, y + 1], fill=_PICK_CARD_LINE)
+    y += 20
+
+    # Pick label + odds
     line_h = pick_size + 6
     for i, line in enumerate(lines):
         draw.text((pad_x, y + i * line_h), line, font=f_pick,
                    fill=_PICK_CARD_INK)
-    label_block_h = len(lines) * line_h
-    # Odds vertically centered against the (possibly 2-line) label block
-    odds_y = y + (label_block_h - pick_size) // 2 - 8
+    label_h = len(lines) * line_h
+    odds_y = y + (label_h - pick_size) // 2 - 8
     draw.text((W - pad_x - odds_w, odds_y), odds_s, font=f_odds,
                fill=_PICK_CARD_GOOD)
-    y += label_block_h + 20
+    y += label_h + 20
     draw.rectangle([pad_x, y, W - pad_x, y + 1], fill=_PICK_CARD_LINE)
     y += 20
 
-    # Pills row: Signal / Evidence / Tipoff / AI
+    # Pills row
     f_pill = _pc_font(22, bold=True)
     sig  = pick.get("signal_score")
     ev   = pick.get("evidence_score")
@@ -725,24 +844,15 @@ def render_pick_card_png(pick):
     px = pad_x
     sig_fg = _PICK_CARD_GOOD if (sig or 0) >= 4 else _PICK_CARD_INK
     px = _pc_pill(draw, px, y, f"Signal {sig}/5" if sig is not None else "Signal —",
-                   f_pill, fg=sig_fg)
-    px += 12
+                   f_pill, fg=sig_fg); px += 12
     px = _pc_pill(draw, px, y, f"Evidence {ev}/10" if ev is not None else "Evidence —",
-                   f_pill, fg=_PICK_CARD_INK)
-    px += 12
-    # Relative tipoff
+                   f_pill, fg=_PICK_CARD_INK); px += 12
     if mins is not None:
-        if mins < 60:
-            tip_rel = f"Tip in {mins}m"
-        else:
-            tip_rel = f"Tip in {mins // 60}h{mins % 60}m"
+        tip_rel = f"Tip in {mins}m" if mins < 60 else f"Tip in {mins // 60}h{mins % 60}m"
     else:
         tip_rel = "Tipoff —"
-    px = _pc_pill(draw, px, y, tip_rel, f_pill, fg=_PICK_CARD_INK_DIM)
-    px += 12
-    # Absolute tipoff time if start_time present
+    px = _pc_pill(draw, px, y, tip_rel, f_pill, fg=_PICK_CARD_INK_DIM); px += 12
     st = pick.get("start_time") or ""
-    tip_abs = ""
     if st:
         try:
             from datetime import datetime as _dt
@@ -756,12 +866,9 @@ def render_pick_card_png(pick):
             if tz is not None:
                 d = d.astimezone(tz)
             tip_abs = d.strftime("%-I:%M %p CT") if sys_posix() else d.strftime("%#I:%M %p CT")
+            px = _pc_pill(draw, px, y, tip_abs, f_pill, fg=_PICK_CARD_INK_DIM); px += 12
         except Exception:
-            tip_abs = ""
-    if tip_abs:
-        px = _pc_pill(draw, px, y, tip_abs, f_pill, fg=_PICK_CARD_INK_DIM)
-        px += 12
-    # AI verdict
+            pass
     aiv = pick.get("ai_verdict") or ""
     if aiv in ("Lean", "Strong Take"):
         ai_bg = (14, 165, 233, 60) if aiv == "Lean" else (34, 197, 94, 70)
@@ -770,7 +877,6 @@ def render_pick_card_png(pick):
     y += 56
 
     # Signals-firing chip row
-    reasons = pick.get("reasons") or []
     if reasons:
         f_chip = _pc_font(18)
         rx = pad_x
@@ -781,8 +887,6 @@ def render_pick_card_png(pick):
         y += 42
 
     # Shop chip
-    bb = pick.get("best_book")
-    bp = pick.get("best_price")
     bd = pick.get("best_price_delta_pct")
     if bb and bp:
         f_shop = _pc_font(20, bold=True)
@@ -792,6 +896,33 @@ def render_pick_card_png(pick):
         _pc_pill(draw, pad_x, y, txt, f_shop,
                   fg=_PICK_CARD_GOOD, bg=(32, 60, 44))
         y += 42
+
+    # Analysis sections — color-coded
+    f_section = _pc_font(22, bold=True)
+    def _draw_section(y, title, color, emoji, items):
+        if not items:
+            return y
+        if isinstance(items, str):
+            items = [items]
+        y += section_gap
+        draw.text((pad_x, y), title, font=f_section, fill=color)
+        y += 34
+        for it in items:
+            txt = (it or "").strip().lstrip("-•*").strip()
+            if not txt:
+                continue
+            wrapped = _pc_wrap_text(draw, txt, f_bullet, max_w=W - pad_x * 2 - 32)
+            for i, line in enumerate(wrapped):
+                prefix = emoji + "  " if i == 0 else "     "
+                draw.text((pad_x, y), prefix + line, font=f_bullet,
+                           fill=_PICK_CARD_INK)
+                y += 28
+            y += bullet_gap
+        return y + 10
+
+    y = _draw_section(y, "MATCHUP",     (87, 190, 255), "🎯", matchup)
+    y = _draw_section(y, "KEY FACTORS", (255, 193, 68), "📋", factors)
+    y = _draw_section(y, "RISKS",       (248, 113, 113), "⚠", risks)
 
     # Footer
     draw.text((pad_x, H - 28),

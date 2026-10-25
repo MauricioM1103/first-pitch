@@ -1355,34 +1355,11 @@ def post_individual_pick(pick, webhook_url=None, allow_replay=False):
     pick["mins_to_tip"]    = mins
     pick["reasons"]        = reasons
 
-    # Compose the text body (analysis sections only — header info is
-    # now in the PNG card). Bullets rendered as emoji-led lines.
-    def _bullets(items, emoji, cap=600):
-        if not items:
-            return ""
-        if isinstance(items, str):
-            items = [items]
-        lines = []
-        for it in items:
-            it = (it or "").strip().lstrip("-•*").strip()
-            if it:
-                lines.append(f"{emoji} {it}")
-        text = "\n".join(lines).strip()
-        return (text[:cap - 3] + "...") if len(text) > cap else text
-
-    m_block = _bullets(pick.get("ai_matchup"), "🎯")
-    f_block = _bullets(pick.get("ai_factors"), "📋")
-    r_block = _bullets(pick.get("ai_risks"),   "⚠")
-    body_parts = []
-    if m_block:
-        body_parts.append("**Matchup**\n" + m_block)
-    if f_block:
-        body_parts.append("**Key factors**\n" + f_block)
-    if r_block:
-        body_parts.append("**Risks**\n" + r_block)
-    body_text = "\n\n".join(body_parts)
-
-    # Send PNG card + text body as ONE Discord message
+    # Full-PNG format (v6, shipped 2026-10-24): the Matchup / Key
+    # factors / Risks sections are now baked INTO the PNG itself,
+    # along with the game header + pick + odds + pills. No separate
+    # text body — the Discord post is a single visual unit.
+    body_text = ""
     msg_id = discord_bot.send_pick_card(webhook_url, pick, body_text,
                                           return_id=True)
     ok = bool(msg_id)
