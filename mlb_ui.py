@@ -21304,7 +21304,10 @@ def cron_dispatch():
             setattr(cron_dispatch, "_last_audit_date", today_iso)
             import agents
             try:
-                ui_audit_result = agents.run_daily_ui_audit(post_to_discord=True)
+                # UI audit stays in-dashboard only — not posted to
+                # Discord (would clutter the picks channel with
+                # internal data-quality findings nobody else needs).
+                ui_audit_result = agents.run_daily_ui_audit(post_to_discord=False)
                 actions.append("ui_audit")
             except Exception as _ae:
                 ui_audit_result = {"ok": False, "error": f"{type(_ae).__name__}: {_ae}"}

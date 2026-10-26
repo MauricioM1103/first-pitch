@@ -218,6 +218,17 @@ def save_daily_picks(date_str, picks, overwrite_today=True):
         _is_todays_log = True
     due_buckets = _anchors_due(now_ct) if _is_todays_log else []
     merged_by_id = dict(prev_picks_by_id)   # start with everything we had
+
+    # Cross-day line-move backfill: build the 3-day earliest-pinnacle
+    # map once, keyed by (sport, home, away, market, pick). Save paths
+    # from collect_picks don't attach line_move_pp (that only happens on
+    # the board-rows overlay), so without this fallback cross-day moves
+    # are invisible and the 2+ icon board filter + Signal composite both
+    # lose a point they should earn.
+    try:
+        _cross_day_hist = line_movement_history(date_str, days_back=3)
+    except Exception:
+        _cross_day_hist = {}
     for p in picks:
         pid = p.get("id")
         first = existing_first.get(pid, {})
@@ -254,7 +265,31 @@ def save_daily_picks(date_str, picks, overwrite_today=True):
             # judgment on read-back matches what the live board computed
             # at save time. Prior to this, read-back picks always lost
             # the line-move bonus and the curfilter record shrank.
-            "line_move_pp":  p.get("line_move_pp"),
+            #
+            # If the input pick didn't carry a line_move_pp (common for
+            # picks saved via the collect_picks EV path, which doesn't
+            # attach the line-history overlay), reconstruct it here from
+            # first_pinnacle_prob (earliest observation across the save
+            # history for THIS pick) vs current pinnacle_prob. Without
+            # this fallback, cross-day line movement was invisible to the
+            # 2+ icon board filter and to the Signal composite.
+            "line_move_pp":  (
+                p.get("line_move_pp")
+                if p.get("line_move_pp") is not None
+                else (
+                    (lambda f, n: (float(n) - float(f))
+                                   if (f is not None and n is not None)
+                                   else None)(
+                        (first.get("first_pinnacle_prob")
+                         if first.get("first_pinnacle_prob") is not None
+                         else (p.get("first_pinnacle_prob")
+                               if p.get("first_pinnacle_prob") is not None
+                               else (_cross_day_hist.get(_match_by_market_key(p))
+                                     or {}).get("earliest_pinnacle_prob"))),
+                        p.get("pinnacle_prob"),
+                    )
+                )
+            ),
             "strong":        bool(p.get("strong")),
             "model_only":    bool(p.get("model_only")),
             "source":        p.get("source") or ("book_dk" if p.get("book") == "draftkings"
@@ -290,8 +325,35 @@ def save_daily_picks(date_str, picks, overwrite_today=True):
             "ai_factors":         p.get("ai_factors") or [],
             "ai_risks":           p.get("ai_risks") or [],
             # Signal composite — persisted so historical reads see the
-            # same score the live board rendered at save time.
-            "signal_score":       p.get("signal_score"),
+            # same score the live board rendered at save time. Fallback
+            # to the reconstructed score when the input didn't carry one
+            # (collect_picks EV path doesn't attach signal_score). Use
+            # the pick dict with the just-computed line_move_pp fallback
+            # so the reconstruction sees the real cross-day move.
+            "signal_score": (
+                p.get("signal_score")
+                if p.get("signal_score") is not None
+                else _backtest_signal_score({
+                    **p,
+                    "line_move_pp": (
+                        p.get("line_move_pp")
+                        if p.get("line_move_pp") is not None
+                        else (
+                            (lambda f, n: (float(n) - float(f))
+                                           if (f is not None and n is not None)
+                                           else None)(
+                                (first.get("first_pinnacle_prob")
+                                 if first.get("first_pinnacle_prob") is not None
+                                 else (p.get("first_pinnacle_prob")
+                                       if p.get("first_pinnacle_prob") is not None
+                                       else (_cross_day_hist.get(_match_by_market_key(p))
+                                             or {}).get("earliest_pinnacle_prob"))),
+                                p.get("pinnacle_prob"),
+                            )
+                        )
+                    ),
+                })
+            ),
             "whale":              bool(p.get("whale")),
         }
     # Carry anchors forward for picks that disappeared from the live
