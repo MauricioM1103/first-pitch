@@ -1,38 +1,15 @@
 [
   {
-    "ran_at": "2026-10-26T12:12:08.715149Z",
+    "ran_at": "2026-10-26T12:28:56.156388Z",
     "today": "2026-10-26",
     "findings": [
       {
-        "kind": "false_zero_clv",
+        "kind": "live_scores_file_missing",
         "severity": "WARNING",
-        "detail": "1 picks show clv_pp=0.0 but were only saved once \u2014 looks like a real 'market didn't move' reading but is actually 'we never resampled the close'"
-      },
-      {
-        "kind": "fewer_than_2_icons",
-        "severity": "WARNING",
-        "detail": "6 board picks have < 2 non-AI icons"
+        "detail": "logs/live_scores.json does not exist"
       }
     ],
-    "finding_count": 2,
-    "analysis": "=== DAILY UI AUDIT ===\n\n**OVERALL:** Board is populated (15 rows, 8 picks logged, all pending, none settled), which is normal for a 12:12 UTC run. Two WARNING-level display and data-integrity issues need fixing. Neither is critical, but both show defaulted or incomplete values as if they were real.\n\n**FINDINGS:**\n- **WARNING \u00b7 false_zero_clv** \u00b7 1 pick shows `clv_pp=0.0` but was saved only once. This is a never-resampled close, not a real \"market didn't move\" reading, so the 0.0 is misleading.\n- **WARNING \u00b7 fewer_than_2_icons** \u00b7 6 board picks have fewer than 2 non-AI icons. Icon data is likely missing or not populating for those rows.\n\nNote: the details don't say which picks are affected. Code should log the pick IDs when reproducing.\n\n=== PASTE-READY PROMPT ===\n\n```\nFix two WARNING findings from today's UI audit (2026-10-26). Do not change\nbehavior for picks that are working correctly.\n\n1. kind: false_zero_clv\n   Problem: a pick with clv_pp=0.0 was saved only once (no close resample),\n   so 0.0 is a default, not a measured value.\n   - Find where clv_pp is computed/written (the CLV calculation and the\n     pick-save path) and where the UI renders it.\n   - Change: if a pick has only one saved snapshot / no close-line sample,\n     store clv_pp as null (not 0.0) and render it as \"\u2014\" or \"pending\".\n   - Backfill: for existing rows where clv_pp == 0.0 AND snapshot_count == 1,\n     set clv_pp to null.\n   - Check that the close-line resampler actually runs for this pick; if it\n     was skipped, log why (pick ID, timestamp).\n   - Make sure null CLV is excluded from CLV averages and aggregates, not\n     counted as 0.\n\n2. kind: fewer_than_2_icons\n   Problem: 6 board picks have <2 non-AI icons.\n   - Find the board row icon builder (the code that assembles the\n     non-AI icon set per pick) and the audit check that flags this.\n   - Log the 6 affected pick IDs and which icon sources returned empty.\n   - Determine whether it's a data gap (missing upstream fields) or a\n     rendering bug (icon conditions too strict, or a field-name mismatch).\n     Fix the root cause. Don't pad with placeholder icons.\n   - If some picks legitimately qualify for fewer than 2 icons, adjust the\n     audit threshold or condition rather than faking icons, and explain why.\n\nAfter the fixes:\n- Run the UI audit again and confirm finding_count drops to 0 (or only\n  explained INFO items).\n- Commit with a clear message referencing both finding kinds, push, and\n  bust the dashboard cache so the board reflects the changes.\n```"
-  },
-  {
-    "ran_at": "2026-10-26T12:12:41.566874Z",
-    "today": "2026-10-26",
-    "findings": [
-      {
-        "kind": "false_zero_clv",
-        "severity": "WARNING",
-        "detail": "1 picks show clv_pp=0.0 but were only saved once \u2014 looks like a real 'market didn't move' reading but is actually 'we never resampled the close'"
-      },
-      {
-        "kind": "fewer_than_2_icons",
-        "severity": "WARNING",
-        "detail": "6 board picks have < 2 non-AI icons"
-      }
-    ],
-    "finding_count": 2,
-    "analysis": "=== DAILY UI AUDIT ===\n\nOVERALL: The board looks structurally healthy. 8 picks are logged, all pending, and 0 are settled, which is normal for 12:12 UTC. Two WARNINGs are about misleading or incomplete display, not broken counts.\n\nFINDINGS:\n- WARNING \u00b7 false_zero_clv \u00b7 1 pick shows clv_pp=0.0 but was saved only once. The \"0.0\" is a default, not a measured \"market didn't move\" reading, because the closing line was never resampled.\n- WARNING \u00b7 fewer_than_2_icons \u00b7 6 of 15 board picks have fewer than 2 non-AI icons, so their signal/context badges are incomplete.\n\n=== PASTE-READY PROMPT ===\n\n```\nFix two UI-audit WARNINGs on the sports-betting dashboard (audit date 2026-10-26). I don't have exact file paths, so grep for each `kind` string and for the field names below to find the code path.\n\n1) kind: false_zero_clv\nProblem: a pick saved only once shows clv_pp=0.0. That is a default shown as a real \"no line movement\" reading, because the close was never resampled.\nFix:\n- In the pick-save / CLV computation code, find where clv_pp is defaulted to 0 or 0.0.\n- Store clv_pp as null/None unless there are at least 2 distinct line samples (open and close, or a resample after the first save).\n- In the UI render, show \"\u2014\" or \"pending close\" for null CLV. Never render 0.0 for a missing value.\n- Exclude null-CLV picks from any CLV averages and aggregates.\n- Check why the close wasn't resampled for this pick (scheduler skipped it, or the pick was saved after the last resample window). Fix the cause if it is a bug, and add a resample or backfill if it is cheap.\n- Also fix the audit check so it can distinguish a true 0.0 from a defaulted one.\n\n2) kind: fewer_than_2_icons\nProblem: 6 board picks have fewer than 2 non-AI icons.\nFix:\n- Find the icon/badge builder for board rows, and grep for the audit check that emits fewer_than_2_icons.\n- Determine why the 6 picks are short. Possible causes: a missing upstream field (the data feeding the icon conditions is null), a condition that is too strict, or icons dropped on a join or cache miss.\n- Fix the root cause so icons populate from the real data. Do NOT pad with placeholder icons.\n- If a pick legitimately qualifies for fewer than 2 icons, adjust the audit threshold or exempt that case so it doesn't false-flag. Say which case applied for each of the 6 picks.\n\nVerification:\n- Re-run the UI audit and confirm both findings clear, or that any remaining ones are explained.\n- Confirm board_rows=15, picks_logged=8 and pending=8 are unchanged.\n\nWhen done: commit with a clear message, push, and bust the dashboard cache so the fix shows live. Report which files changed and the root cause for each finding.\n```"
+    "finding_count": 1,
+    "analysis": "=== DAILY UI AUDIT ===\n\nOVERALL: Data is healthy: 15 board rows, 8 picks logged, 0 settled and 8 pending, which is normal for 12:28 UTC before kickoffs. The only issue is that the live scores cache file is missing.\n\nFINDINGS:\n- WARNING \u00b7 live_scores_file_missing \u00b7 `logs/live_scores.json` does not exist. The UI has no live score source, so it may show blank, stale, or defaulted scores once games start. Settlement and grading that depend on it may also be affected.\n\n=== PASTE-READY PROMPT ===\n\n```\nFix the WARNING from today's UI audit (2026-10-26): kind `live_scores_file_missing` \u2014 `logs/live_scores.json` does not exist.\n\n1. Find the writer. Locate the code that produces logs/live_scores.json (search for \"live_scores\" in the scheduler, fetcher, or cron scripts). Determine why it didn't create the file: job not scheduled, crashed, wrong path, or a write that is skipped when there are no live games. Check recent logs for errors.\n\n2. Fix the writer. Make it always write a valid file, even when no games are live. Write an empty structure such as {\"updated_at\": <ISO ts>, \"games\": []}. Create the logs/ directory if needed (os.makedirs(..., exist_ok=True)) and write atomically (temp file, then rename).\n\n3. Make readers tolerant. In the UI/API code that reads live_scores.json, handle a missing or empty file gracefully. Show \"\u2014\" or \"Not started\", never a defaulted 0-0 that looks like a real score. Add a staleness check on `updated_at` so old data is not shown as live.\n\n4. Audit check. Keep the `live_scores_file_missing` check in the audit script, but make sure it doesn't false-positive when the file is legitimately empty (it should flag only a missing file or a stale `updated_at`).\n\n5. Verify. Run the writer once manually, confirm logs/live_scores.json exists and parses as valid JSON, and re-run the UI audit to confirm finding_count is 0.\n\nWhen done: commit with a clear message (e.g., \"fix: always write live_scores.json; tolerate missing file in UI\"), push, and bust the UI/data cache so the dashboard picks up the change.\n```"
   }
 ]
