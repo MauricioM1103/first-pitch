@@ -17174,66 +17174,78 @@ def ai_tuner_page():
     tune cycle (burns a Sonnet call so gate behind the operator's
     choice)."""
     import json as _json
-    # Trigger a fresh run on-demand
+    # Trigger a fresh run on-demand. ?run=weekly fires the weekly
+    # model tuner; ?run=daily fires the daily UI audit.
     run_result = None
-    if request.args.get("run") in ("1", "true"):
+    run_which = (request.args.get("run") or "").lower()
+    if run_which in ("1", "true", "weekly"):
         try:
             import agents
             run_result = agents.model_tune_weekly()
+            run_result["_kind"] = "weekly"
         except Exception as e:
             run_result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
-    # Load history from logs/analyzer_suggestions.json (local, fallback to log_persist)
-    history = []
-    try:
-        import os as _os_t
+    elif run_which == "daily":
+        try:
+            import agents
+            run_result = agents.run_daily_ui_audit()
+            run_result["_kind"] = "daily"
+        except Exception as e:
+            run_result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    # Load weekly tuner history + daily UI audit history
+    import os as _os_t
+    def _load_history(filename):
+        hist = []
         _p = _os_t.path.join(_os_t.path.dirname(_os_t.path.abspath(__file__)),
-                              "logs", "analyzer_suggestions.json")
+                              "logs", filename)
         try:
             with open(_p) as _f:
-                history = _json.load(_f) or []
+                hist = _json.load(_f) or []
         except FileNotFoundError:
             try:
                 import log_persist
-                text, _ = log_persist.read_file("logs/analyzer_suggestions.json")
+                text, _ = log_persist.read_file(f"logs/{filename}")
                 if text:
-                    history = _json.loads(text) or []
+                    hist = _json.loads(text) or []
             except Exception:
-                history = []
-    except Exception:
-        history = []
-    if not isinstance(history, list):
-        history = []
-    # Newest first
-    history = list(reversed(history))
-    # Parse each run's analysis into ANALYSIS / PASTE-READY PROMPT sections
-    parsed = []
-    for h in history:
+                hist = []
+        except Exception:
+            hist = []
+        return hist if isinstance(hist, list) else []
+    weekly_hist = list(reversed(_load_history("analyzer_suggestions.json")))
+    daily_hist  = list(reversed(_load_history("ui_audit_history.json")))
+
+    def _parse_run(h, kind):
         full = h.get("analysis") or ""
         analysis_body = full
         prompt_body = ""
-        # Split on the paste-ready marker if present
         m = full.find("=== PASTE-READY PROMPT ===")
         if m > 0:
             analysis_body = full[:m].strip()
-            prompt_body = full[m:].split("===", 2)[-1].strip() if "===" in full[m:] else full[m+len("=== PASTE-READY PROMPT ===")+1:].strip()
-            # Clean leading '===' lines
-            if prompt_body.startswith("==="):
-                prompt_body = prompt_body.split("\n", 1)[-1].strip()
-        # Clean the ANALYSIS marker header too
+            tail = full[m + len("=== PASTE-READY PROMPT ==="):].strip()
+            if tail.startswith("==="):
+                tail = tail.split("\n", 1)[-1].strip() if "\n" in tail else ""
+            prompt_body = tail
         analysis_body = analysis_body.replace("=== ANALYSIS ===", "").strip()
-        parsed.append({
-            "ran_at":   h.get("ran_at"),
-            "analysis": analysis_body,
-            "prompt":   prompt_body,
+        analysis_body = analysis_body.replace("=== DAILY UI AUDIT ===", "").strip()
+        return {
+            "ran_at":     h.get("ran_at"),
+            "kind":       kind,
+            "analysis":   analysis_body,
+            "prompt":     prompt_body,
             "has_prompt": bool(prompt_body),
-        })
+            "finding_count": h.get("finding_count"),  # daily only
+        }
+    weekly_runs = [_parse_run(h, "weekly") for h in weekly_hist]
+    daily_runs  = [_parse_run(h, "daily")  for h in daily_hist]
     return render_template_string(
         AI_TUNER_TEMPLATE,
         fonts_link=FONTS_LINK,
         shared_style=SHARED_STYLE,
         sport_strip=render_sport_strip("tuner"),
         theme_script=THEME_SCRIPT,
-        runs=parsed,
+        weekly_runs=weekly_runs,
+        daily_runs=daily_runs,
         run_result=run_result,
     )
 
@@ -17267,7 +17279,29 @@ main.wrap { max-width: 1100px; }
   border: 1px solid transparent;
   transition: background 150ms ease, transform 100ms ease;
 }
-.tuner-actions a.btn-run:hover { background: #a78bfa; transform: translateY(-1px); }
+.tuner-actions a.btn-run:hover { background: #a78bfa; transform: translateY(-1px); filter: brightness(1.15); }
+.section-header {
+  display: flex; align-items: center; gap: 12px;
+  font-family: "Fraunces", Georgia, serif; font-style: italic;
+  font-weight: 400; font-size: 28px; letter-spacing: -0.01em;
+  margin: 32px 0 14px;
+}
+.section-header .section-dot {
+  display: inline-block; width: 12px; height: 12px; border-radius: 50%;
+}
+.section-header .section-sub {
+  font-family: ui-sans-serif, system-ui, sans-serif; font-style: normal;
+  font-weight: 400; font-size: 13px; color: var(--muted-2);
+  letter-spacing: 0; margin-left: 4px;
+}
+.run-card.daily { border-left: 4px solid #0ea5e9; }
+.run-card.daily.latest {
+  border-color: color-mix(in oklab, #0ea5e9 55%, var(--rule));
+  box-shadow: 0 0 24px color-mix(in oklab, #0ea5e9 18%, transparent);
+}
+.pill.daily { background: color-mix(in oklab, #0ea5e9 20%, transparent); color: #0ea5e9; }
+.empty-state.small { padding: 28px 20px; margin: 14px 0; }
+.empty-state.small p { font-size: 13.5px; }
 .tuner-actions .note { color: var(--muted-2); font-size: 12.5px; }
 
 .run-card {
@@ -17371,8 +17405,9 @@ main.wrap { max-width: 1100px; }
   </section>
 
   <div class="tuner-actions">
-    <a href="/ai-tuner?run=1" class="btn-run">▶ Run new tune cycle</a>
-    <span class="note">(~$0.03 Sonnet call. Normally runs weekly on Sun night; use this to kick off ad-hoc.)</span>
+    <a href="/ai-tuner?run=daily" class="btn-run" style="background:#0ea5e9">▶ Run Daily UI Audit</a>
+    <a href="/ai-tuner?run=weekly" class="btn-run">▶ Run Weekly Model Tune</a>
+    <span class="note">(~$0.03 Sonnet each. Daily audit auto-fires 2-4 AM CT. Weekly tune auto-fires Sunday night.)</span>
   </div>
 
   {% if run_result %}
@@ -17380,49 +17415,80 @@ main.wrap { max-width: 1100px; }
     {% if run_result.ok is defined and not run_result.ok %}
       ⚠ Run failed: {{ run_result.error }}
     {% else %}
-      ✓ Fresh tune cycle completed. Appears at the top of the history below.
+      ✓ Fresh {{ run_result.get('_kind', 'tuner') }} cycle completed. Appears at the top of its section below.
     {% endif %}
   </div>
   {% endif %}
 
-  {% if not runs %}
-    <div class="empty-state">
-      <h2>No tune cycles yet</h2>
-      <p>Click <b>Run new tune cycle</b> above to kick off the first analysis. The agent needs at least 10 bets in a sport/market bucket to make confident suggestions — fresh accounts will mostly return "insufficient sample".</p>
+  {# ============= DAILY UI AUDIT SECTION ============= #}
+  <h2 class="section-header">
+    <span class="section-dot" style="background:#0ea5e9"></span>
+    Daily UI Audit <span class="section-sub">— Agent #11, data integrity + UI bug sweep</span>
+  </h2>
+
+  {% if not daily_runs %}
+    <div class="empty-state small">
+      <p>No daily audits yet. Click <b>Run Daily UI Audit</b> above to produce the first report.</p>
     </div>
   {% else %}
-    {% for r in runs %}
-    <article class="run-card {{ 'latest' if loop.first else '' }}">
+    {% for r in daily_runs[:5] %}
+    <article class="run-card daily {{ 'latest' if loop.first else '' }}">
       <div class="run-head">
         <span class="date">
-          {% if r.ran_at %}
-            {{ r.ran_at.replace('T', ' ').replace('Z', '')[:16] }} UTC
-          {% else %}
-            — (undated)
-          {% endif %}
+          {% if r.ran_at %}{{ r.ran_at.replace('T', ' ').replace('Z', '')[:16] }} UTC{% else %}— (undated){% endif %}
         </span>
         <span>
-          {% if loop.first %}
-            <span class="pill">LATEST</span>
-          {% else %}
-            <span class="pill secondary">Run #{{ runs|length - loop.index0 }}</span>
-          {% endif %}
-          {% if r.has_prompt %}
-            <span class="pill" style="background: color-mix(in oklab, var(--good) 20%, transparent); color: var(--good);">PROMPT READY</span>
-          {% endif %}
+          {% if loop.first %}<span class="pill daily">TODAY</span>{% else %}<span class="pill secondary">#{{ daily_runs|length - loop.index0 }}</span>{% endif %}
+          {% if r.finding_count %}<span class="pill" style="background:color-mix(in oklab,#f59e0b 25%,transparent);color:#f59e0b">{{ r.finding_count }} FINDING{{ 'S' if r.finding_count > 1 else '' }}</span>{% else %}<span class="pill" style="background:color-mix(in oklab,var(--good) 20%,transparent);color:var(--good)">CLEAN</span>{% endif %}
+          {% if r.has_prompt %}<span class="pill" style="background:color-mix(in oklab,var(--good) 20%,transparent);color:var(--good)">PROMPT READY</span>{% endif %}
         </span>
       </div>
-
-      <div class="section-label" style="padding: 16px 24px 0;">Analysis</div>
+      <div class="section-label" style="padding:16px 24px 0;">Audit</div>
       <div class="analysis-body">{{ r.analysis }}</div>
-
       {% if r.has_prompt %}
       <div class="prompt-wrap">
         <div class="prompt-head">
-          <h3>▶ Paste-ready prompt</h3>
-          <button class="copy-btn" onclick="copyPrompt(this, 'prompt-{{ loop.index }}')">📋 Copy</button>
+          <h3>▶ Paste-ready fix prompt</h3>
+          <button class="copy-btn" onclick="copyPrompt(this, 'daily-prompt-{{ loop.index }}')">📋 Copy</button>
         </div>
-        <div class="prompt-box" id="prompt-{{ loop.index }}">{{ r.prompt }}</div>
+        <div class="prompt-box" id="daily-prompt-{{ loop.index }}">{{ r.prompt }}</div>
+      </div>
+      {% endif %}
+    </article>
+    {% endfor %}
+  {% endif %}
+
+  {# ============= WEEKLY MODEL TUNER SECTION ============= #}
+  <h2 class="section-header" style="margin-top:48px">
+    <span class="section-dot" style="background:var(--accent, #8b5cf6)"></span>
+    Weekly Model Tuner <span class="section-sub">— Agent #7, model weight + threshold nudges</span>
+  </h2>
+
+  {% if not weekly_runs %}
+    <div class="empty-state small">
+      <p>No weekly tune cycles yet. The agent needs ≥10 bets per sport/market bucket to make confident suggestions.</p>
+    </div>
+  {% else %}
+    {% for r in weekly_runs[:5] %}
+    <article class="run-card {{ 'latest' if loop.first else '' }}">
+      <div class="run-head">
+        <span class="date">
+          {% if r.ran_at %}{{ r.ran_at.replace('T', ' ').replace('Z', '')[:16] }} UTC{% else %}— (undated){% endif %}
+        </span>
+        <span>
+          {% if loop.first %}<span class="pill">LATEST</span>{% else %}<span class="pill secondary">#{{ weekly_runs|length - loop.index0 }}</span>{% endif %}
+          {% if r.has_prompt %}<span class="pill" style="background:color-mix(in oklab,var(--good) 20%,transparent);color:var(--good)">PROMPT READY</span>{% endif %}
+        </span>
+      </div>
+      <div class="section-label" style="padding:16px 24px 0;">Analysis</div>
+      <div class="analysis-body">{{ r.analysis }}</div>
+      {% if r.has_prompt %}
+      <div class="prompt-wrap">
+        <div class="prompt-head">
+          <h3>▶ Paste-ready tune prompt</h3>
+          <button class="copy-btn" onclick="copyPrompt(this, 'weekly-prompt-{{ loop.index }}')">📋 Copy</button>
+        </div>
+        <div class="prompt-box" id="weekly-prompt-{{ loop.index }}">{{ r.prompt }}</div>
       </div>
       {% endif %}
     </article>
@@ -17430,7 +17496,7 @@ main.wrap { max-width: 1100px; }
   {% endif %}
 
   <footer style="margin-top: 60px; padding: 20px 0; color: var(--muted-2); font-size: 12px; border-top: 1px solid var(--rule);">
-    Agent #7 — Weekly model tuner · last 12 runs kept · model: claude-sonnet-5-5
+    Agent #7 (weekly) + Agent #11 (daily) · last 30 daily / 12 weekly runs kept · model: claude-sonnet-5-5
   </footer>
 </main>
 <script>
@@ -21213,8 +21279,10 @@ def cron_dispatch():
     except Exception:
         pass
 
-    # EOD recap — once per day between 1:00-3:00 AM CT. Dedup by date
-    # so a stray extra dispatch tick doesn't fire a second recap.
+    # EOD recap — once per day between 1:00-3:00 AM CT.
+    # UI audit (Agent #11) — once per day between 2:00-4:00 AM CT.
+    # Both deduped by date so stray extra dispatch ticks don't double-fire.
+    ui_audit_result = None
     try:
         import time as _t2
         hour_ct = now_ct.hour
@@ -21224,7 +21292,6 @@ def cron_dispatch():
             setattr(cron_dispatch, "_last_eod_date", today_iso)
             import agents
             try:
-                # Recap YESTERDAY's record (yesterday's picks graded)
                 from datetime import timedelta as _td
                 y = (now_ct.date() - _td(days=1)).isoformat()
                 eod_result = agents.compose_eod_recap(date_str=y,
@@ -21232,6 +21299,15 @@ def cron_dispatch():
                 actions.append("eod_recap")
             except Exception as _ee:
                 eod_result = {"ok": False, "error": f"{type(_ee).__name__}: {_ee}"}
+        last_audit_date = getattr(cron_dispatch, "_last_audit_date", None)
+        if 2 <= hour_ct <= 4 and last_audit_date != today_iso:
+            setattr(cron_dispatch, "_last_audit_date", today_iso)
+            import agents
+            try:
+                ui_audit_result = agents.run_daily_ui_audit(post_to_discord=True)
+                actions.append("ui_audit")
+            except Exception as _ae:
+                ui_audit_result = {"ok": False, "error": f"{type(_ae).__name__}: {_ae}"}
     except Exception:
         pass
 
@@ -21244,6 +21320,7 @@ def cron_dispatch():
         "live_grader": grader_result,
         "ui_integrity": integrity_result,
         "eod_recap": eod_result,
+        "ui_audit": ui_audit_result,
     }, default=str), mimetype="application/json")
 
 

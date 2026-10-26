@@ -175,42 +175,62 @@ def _collect_tune_data():
             if (p.get("signal_score") or 0) < 3:
                 continue
             picks.append(p)
-    # Bucket by (sport, market_category)
+    # Bucket by (sport, market_category). Count SETTLED picks
+    # separately from PENDING so the output can't claim "3 bets, 0-1"
+    # when 2 of those 3 are still pending — that was the display
+    # confusion flagged in the 2026-10-26 integrity probe.
     from collections import defaultdict
-    buckets = defaultdict(lambda: {"W": 0, "L": 0, "P": 0, "u": 0.0, "n": 0,
+    buckets = defaultdict(lambda: {"W": 0, "L": 0, "P": 0, "u": 0.0,
+                                     "n_total": 0, "n_settled": 0,
+                                     "n_pending": 0,
                                      "clv_sum": 0.0, "clv_n": 0})
     for p in picks:
         key = (p.get("sport") or "?", (p.get("market") or "?").lower())
         b = buckets[key]
-        b["n"] += 1
+        b["n_total"] += 1
         r = p.get("result")
         if r in ("W", "L", "P"):
             b[r] += 1
+            b["n_settled"] += 1
             try:
                 b["u"] += float(p.get("profit_u") or 0.0)
             except Exception:
                 pass
-        # CLV: pinnacle_prob at log time vs close_prob (if captured)
+        else:
+            b["n_pending"] += 1
+        # CLV: skip picks that were only saved once (first_pin ==
+        # close_pin trivially → false +0.0pp signal) and skip picks
+        # where either anchor is missing.
         try:
             clv = p.get("clv_pp")
-            if clv is not None:
+            first_p = p.get("first_pinnacle_prob")
+            close_p = p.get("pinnacle_prob")
+            first_at = p.get("first_snapshot_at")
+            last_at  = p.get("snapshotted_at")
+            if (clv is not None and first_p is not None
+                    and close_p is not None
+                    and first_at and last_at
+                    and first_at != last_at):     # i.e., resaved at least once
                 b["clv_sum"] += float(clv)
                 b["clv_n"]   += 1
         except Exception:
             pass
-    # Format as text for the prompt
+    # Format as text for the prompt — bucket row carries settled vs
+    # pending explicitly so the LLM can't conflate them.
     lines = []
     for (sport, market), b in sorted(buckets.items()):
-        if b["n"] < 3:
-            continue  # skip trivially small buckets
+        if b["n_total"] < 3:
+            continue
         wlp = f"{b['W']}-{b['L']}" + (f"-{b['P']}" if b["P"] else "")
-        hit = b["W"] / max(1, b["W"] + b["L"]) * 100 if (b["W"] + b["L"]) else 0
+        settled = b["n_settled"]
+        hit = (b["W"] / settled * 100) if settled else 0
         clv_str = ""
         if b["clv_n"] > 0:
-            clv_str = f" | CLV {b['clv_sum']/b['clv_n']:+.1f}pp"
+            clv_str = f" | CLV {b['clv_sum']/b['clv_n']:+.1f}pp (n={b['clv_n']})"
+        pending_tag = f" + {b['n_pending']} pending" if b["n_pending"] else ""
         lines.append(f"  {sport:14s} {market[:20]:20s}  {wlp:9s}  "
-                     f"{b['n']:3d} bets  {hit:4.0f}% hit  "
-                     f"{b['u']:+6.2f}u{clv_str}")
+                     f"{settled:3d} settled{pending_tag:>12s}  "
+                     f"{hit:4.0f}% hit  {b['u']:+6.2f}u{clv_str}")
     return "\n".join(lines) or "  (no Signal 3+ bets in last 7 days)"
 
 
@@ -1001,6 +1021,258 @@ Evidence {score}/10 — {reason_tags}  |  Tipoff in {mins_to_tip} min
 📋 {factor_bullet}
 ⚠ {risk_bullet}
 """
+
+
+UI_AUDIT_PROMPT = """You are the daily UI auditor for a sports-betting
+dashboard. Below is a machine-generated integrity report of today's
+UI state. Your job: synthesize the findings into a short daily recap
+AND emit a paste-ready prompt the operator can hand to Claude Code
+to fix the issues.
+
+=== DAILY UI AUDIT ===
+
+OVERALL: <1-2 sentence read of the day's data health>
+
+FINDINGS:
+- <severity · kind · one-line description>
+  (severity = CRITICAL / WARNING / INFO)
+  (one bullet per distinct finding; group similar instances)
+
+Only emit findings for things that are actually broken or misleading
+(bad counts, defaulted values shown as real, graded-before-kickoff,
+stale caches, missing fields). Normal "no picks yet today" / "mod
+window-blocked all picks" scenarios are not findings.
+
+=== PASTE-READY PROMPT ===
+
+Write a self-contained prompt the operator can paste to Claude Code
+to fix the CRITICAL and WARNING findings. For each fix name the
+file + concept + change. Be specific — reference the finding's
+`kind` so Code can locate the exact code path. End with a commit/
+push/bust-cache request. Under 400 words. If the ONLY findings are
+INFO-level (or there are none), say "No code changes needed —
+everything is clean. Skip the commit." instead.
+
+======================
+TODAY'S UI AUDIT DATA:
+{audit_data}
+======================
+"""
+
+
+def run_daily_ui_audit(post_to_discord=False):
+    """Agent #11 — Daily UI Auditor. Walks the live board + today's
+    graded file + live_scores.json and does deeper data-integrity
+    checks than the per-tick scan_ui_integrity(). Then hands the
+    report to Claude Sonnet to produce a dated analysis + a paste-
+    ready prompt for Claude Code to apply the fixes.
+
+    Writes the result to logs/ui_audit_history.json so the /ai-tuner
+    tab can render a dated "Daily UI Audit" section alongside the
+    weekly model tuner runs."""
+    import mlb_ui
+    import plays_log
+    today = datetime.now(mlb_ui.CENTRAL).date()
+    today_iso = today.isoformat()
+    findings = []
+
+    # ---- Collect data for the audit ----
+    try:
+        board_rows, _ = mlb_ui._build_board_rows(today_iso, today, "all",
+                                                   strong_only=False)
+    except Exception as e:
+        board_rows = []
+        findings.append({"kind": "board_build_failed",
+                         "severity": "CRITICAL",
+                         "detail": f"_build_board_rows raised: {e}"})
+
+    # 1) Record counts — pending + settled consistency
+    graded = plays_log.read_graded(today_iso) or {}
+    picks = graded.get("picks") or []
+    settled = sum(1 for p in picks if p.get("result") in ("W", "L", "P"))
+    pending = sum(1 for p in picks if p.get("result") not in ("W", "L", "P"))
+    if settled + pending != len(picks):
+        findings.append({"kind": "pick_count_mismatch",
+                         "severity": "CRITICAL",
+                         "detail": f"settled({settled}) + pending({pending}) != total({len(picks)})"})
+
+    # 2) CLV +0.0pp false signal — picks whose first_snapshot_at ==
+    #    snapshotted_at but have clv_pp == 0.0 attached
+    false_clv_zeros = 0
+    for p in picks:
+        if (p.get("clv_pp") == 0 and
+                p.get("first_snapshot_at") and
+                p.get("first_snapshot_at") == p.get("snapshotted_at")):
+            false_clv_zeros += 1
+    if false_clv_zeros:
+        findings.append({"kind": "false_zero_clv",
+                         "severity": "WARNING",
+                         "detail": f"{false_clv_zeros} picks show clv_pp=0.0 "
+                                     f"but were only saved once — looks like a real "
+                                     f"'market didn't move' reading but is actually "
+                                     f"'we never resampled the close'"})
+
+    # 3) Graded-before-kickoff (Agent #9 catches on tick; this gives
+    #    a daily summary)
+    now_utc = datetime.utcnow()
+    pre_kickoff_graded = 0
+    for p in picks:
+        if p.get("result") in ("W", "L", "P"):
+            st = p.get("start_time") or ""
+            try:
+                sd = datetime.fromisoformat(st.replace("Z", "+00:00")).replace(tzinfo=None)
+                if sd > now_utc:
+                    pre_kickoff_graded += 1
+            except Exception:
+                pass
+    if pre_kickoff_graded:
+        findings.append({"kind": "graded_before_kickoff",
+                         "severity": "CRITICAL",
+                         "detail": f"{pre_kickoff_graded} pick(s) graded before kickoff"})
+
+    # 4) Live_scores.json freshness
+    try:
+        _lv_p = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "logs", "live_scores.json")
+        with open(_lv_p) as _f:
+            _lv = json.load(_f) or {}
+        _ran = (_lv.get("ran_at") or "")
+        if _ran:
+            try:
+                _d = datetime.fromisoformat(_ran.replace("Z", "")).replace(tzinfo=None)
+                _age = (now_utc - _d).total_seconds() / 60
+                if _age > 30:
+                    findings.append({"kind": "stale_live_scores_file",
+                                     "severity": "WARNING",
+                                     "detail": f"live_scores.json is {_age:.0f} min old"})
+            except Exception:
+                pass
+        else:
+            findings.append({"kind": "live_scores_never_written",
+                             "severity": "WARNING",
+                             "detail": "live_scores.json exists but has no ran_at"})
+    except FileNotFoundError:
+        findings.append({"kind": "live_scores_file_missing",
+                         "severity": "WARNING",
+                         "detail": "logs/live_scores.json does not exist"})
+    except Exception:
+        pass
+
+    # 5) Pick-icon rule — any board pick with < 2 non-AI icons
+    #    (duplicates per-tick integrity sweep for daily reporting)
+    low_icon_picks = 0
+    for row in board_rows:
+        status = row.get("status") or ""
+        for p in (row.get("picks") or []):
+            if p.get("result") in ("W", "L", "P"):
+                continue
+            if status in ("live", "final"):
+                continue
+            try:
+                sig = int(p.get("signal_score") or 0)
+                lmp = float(p.get("line_move_pp") or 0.0)
+            except Exception:
+                sig, lmp = 0, 0.0
+            n = 0
+            if (not p.get("do_not_bet")) and (sig >= 3 or p.get("whale") or lmp >= 0.005): n += 1
+            if p.get("strong") and not p.get("do_not_bet") and not p.get("model_only"): n += 1
+            if p.get("whale"): n += 1
+            if lmp >= 0.01: n += 1
+            if p.get("do_not_bet"): n += 1
+            if n < 2:
+                low_icon_picks += 1
+    if low_icon_picks:
+        findings.append({"kind": "fewer_than_2_icons",
+                         "severity": "WARNING",
+                         "detail": f"{low_icon_picks} board picks have < 2 non-AI icons"})
+
+    # 6) AI breakdown missing — Signal 4+ picks without ai_matchup
+    ai_missing = 0
+    for p in picks:
+        try:
+            sig = int(p.get("signal_score") or 0)
+        except Exception:
+            sig = 0
+        if sig >= 4 and not (p.get("ai_matchup") or p.get("ai_factors")):
+            ai_missing += 1
+    if ai_missing:
+        findings.append({"kind": "missing_ai_breakdown",
+                         "severity": "INFO",
+                         "detail": f"{ai_missing} Signal 4+ picks lack AI matchup/factors "
+                                     f"(either call never ran or save path stripped the fields)"})
+
+    # Build audit data block for the LLM
+    import json as _json_a
+    audit_data = _json_a.dumps({
+        "date":            today_iso,
+        "ran_at":          now_utc.isoformat() + "Z",
+        "board_rows":      len(board_rows),
+        "picks_logged":    len(picks),
+        "settled":         settled,
+        "pending":         pending,
+        "finding_count":   len(findings),
+        "findings":        findings,
+    }, indent=2)
+
+    # Ask Sonnet to produce the dated recap + paste-ready prompt
+    reply = _call_claude(
+        UI_AUDIT_PROMPT.format(audit_data=audit_data),
+        model="claude-sonnet-5-5",
+        max_tokens=1500,
+        system=("You are an experienced product/data auditor. Be "
+                 "concise. Flag only actionable issues. Normal low "
+                 "activity days are not findings."))
+
+    out = {
+        "ran_at":     now_utc.isoformat() + "Z",
+        "today":      today_iso,
+        "findings":   findings,
+        "finding_count": len(findings),
+        "analysis":   reply or "(no response)",
+    }
+
+    # Persist to history
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(here, "logs", "ui_audit_history.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        try:
+            with open(path) as f:
+                history = json.load(f) or []
+        except Exception:
+            history = []
+        if not isinstance(history, list):
+            history = []
+        history.append(out)
+        history = history[-30:]  # keep last 30 days
+        with open(path, "w") as f:
+            json.dump(history, f, indent=2)
+        try:
+            import log_persist
+            log_persist.write_file("logs/ui_audit_history.json",
+                                     json.dumps(history, indent=2))
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    # Optional: post to Discord
+    if post_to_discord and reply:
+        try:
+            import mlb_ui as _mu
+            import discord_bot
+            settings = _mu._load_settings()
+            webhook = _resolve_discord_webhook(settings)
+            if webhook:
+                # Truncate for Discord's 2000-char cap
+                body = f":mag: **Daily UI Audit — {today_iso}**\n\n{reply}"
+                if len(body) > 1900:
+                    body = body[:1897] + "..."
+                discord_bot.post_text(webhook, body)
+        except Exception:
+            pass
+
+    return out
 
 
 def scan_ui_integrity():
