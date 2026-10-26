@@ -106,7 +106,10 @@ by sport and market. For each bucket, compare:
   - Units P&L vs expectation (0u baseline on 1u flat stakes)
   - CLV (closing line value — model's prob vs Pinnacle closing devig)
 
-Return a tight, structured analysis:
+Return a tight, structured analysis AND a paste-ready prompt the
+operator can hand to Claude Code to implement the suggested changes.
+
+=== ANALYSIS ===
 
 OVERALL: <1 sentence read of the week>
 
@@ -124,11 +127,27 @@ SUGGESTED NUDGES:
 
 CONFIDENCE: <low/medium/high — how comfortable are you with the suggestions given only 7d of data>
 
+=== PASTE-READY PROMPT ===
+
+In this section, write a complete, self-contained prompt the
+operator can copy and paste to Claude Code to execute the suggested
+nudges. Format it as if YOU were asking Claude Code to make the
+changes. Be specific about:
+- Which file(s) to edit (reference per-sport weights in sports.py,
+  signal thresholds in picks.py / mlb_ui.py, bucket pauses in
+  sports.by_slug config)
+- What the current value is and what to change it to
+- A one-line reason for each change tied to the analysis above
+
+Start the prompt with "Make the following tuning changes based on
+this week's record:" and end with a request to commit + push + hit
+/debug/bust-cache. Keep it under 400 words.
+
 Only suggest nudges where the sample size is at least 10 bets AND
 the signal exceeds expected noise. For buckets under 10 bets, say
-"insufficient sample" and skip. Do NOT suggest paper-trading changes
-that would require model code rewrites — stick to tunable weights,
-thresholds, and bucket pauses.
+"insufficient sample" and skip. Do NOT suggest changes that would
+require model code rewrites — stick to tunable weights, thresholds,
+and bucket pauses.
 
 ======================
 7-DAY RECORD DATA:

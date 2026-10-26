@@ -828,6 +828,7 @@ _PRIMARY_SECTIONS = [
     ("today",    "Today",       "/"),
     ("1h_goals", "1H Goals",    "/first-half"),
     ("analysis", "AI Analysis", "/ai-analysis"),
+    ("tuner",    "AI Tuner",    "/ai-tuner"),
     ("results",  "Results",     "/logged"),
     ("lab",      "Lab",         "/lab"),
 ]
@@ -17165,6 +17166,294 @@ def _extract_ai_pick(text, sport_slug, game_ctx):
     }
 
 
+@app.route("/ai-tuner", methods=["GET", "POST"])
+def ai_tuner_page():
+    """Agent #7 (model tuner) dashboard. Shows the latest weekly
+    analysis + a copyable paste-ready prompt for Claude Code, plus
+    a dated history of prior runs. Hitting ?run=1 triggers a fresh
+    tune cycle (burns a Sonnet call so gate behind the operator's
+    choice)."""
+    import json as _json
+    # Trigger a fresh run on-demand
+    run_result = None
+    if request.args.get("run") in ("1", "true"):
+        try:
+            import agents
+            run_result = agents.model_tune_weekly()
+        except Exception as e:
+            run_result = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    # Load history from logs/analyzer_suggestions.json (local, fallback to log_persist)
+    history = []
+    try:
+        import os as _os_t
+        _p = _os_t.path.join(_os_t.path.dirname(_os_t.path.abspath(__file__)),
+                              "logs", "analyzer_suggestions.json")
+        try:
+            with open(_p) as _f:
+                history = _json.load(_f) or []
+        except FileNotFoundError:
+            try:
+                import log_persist
+                text, _ = log_persist.read_file("logs/analyzer_suggestions.json")
+                if text:
+                    history = _json.loads(text) or []
+            except Exception:
+                history = []
+    except Exception:
+        history = []
+    if not isinstance(history, list):
+        history = []
+    # Newest first
+    history = list(reversed(history))
+    # Parse each run's analysis into ANALYSIS / PASTE-READY PROMPT sections
+    parsed = []
+    for h in history:
+        full = h.get("analysis") or ""
+        analysis_body = full
+        prompt_body = ""
+        # Split on the paste-ready marker if present
+        m = full.find("=== PASTE-READY PROMPT ===")
+        if m > 0:
+            analysis_body = full[:m].strip()
+            prompt_body = full[m:].split("===", 2)[-1].strip() if "===" in full[m:] else full[m+len("=== PASTE-READY PROMPT ===")+1:].strip()
+            # Clean leading '===' lines
+            if prompt_body.startswith("==="):
+                prompt_body = prompt_body.split("\n", 1)[-1].strip()
+        # Clean the ANALYSIS marker header too
+        analysis_body = analysis_body.replace("=== ANALYSIS ===", "").strip()
+        parsed.append({
+            "ran_at":   h.get("ran_at"),
+            "analysis": analysis_body,
+            "prompt":   prompt_body,
+            "has_prompt": bool(prompt_body),
+        })
+    return render_template_string(
+        AI_TUNER_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        sport_strip=render_sport_strip("tuner"),
+        theme_script=THEME_SCRIPT,
+        runs=parsed,
+        run_result=run_result,
+    )
+
+
+AI_TUNER_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Betting Tools — AI Tuner</title>
+{{ fonts_link|safe }}
+<style>
+{{ shared_style|safe }}
+main.wrap { max-width: 1100px; }
+
+.tuner-hero h1 {
+  font-family: "Fraunces", Georgia, serif; font-style: italic; font-weight: 400;
+  font-size: clamp(32px, 5vw, 48px); margin: 0 0 8px; letter-spacing: -0.02em;
+}
+.tuner-hero p.sub {
+  color: var(--muted); font-size: 14px; max-width: 760px; line-height: 1.6;
+}
+.tuner-actions {
+  display: flex; align-items: center; gap: 12px; margin: 20px 0 32px;
+}
+.tuner-actions a.btn-run {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 10px 18px; border-radius: 10px;
+  background: var(--accent, #8b5cf6); color: #fff;
+  text-decoration: none; font-weight: 600; font-size: 14px;
+  border: 1px solid transparent;
+  transition: background 150ms ease, transform 100ms ease;
+}
+.tuner-actions a.btn-run:hover { background: #a78bfa; transform: translateY(-1px); }
+.tuner-actions .note { color: var(--muted-2); font-size: 12.5px; }
+
+.run-card {
+  border: 1px solid var(--rule); border-radius: 14px;
+  background: var(--card); margin: 24px 0;
+  overflow: hidden;
+}
+.run-card.latest {
+  border-color: color-mix(in oklab, var(--accent, #8b5cf6) 50%, var(--rule));
+  box-shadow: 0 0 24px color-mix(in oklab, var(--accent, #8b5cf6) 18%, transparent);
+}
+.run-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 20px;
+  background: color-mix(in oklab, var(--surface) 65%, var(--card));
+  border-bottom: 1px solid var(--rule);
+}
+.run-head .date {
+  font-family: "JetBrains Mono", monospace; font-weight: 600; font-size: 15px;
+  color: var(--ink); letter-spacing: 0.02em;
+}
+.run-head .pill {
+  padding: 3px 10px; border-radius: 999px;
+  background: color-mix(in oklab, var(--accent, #8b5cf6) 15%, transparent);
+  color: var(--accent, #8b5cf6); font-size: 11px; font-weight: 700;
+  letter-spacing: 0.08em; text-transform: uppercase;
+}
+.run-head .pill.secondary { background: color-mix(in oklab, var(--muted-2) 20%, transparent); color: var(--muted); }
+
+.section-label {
+  font-family: "JetBrains Mono", monospace; font-size: 11px;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted-2); margin: 16px 0 8px;
+}
+.section-label.highlighted {
+  color: var(--good);
+}
+.analysis-body {
+  padding: 20px 24px; color: var(--ink); font-size: 14px;
+  line-height: 1.7; white-space: pre-wrap;
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+.analysis-body strong, .analysis-body b { color: var(--accent, #8b5cf6); }
+
+.prompt-wrap {
+  padding: 0 24px 24px;
+}
+.prompt-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin: 8px 0;
+}
+.prompt-head h3 {
+  margin: 0; font-size: 14px; font-weight: 700; color: var(--good);
+  letter-spacing: 0.08em; text-transform: uppercase;
+}
+.copy-btn {
+  padding: 6px 14px; border-radius: 8px;
+  background: var(--good); color: var(--bg);
+  border: none; cursor: pointer; font-weight: 600; font-size: 12.5px;
+  font-family: "JetBrains Mono", monospace;
+}
+.copy-btn:hover { opacity: 0.9; }
+.copy-btn.copied { background: var(--accent, #8b5cf6); }
+.prompt-box {
+  position: relative;
+  background: color-mix(in oklab, var(--good) 6%, var(--surface));
+  border: 1px dashed color-mix(in oklab, var(--good) 40%, var(--rule));
+  border-radius: 10px;
+  padding: 18px 20px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 13px; line-height: 1.6;
+  color: var(--ink);
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 500px; overflow-y: auto;
+}
+
+.empty-state {
+  text-align: center; padding: 60px 20px;
+  color: var(--muted); border: 1px dashed var(--rule); border-radius: 12px;
+}
+.empty-state h2 {
+  font-family: "Fraunces", Georgia, serif; font-style: italic;
+  font-size: 22px; color: var(--ink); margin: 0 0 10px;
+}
+.empty-state p { color: var(--muted); font-size: 14px; max-width: 500px; margin: 0 auto; line-height: 1.6; }
+
+.just-ran {
+  padding: 12px 16px; margin: 20px 0;
+  background: color-mix(in oklab, var(--good) 15%, transparent);
+  border: 1px solid var(--good); border-radius: 10px;
+  color: var(--good); font-size: 13.5px; font-weight: 600;
+}
+</style>
+</head>
+<body>
+{{ sport_strip|safe }}
+<main class="wrap reveal">
+  <section class="tuner-hero">
+    <h1>AI Tuner</h1>
+    <p class="sub">Agent #7 reads the last 7 days of our Signal 3+ record (bucketed by sport + market) and asks Claude Sonnet 5.5 to flag what's working, what isn't, and recommend tunable nudges. Each run also produces a <b>paste-ready prompt</b> you can drop straight into Claude Code to implement the suggested changes.</p>
+  </section>
+
+  <div class="tuner-actions">
+    <a href="/ai-tuner?run=1" class="btn-run">▶ Run new tune cycle</a>
+    <span class="note">(~$0.03 Sonnet call. Normally runs weekly on Sun night; use this to kick off ad-hoc.)</span>
+  </div>
+
+  {% if run_result %}
+  <div class="just-ran">
+    {% if run_result.ok is defined and not run_result.ok %}
+      ⚠ Run failed: {{ run_result.error }}
+    {% else %}
+      ✓ Fresh tune cycle completed. Appears at the top of the history below.
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if not runs %}
+    <div class="empty-state">
+      <h2>No tune cycles yet</h2>
+      <p>Click <b>Run new tune cycle</b> above to kick off the first analysis. The agent needs at least 10 bets in a sport/market bucket to make confident suggestions — fresh accounts will mostly return "insufficient sample".</p>
+    </div>
+  {% else %}
+    {% for r in runs %}
+    <article class="run-card {{ 'latest' if loop.first else '' }}">
+      <div class="run-head">
+        <span class="date">
+          {% if r.ran_at %}
+            {{ r.ran_at.replace('T', ' ').replace('Z', '')[:16] }} UTC
+          {% else %}
+            — (undated)
+          {% endif %}
+        </span>
+        <span>
+          {% if loop.first %}
+            <span class="pill">LATEST</span>
+          {% else %}
+            <span class="pill secondary">Run #{{ runs|length - loop.index0 }}</span>
+          {% endif %}
+          {% if r.has_prompt %}
+            <span class="pill" style="background: color-mix(in oklab, var(--good) 20%, transparent); color: var(--good);">PROMPT READY</span>
+          {% endif %}
+        </span>
+      </div>
+
+      <div class="section-label" style="padding: 16px 24px 0;">Analysis</div>
+      <div class="analysis-body">{{ r.analysis }}</div>
+
+      {% if r.has_prompt %}
+      <div class="prompt-wrap">
+        <div class="prompt-head">
+          <h3>▶ Paste-ready prompt</h3>
+          <button class="copy-btn" onclick="copyPrompt(this, 'prompt-{{ loop.index }}')">📋 Copy</button>
+        </div>
+        <div class="prompt-box" id="prompt-{{ loop.index }}">{{ r.prompt }}</div>
+      </div>
+      {% endif %}
+    </article>
+    {% endfor %}
+  {% endif %}
+
+  <footer style="margin-top: 60px; padding: 20px 0; color: var(--muted-2); font-size: 12px; border-top: 1px solid var(--rule);">
+    Agent #7 — Weekly model tuner · last 12 runs kept · model: claude-sonnet-5-5
+  </footer>
+</main>
+<script>
+function copyPrompt(btn, id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const text = el.innerText;
+  navigator.clipboard.writeText(text).then(() => {
+    btn.textContent = '✓ Copied';
+    btn.classList.add('copied');
+    setTimeout(() => {
+      btn.textContent = '📋 Copy';
+      btn.classList.remove('copied');
+    }, 1800);
+  });
+}
+</script>
+{{ theme_script|safe }}
+</body>
+</html>
+"""
+
+
 @app.route("/ai-analysis", methods=["GET", "POST"])
 def ai_analysis_unified():
     """Unified cross-sport AI analysis page."""
@@ -20895,6 +21184,7 @@ def cron_dispatch():
     mod_result = None
     grader_result = None
     integrity_result = None
+    eod_result = None
     # Fire the moderator tick + live grader + UI integrity scan
     # in-band. Rate-limited to once per ~4 min so a 1-min cron
     # doesn't hammer the board build.
@@ -20915,14 +21205,33 @@ def cron_dispatch():
                 actions.append("live_grader")
             except Exception as _ge:
                 grader_result = {"ok": False, "error": f"{type(_ge).__name__}: {_ge}"}
-            # UI integrity sweep — walks the live board + flags any
-            # pick that violates display rules (missing icons, graded
-            # before kickoff, orphan rows, stale live-scores file).
             try:
                 integrity_result = agents.scan_ui_integrity()
                 actions.append("ui_integrity")
             except Exception as _ie:
                 integrity_result = {"ok": False, "error": f"{type(_ie).__name__}: {_ie}"}
+    except Exception:
+        pass
+
+    # EOD recap — once per day between 1:00-3:00 AM CT. Dedup by date
+    # so a stray extra dispatch tick doesn't fire a second recap.
+    try:
+        import time as _t2
+        hour_ct = now_ct.hour
+        today_iso = now_ct.date().isoformat()
+        last_eod_date = getattr(cron_dispatch, "_last_eod_date", None)
+        if 1 <= hour_ct <= 3 and last_eod_date != today_iso:
+            setattr(cron_dispatch, "_last_eod_date", today_iso)
+            import agents
+            try:
+                # Recap YESTERDAY's record (yesterday's picks graded)
+                from datetime import timedelta as _td
+                y = (now_ct.date() - _td(days=1)).isoformat()
+                eod_result = agents.compose_eod_recap(date_str=y,
+                                                        post_to_discord=True)
+                actions.append("eod_recap")
+            except Exception as _ee:
+                eod_result = {"ok": False, "error": f"{type(_ee).__name__}: {_ee}"}
     except Exception:
         pass
 
@@ -20934,6 +21243,7 @@ def cron_dispatch():
         "moderator": mod_result,
         "live_grader": grader_result,
         "ui_integrity": integrity_result,
+        "eod_recap": eod_result,
     }, default=str), mimetype="application/json")
 
 
