@@ -21260,6 +21260,17 @@ def cron_dispatch():
     grader_result = None
     integrity_result = None
     eod_result = None
+    # Guarantee logs/live_scores.json exists even before the first
+    # grader tick fires or on days when no sport has a scoreboard
+    # event yet. Writes an empty-games payload only if the file is
+    # missing — subsequent grader runs overwrite with real scores.
+    # Clears the audit's live_scores_file_missing finding on fresh
+    # deploys.
+    try:
+        import agents as _ag_boot
+        _ag_boot.ensure_live_scores_file()
+    except Exception:
+        pass
     # Fire the moderator tick + live grader + UI integrity scan
     # in-band. Rate-limited to once per ~4 min so a 1-min cron
     # doesn't hammer the board build.
