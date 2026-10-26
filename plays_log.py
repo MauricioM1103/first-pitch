@@ -1808,17 +1808,28 @@ def grade_date(date_str, sport_key_by_slug, force=False, rescore=False):
         # CLV: how much did Pinnacle's devigged line move from our FIRST
         # snapshot (opening-ish) to the latest save (closing-ish)? Positive
         # pp = market moved toward our side after we picked (sharp signal).
+        #
+        # Skip the computation entirely when there's only one snapshot
+        # (first_snapshot_at == snapshotted_at). A single-sample pick has
+        # first_pin == close_pin by construction, which the old code
+        # emitted as clv_pp=0.0 — indistinguishable from a true "market
+        # didn't move" reading. clv_pp=None here keeps those picks out of
+        # CLV averages instead of pulling them toward zero.
         first_pin = p.get("first_pinnacle_prob")
         close_pin = p.get("pinnacle_prob")
+        _first_at = p.get("first_snapshot_at")
+        _snap_at  = p.get("snapshotted_at")
+        single_sample = bool(_first_at) and (_first_at == _snap_at)
         clv_pp = None
         clv_pct = None  # EV at close using the price we actually got
-        if first_pin is not None and close_pin is not None:
+        if (first_pin is not None and close_pin is not None
+                and not single_sample):
             try:
                 clv_pp = (float(close_pin) - float(first_pin)) * 100.0
             except (TypeError, ValueError):
                 clv_pp = None
         dec = p.get("decimal") or p.get("first_decimal")
-        if close_pin is not None and dec:
+        if close_pin is not None and dec and not single_sample:
             try:
                 clv_pct = (float(close_pin) * float(dec) - 1.0) * 100.0
             except (TypeError, ValueError):

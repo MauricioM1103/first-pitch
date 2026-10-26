@@ -2748,8 +2748,10 @@ details.also-wrap .today-card { opacity: 0.88; }
         Current filter &middot; Last 7d:
         <b>{{ streak.last7.wins }}&ndash;{{ streak.last7.losses }}{% if streak.last7.pushes %}&ndash;{{ streak.last7.pushes }}{% endif %}</b>
         <span class="{{ 'good' if streak.last7.units > 0 else ('bad' if streak.last7.units < 0 else '') }}">({{ '%+.1f'|format(streak.last7.units) }}u, {{ '%+.1f'|format(streak.last7.roi) }}% ROI)</span>
+        {% if streak.last7.clv_pp is not none %}
         &middot;
         <span class="{{ 'good' if streak.last7.clv_pp > 0 else ('bad' if streak.last7.clv_pp < 0 else '') }}">CLV {{ '%+.2f'|format(streak.last7.clv_pp) }}pp</span>
+        {% endif %}
         {% if streak.last7.pending %}
           &middot; <span style="color:var(--muted)">{{ streak.last7.pending }} pending</span>
         {% endif %}
@@ -10127,6 +10129,12 @@ def today_landing():
         _summary = _pl.summary(_graded)
         _s7 = _summary.get("curfilter_7d") or {}
         if _s7.get("settled") or _s7.get("pending"):
+            # clv_pp: emit None when no CLV samples exist — the summary
+            # defaults clv_avg_pp to 0.0 for empty aggregates, which the
+            # chip would then render as "+0.00pp" (indistinguishable from
+            # "market didn't move"). None propagates to the template guard
+            # and hides the chip until real CLV samples land.
+            _clv_n = _s7.get("clv_n", 0) or 0
             streak["last7"] = {
                 "wins":    _s7.get("wins", 0),
                 "losses":  _s7.get("losses", 0),
@@ -10135,7 +10143,8 @@ def today_landing():
                 "pending": _s7.get("pending", 0),
                 "units":   round(_s7.get("units", 0.0), 2),
                 "roi":     round(_s7.get("roi_pct", 0.0), 1),
-                "clv_pp":  round(_s7.get("clv_avg_pp", 0.0), 2),
+                "clv_pp":  (round(_s7.get("clv_avg_pp", 0.0), 2)
+                             if _clv_n else None),
             }
     except Exception:
         pass
