@@ -1,0 +1,20 @@
+[
+  {
+    "ran_at": "2026-10-26T11:52:34.612943Z",
+    "today": "2026-10-26",
+    "findings": [
+      {
+        "kind": "false_zero_clv",
+        "severity": "WARNING",
+        "detail": "1 picks show clv_pp=0.0 but were only saved once \u2014 looks like a real 'market didn't move' reading but is actually 'we never resampled the close'"
+      },
+      {
+        "kind": "live_scores_file_missing",
+        "severity": "WARNING",
+        "detail": "logs/live_scores.json does not exist"
+      }
+    ],
+    "finding_count": 2,
+    "analysis": "=== DAILY UI AUDIT ===\n\nOVERALL: Board and pick counts look consistent (15 board rows, 8 picks logged, 0 settled, 8 pending). Two WARNING-level issues: a defaulted CLV value is being displayed as a real reading, and the live scores file is missing.\n\nFINDINGS:\n- WARNING \u00b7 false_zero_clv \u00b7 1 pick shows clv_pp=0.0 but was only saved once. The close was never resampled, so 0.0 is a default, not a real \"no movement\" reading.\n- WARNING \u00b7 live_scores_file_missing \u00b7 logs/live_scores.json does not exist, so live score displays have no data source and may be blank or stale.\n\n=== PASTE-READY PROMPT ===\n\n```\nFix two WARNING findings from today's UI audit (2026-10-26). I don't know the exact file paths, so please locate them via grep on the finding kinds.\n\n1. false_zero_clv\n   - Problem: One pick has clv_pp=0.0 but was saved only once. The closing line was never resampled, so 0.0 is a default being shown as a real \"market didn't move\" value.\n   - Find where clv_pp is written or defaulted (grep clv_pp and the pick-save/close-resample code path, plus the audit check that emits false_zero_clv).\n   - Change: when no close sample has been taken (save count == 1 / no close_odds captured), store clv_pp as null/None instead of 0.0. In the UI render \"\u2014\" or \"pending\" for null CLV, and exclude nulls from CLV averages and totals.\n   - Also check why the close resample did not run for this pick (scheduler or job skipped it?) and fix it if it's a bug.\n   - Do not rewrite historical rows unless they are clearly unsampled. If any are, list them for me first.\n\n2. live_scores_file_missing\n   - Problem: logs/live_scores.json does not exist.\n   - Find the writer (grep live_scores) and determine whether the job is not running, is failing, or is writing to a different path.\n   - Change: fix the writer or path so the file is produced. Make the reader handle a missing or empty file gracefully (show \"scores unavailable\" rather than blank or stale data). Ensure the writer creates the logs/ directory if needed.\n\nAfter the fixes:\n- Run any relevant tests and verify that the audit no longer emits either finding.\n- Commit with a clear message, push, and bust the cache so the dashboard reflects the changes.\n```"
+  }
+]
