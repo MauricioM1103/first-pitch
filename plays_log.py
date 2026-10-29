@@ -1366,16 +1366,33 @@ def grade_pick(pick, event):
     # only durable fix is to never settle in the first place. On a
     # pre-kickoff pick we always return "pending" and let the next
     # grader tick (now, past kickoff) re-run against a fresh event.
+    #
+    # Parses defensively: strip the trailing Z and try multiple
+    # formats so a Python-version difference in fromisoformat (3.10-
+    # won't accept +00:00) can't silently defeat the guard.
     try:
-        _st = pick.get("start_time") or ""
+        _st = (pick.get("start_time") or "").strip()
         if _st:
-            _sd = datetime.fromisoformat(_st.replace("Z", "+00:00")).replace(tzinfo=None)
-            if _sd > datetime.utcnow():
+            _s_clean = _st.rstrip("Z")
+            # Split off any timezone offset (we treat the time as UTC
+            # anyway; strptime without %z gives naive UTC).
+            for _sep in ("+00:00", "+0000", "-00:00"):
+                if _s_clean.endswith(_sep):
+                    _s_clean = _s_clean[: -len(_sep)]
+                    break
+            _sd = None
+            for _fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"):
+                try:
+                    _sd = datetime.strptime(_s_clean, _fmt)
+                    break
+                except ValueError:
+                    continue
+            if _sd is not None and _sd > datetime.utcnow():
                 return "pending"
-    except (TypeError, ValueError, AttributeError):
-        # Can't parse the kickoff - fall through to the existing
-        # grading path rather than freeze picks that have a bad
-        # start_time field.
+    except (TypeError, AttributeError):
+        # Can't even look at start_time - fall through to the
+        # existing grading path rather than freeze picks that have
+        # a bad start_time field entirely.
         pass
     if not event:
         return "pending"
