@@ -1852,6 +1852,7 @@ def run_moderator_tick():
     evaluated     = 0
     dnb_or_model  = 0
     already_posted = 0
+    not_unified    = 0  # moderator unified-filter gate (2026-10-29)
     score_hist    = {i: 0 for i in range(11)}        # Evidence (0-10)
     signal_hist   = {i: 0 for i in range(6)}         # Signal (0-5)
     reason_tally  = {"AI+": 0, "Line+": 0, "Kalshi+": 0,
@@ -1859,6 +1860,18 @@ def run_moderator_tick():
     below_thresh  = []
     window_blocked = []
     live_or_done  = 0
+
+    # Unified-filter gate (shipped 2026-10-29). Before this, the
+    # moderator posted picks that cleared its own evidence score bar
+    # but didn't necessarily pass the Unified Filter the main board
+    # uses. The /logged "Discord Posted" record exposed that: Discord
+    # posts over the trailing 7 days ran -5.2% ROI vs the Unified
+    # Filter's +3.0% ROI on the same window. Posting a pick to
+    # Discord that the dashboard would never recommend to a logged-in
+    # user is incoherent — if the board gate is authoritative, the
+    # moderator must honor it. Picks that fail the unified filter are
+    # counted in `not_unified` for diagnostics but never posted.
+    import plays_log as _pl_mod
 
     for row in board:
         for p in row.get("picks") or []:
@@ -1871,6 +1884,17 @@ def run_moderator_tick():
                 if pid:
                     already_posted += 1
                 continue
+            # Must pass the authoritative board filter — otherwise we
+            # 'd be posting a pick the TODAY board itself would hide.
+            try:
+                if not _pl_mod._passes_unified_filter(p):
+                    not_unified += 1
+                    continue
+            except Exception:
+                # If the gate itself errors, fall back to the evidence
+                # bar below so a filter bug doesn't silently freeze all
+                # Discord posting.
+                pass
             score, reasons = compute_evidence_score(p, news_state=news_state)
             evaluated += 1
             score_hist[max(0, min(10, int(score)))] += 1
@@ -1968,6 +1992,7 @@ def run_moderator_tick():
         "board_total_picks":    board_total,
         "dnb_or_model_only":    dnb_or_model,
         "already_posted_today": already_posted,
+        "not_unified_filter":   not_unified,  # Unified gate (2026-10-29)
         "evaluated":            evaluated,
         "live_or_done":         live_or_done,
         "window_blocked_count": len(window_blocked),
