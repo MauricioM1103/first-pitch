@@ -17978,6 +17978,42 @@ main.logged-page { max-width: 1040px; }
     bottom.</p>
   </div>
 
+  {# AT-A-GLANCE strip (shipped 2026-10-29): the Unified Filter
+     records at the top of /logged so the 7-day number isn't
+     buried under Daily P&L / Calibration / CLV / etc. User
+     flagged "I can't find the 7-day record in results." Fixed. #}
+  {% set _ag_7  = summary['unified_7d']  or {} %}
+  {% set _ag_30 = summary['unified_30d'] or {} %}
+  {% set _ag_90 = summary['unified_90d'] or {} %}
+  {% set _ag_all7 = summary['all_7d'] or {} %}
+  <section class="records-section" style="border:2px solid var(--good);border-radius:12px;padding:14px;background:color-mix(in oklab,var(--good) 10%,transparent);margin-bottom:16px">
+    <h2 style="margin:0 0 10px">At a Glance <span style="color:var(--good);font-size:13px">Unified Filter &mdash; what the TODAY board recommends</span></h2>
+    <div class="records-grid" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px">
+      {% for key, label in [('unified_7d','Last 7 days'),('unified_30d','Last 30 days'),('unified_90d','Last 90 days')] %}
+      {% set r = summary[key] %}
+      <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}" style="border-color:var(--good)">
+        <div class="lbl" style="font-weight:700">{{ label }}</div>
+        {% if r.settled %}
+        <div class="wl" style="font-size:28px">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
+        <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
+        {% else %}
+        <div class="wl" style="color:var(--muted);font-size:28px">&mdash;</div>
+        <span class="units" style="color:var(--muted)">no settled picks yet</span>
+        {% endif %}
+        <div class="meta">{{ r.settled }} settled{% if r.pending %} &middot; {{ r.pending }} pending{% endif %}</div>
+      </div>
+      {% endfor %}
+      {% if _ag_all7.settled %}
+      <div class="rec-tile {{ 'good' if _ag_all7.units > 0 else ('bad' if _ag_all7.units < 0 else '') }}" style="border-color:var(--muted-2);opacity:0.85" title="Every settled pick in the last 7 days regardless of filter &mdash; raw baseline, not what the live board recommends.">
+        <div class="lbl" style="font-weight:700">Last 7d <span style="color:var(--muted-2);font-size:10px">(unfiltered)</span></div>
+        <div class="wl" style="font-size:28px">{{ _ag_all7.wins }}-{{ _ag_all7.losses }}{% if _ag_all7.pushes %}-{{ _ag_all7.pushes }}{% endif %}<span class="pct">{{ '%.1f' % _ag_all7.win_pct }}%</span></div>
+        <span class="units">{{ '%+.2f' % _ag_all7.units }}u ({{ '%+.1f' % _ag_all7.roi_pct }}% ROI)</span>
+        <div class="meta">{{ _ag_all7.settled }} settled{% if _ag_all7.pending %} &middot; {{ _ag_all7.pending }} pending{% endif %}</div>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+
   {# Phase 29 (3): 30-day daily P&L sparkline. One bar per day,
      green/red by sign. Hover a bar for the date + units + pick count. #}
   {% if pnl_bars %}
