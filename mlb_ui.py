@@ -5811,13 +5811,28 @@ PICKS_TEMPLATE = r"""<!doctype html>
   {% set linemove_suffix = '&linemove=1' if favorable_move_only else '' %}
   {% set strongest_suffix = '&strongest=1' if strongest_only else '' %}
   {% set ai_suffix = '&ai=1' if ai_only else '' %}
+  {% set mode_suffix = '&mode=volume' if board_mode == 'volume' else '' %}
   {% set sport_suffix  = ('&sport=' ~ sport_filter) if sport_filter != 'all' else '' %}
-  {% set extra_filters = strong_suffix ~ whale_suffix ~ linemove_suffix ~ strongest_suffix ~ ai_suffix %}
+  {% set extra_filters = strong_suffix ~ whale_suffix ~ linemove_suffix ~ strongest_suffix ~ ai_suffix ~ mode_suffix %}
   <div class="filter-chips">
     <a class="chip {% if sport_filter == 'all' %}active{% endif %}" href="/?date={{ date_str }}{{ extra_filters }}">All ({{ total_games }})</a>
     {% for s in sport_counts %}
       <a class="chip {% if sport_filter == s.slug %}active{% endif %}" href="/?date={{ date_str }}&sport={{ s.slug }}{{ extra_filters }}">{{ s.name }} ({{ s.count }})</a>
     {% endfor %}
+    {# Volume-mode toggle (shipped 2026-10-29). Opt-in widening of
+       the Unified Filter from v1 (tight: ~3.4 picks/day, +16.8% ROI
+       on 28-day backtest) to v9 Blend (+2 picks/day, +13.5% ROI,
+       +48% more units cumulatively). The default stays v1. #}
+    <span class="chip-divider" aria-hidden="true"></span>
+    {% if board_mode == 'volume' %}
+      <a class="chip" style="border-color:var(--good);color:var(--good);background:color-mix(in oklab,var(--good) 12%,transparent)"
+         href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ whale_suffix }}{{ linemove_suffix }}{{ strongest_suffix }}{{ ai_suffix }}"
+         title="Volume mode ON (v9 Blend) - adds strong+EV>=5% picks on top of the default filter. Click to return to the default tight filter.">+ Volume mode</a>
+    {% else %}
+      <a class="chip"
+         href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ whale_suffix }}{{ linemove_suffix }}{{ strongest_suffix }}{{ ai_suffix }}&mode=volume"
+         title="Switch to Volume mode (v9 Blend from the 28-day backtest). Adds every strong pick with EV>=5% to the board. More picks per day, slightly lower ROI, more cumulative units. Click again to return.">+ Volume mode</a>
+    {% endif %}
     <span class="chip-divider" aria-hidden="true"></span>
     {# 🔥 STRONGEST — union of Signal 3+ OR Whale OR favorable line move.
        The headline filter the user wanted to combine all premium signals. #}
@@ -6062,18 +6077,24 @@ PICKS_TEMPLATE = r"""<!doctype html>
                        (['linemove']  if _is_linemove else [])
                      }}"
                      title="{{ 'Model-only preference (no EV filter)' if p.model_only else ('🐋 WHALE pick — bankroll-maximum tier: fp ≥ 72%, dec 1.30–1.65, Signal ≥ 4, EV ≥ 1.5%, no risk flags. Size at quarter-to-half Kelly (5–10% of bankroll).' if p.whale else ('High-signal pick (Signal ≥ 3/5): EV cushion + favorable line move + prob floor' if p.strong else 'EV-verified pick')) }}">
-                  {# Filter icon strip (shipped 2026-10-24): one small
-                     icon per filter the pick qualifies for. Hover
-                     any icon for its name. Mirrors the chip row at
-                     the top so the user can see at a glance which
-                     filters would include this pick. #}
+                  {# Pick-level badges (slimmed 2026-10-29). With one
+                     Unified Filter, splitting icons (Strongest /
+                     Filter 2.0 / Line+ / Signal 4-5) are redundant -
+                     every row on the board already qualifies for
+                     the single gate. We keep three badges that
+                     actually change what the user does:
+                       🐋 Whale    → bankroll-max tier staking cue
+                                     (quarter-to-half Kelly vs 1u)
+                       🤖 AI brkdwn → click-affordance for the
+                                     matchup/factors/risks block
+                       🚫 DNB      → safety override (bet is off)
+                     The old Strongest / Filter 2.0 / Line+ chips
+                     move into the detail panel (per-pick drill-down),
+                     not the glanceable row. #}
                   <span class="filter-icons">
-                    {% if _is_strongest_pick %}<span class="fi fi-strongest" title="Strongest filter">&#x1F525;</span>{% endif %}
-                    {% if _is_filter2 %}<span class="fi fi-filter2" title="Filter 2.0 (primary betting filter)">&#9733;</span>{% endif %}
-                    {% if p.whale %}<span class="fi fi-whale" title="Whale pick (bankroll max tier)">&#x1F40B;</span>{% endif %}
-                    {% if _is_ai_endorsed %}<span class="fi fi-ai" title="AI endorsed ({{ p.ai_verdict }})">&#x1F916;</span>{% endif %}
-                    {% if _is_linemove %}<span class="fi fi-linemove" title="Line toward us ≥ +1pp">&uarr;</span>{% endif %}
-                    {% if p.do_not_bet %}<span class="fi fi-dnb" title="DO NOT BET — pick retracted">&#x26D4;</span>{% endif %}
+                    {% if p.whale %}<span class="fi fi-whale" title="Whale pick - bankroll-maximum tier (mc_prob >= 68%, dec 1.50-1.90, EV >= 1.5%). Size at quarter-to-half Kelly, 5-10% of bankroll.">&#x1F40B;</span>{% endif %}
+                    {% if p.ai_matchup or p.ai_factors or p.ai_risks %}<span class="fi fi-ai" title="AI breakdown attached - click the pick to read matchup / key factors / risks">&#x1F916;</span>{% endif %}
+                    {% if p.do_not_bet %}<span class="fi fi-dnb" title="DO NOT BET - pick retracted (news / weather / injury flag)">&#x26D4;</span>{% endif %}
                   </span>
                   <span class="pick-ico {{ p.icon_cls }}">{{ p.icon }}</span>
                   <span class="pick-lbl">{{ p.pick_short }}</span>
@@ -6091,8 +6112,11 @@ PICKS_TEMPLATE = r"""<!doctype html>
                   {% else %}
                     <span class="src-tag ev" title="EV-verified: cleared the +2% expected-value bar after model + Pinnacle devig consensus">EV{% if p.ev_pct and p.ev_pct > 0 %} +{{ '%.0f'|format(p.ev_pct) }}%{% endif %}</span>
                   {% endif %}
-                  {% if p.strong %}<span class="strong-star" title="Signal &ge; 3/5 pick worth placing">&#9733;</span>{% endif %}
-                  {% if p.whale %}<span class="whale-badge" title="&#x1F40B; WHALE pick — bankroll-maximum tier (fp &ge; 72%, dec 1.30&ndash;1.65, Signal &ge; 4, EV &ge; 1.5%). Size this one at quarter-to-half Kelly (5&ndash;10% of bankroll)." style="color:#38bdf8;text-shadow:0 0 14px rgba(56,189,248,0.9);margin-left:6px;font-size:17px;animation:whalePulse 2s ease-in-out infinite">&#x1F40B;</span>{% endif %}
+                  {# strong-star removed 2026-10-29 - Signal >= 3/5
+                     is implied by being on the Unified Filter board.
+                     Whale badge keeps the staking cue + visual
+                     emphasis for the bankroll-max tier. #}
+                  {% if p.whale %}<span class="whale-badge" title="&#x1F40B; WHALE pick - bankroll-maximum tier. Size at quarter-to-half Kelly (5-10% of bankroll)." style="color:#38bdf8;text-shadow:0 0 14px rgba(56,189,248,0.9);margin-left:6px;font-size:17px;animation:whalePulse 2s ease-in-out infinite">&#x1F40B;</span>{% endif %}
                   {% if p.line_move_pp is not none and (p.line_move_pp|abs) >= 0.001 %}
                     {% set move_sign = 'favorable' if p.line_move_pp > 0 else 'adverse' %}
                     <span class="pick-move-chip {{ move_sign }}"
@@ -11280,14 +11304,23 @@ def picks_landing():
         if is_linemove:  n += 1
         if p.get("do_not_bet"): n += 1
         return n
+    # ?mode=volume opts into the v9 Blend from the backtest:
+    # default v1 Unified PLUS any `strong` pick with ev>=5% that
+    # isn't a static-CLV market. 28-day backtest moved volume from
+    # 3.4/day to 5.1/day while holding ROI at +13.5%. Default mode
+    # (v1) stays the ship default at +16.8% ROI / 3.4/day.
+    _board_mode = (request.args.get("mode") or "").strip().lower()
+    if _board_mode not in ("default", "volume"):
+        _board_mode = "default"
+
     def _pick_qualifies_for_board(p):
-        """UNIFIED FILTER (shipped 2026-10-29): a pick qualifies for the
-        board when it passes `(Current Filter v2 - NHL static-CLV) ∪ Whale`.
-        AI endorsement is NOT a selection input — it's attached as
-        context on every qualifying pick. Backtest over 10/15-10/29:
-        54 picks / 15 days, 67.3% hit, +12.1% ROI, auto-caps at ~9/day.
-        The 2+ non-AI icon rule it replaces was too strict (+7.3% ROI)
-        and also false-positived during the line_move_pp save bug."""
+        """UNIFIED FILTER (shipped 2026-10-29, retuned 2026-10-29).
+        A pick qualifies for the board when it passes
+        plays_log._passes_unified_filter(pk, mode). Mode is driven by
+        ?mode=volume on the URL (opt-in Blend) or defaults to the
+        tight v1 Unified.
+        AI endorsement is NOT a selection input - it's attached as
+        context on every qualifying pick."""
         try:
             # Always keep graded picks (W/L/P) for the record view.
             if p.get("result") in ("W", "L", "P"):
@@ -11295,15 +11328,12 @@ def picks_landing():
             # Always keep DNBs so the user can see what was retracted.
             if p.get("do_not_bet"):
                 return True
-            # ALWAYS keep picks whose game is in-flight — a pick that
-            # cleared the filter pre-game shouldn't disappear when the
-            # market moves to in-play. Also covers backfilled picks
-            # pulled from plays_log for live/final rows.
+            # ALWAYS keep picks whose game is in-flight.
             if p.get("_row_status") in ("live", "final"):
                 return True
             # Pre-game: unified filter is the single gate.
             import plays_log as _pl_board
-            return _pl_board._passes_unified_filter(p)
+            return _pl_board._passes_unified_filter(p, mode=_board_mode)
         except Exception:
             return True  # don't 500 on bad fields
     try:
@@ -11746,6 +11776,7 @@ def picks_landing():
         favorable_move_only=favorable_move_only,
         strongest_only=strongest_only,
         ai_only=ai_only,
+        board_mode=_board_mode,
         picks_count=picks_count,
         ev_count=ev_count,
         strong_count=strong_count,

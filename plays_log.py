@@ -2177,37 +2177,79 @@ def _passes_current_filter_v2(pk):
     return False
 
 
-def _passes_unified_filter(pk):
-    """UNIFIED FILTER (shipped 2026-10-29 from 2-week backtest):
+def _passes_unified_filter(pk, mode="default"):
+    """UNIFIED FILTER (shipped 2026-10-29, retuned 2026-10-29).
 
-    `(Current Filter v2 - static-CLV markets) UNION Whale`
+    `(Current Filter v2 - static-CLV markets) UNION Whale`, with
+    per-sport overrides from the 30-day backtest (10/02-10/29):
 
-    Scored across 10/15-10/29 (337 picks, 312 settled):
-      - 54 picks over 15 days (avg 3.6/day, max 9/day)
-      - 35W-17L = 67.3% hit rate
-      - +12.1% ROI, +6.31u
+      * EPL downweight: 28-day backtest showed EPL picks hit 17-28%
+        at -49% ROI across 6-7 picks. Instead of excluding (the user
+        wants to keep covering the league), we tighten the gate:
+        require EV >= 5% AND fair_prob >= 0.60 for any EPL pick to
+        qualify. Whale picks still pass.
 
-    Rules:
-      1. Must pass Current Filter v2 (sig>=3 + ev>=3% / 5% alts +
-         decimal>=1.50 + not model_only + stayed live to kickoff)
-         AND NOT be in a static-CLV market bucket (NHL Team Total,
-         NHL 1H Total - those were dragging the record).
-      OR
-      2. Qualify as a Whale pick (mc_prob>=0.68 + 1.50<=dec<=1.90 +
-         ev>=1.5 + no DNB/weather/injury) regardless of sport/market
-         - whale had 74.2% hit over the window.
+      * NCAAF boost: same backtest showed NCAAF at 76-83% hit, +31%
+        ROI. The gate is loosened to EV >= 2% (instead of the
+        standard 3%) so more of the model's conviction NCAAF picks
+        reach the board.
 
-    Why unified: AI endorsement in isolation LOST money (-5.2% ROI
-    across 57 picks), and layering AI on top of strong flag made it
-    worse (-6.5% ROI). The 2-icon board filter was too strict for
-    picks that should have qualified (+7.3% ROI vs v2's +17.6%).
-    This union captures the two profitable filters and nothing else;
-    AI breakdown is attached as context, not used for selection."""
-    if _passes_current_filter_v2(pk):
-        if not _is_static_clv_market(pk):
-            return True
+    `mode` optionally widens the filter:
+      "default" (ship default) - the v1 Unified filter above.
+      "volume"  - v9 Blend from the backtest. Adds any `strong`
+                  pick with EV >= 5% that isn't static-CLV, which
+                  the 28-day backtest showed grows volume from
+                  3.4/day to 5.1/day while holding ROI at +13.5%
+                  (vs default's +16.8%). Opt-in via ?mode=volume
+                  on the TODAY route for days you want more action.
+
+    Scored across 10/15-10/29 in default mode: 54 picks, 67.3% hit,
+    +12.1% ROI, +6.31u, auto-caps at ~9/day."""
+    sport = (pk.get("sport_slug") or pk.get("sport") or "").lower()
+
+    # Per-sport gate adjustments (apply BEFORE Current Filter v2).
+    if sport == "epl" and not _is_whale_pick(pk):
+        try:
+            if float(pk.get("ev_pct") or 0.0) < 5.0:
+                return False
+            if float(pk.get("fair_prob") or 0.0) < 0.60:
+                return False
+        except (TypeError, ValueError):
+            return False
+    if sport == "ncaaf" and not pk.get("model_only"):
+        try:
+            if float(pk.get("ev_pct") or 0.0) >= 2.0:
+                try:
+                    dec = float(pk.get("decimal") or 0.0)
+                except (TypeError, ValueError):
+                    dec = 0.0
+                if dec >= 1.50 and not _is_static_clv_market(pk):
+                    # Short-circuit as qualifying - skip the stricter
+                    # v2 ev>=3% gate because the backtest earned the
+                    # loosening.
+                    if _was_live_at_game_start(pk):
+                        return True
+        except (TypeError, ValueError):
+            pass
+
+    if _passes_current_filter_v2(pk) and not _is_static_clv_market(pk):
+        return True
     if _is_whale_pick(pk):
         return True
+
+    # Volume mode (v9 Blend) opt-in - broaden to any strong+ev>=5%
+    # pick regardless of other v2 checks. Keeps static CLV exclusion
+    # and model-only exclusion in place.
+    if mode == "volume":
+        if (not pk.get("model_only")
+                and not _is_static_clv_market(pk)
+                and pk.get("strong")):
+            try:
+                if float(pk.get("ev_pct") or 0.0) >= 5.0:
+                    return True
+            except (TypeError, ValueError):
+                pass
+
     return False
 
 
