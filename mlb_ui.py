@@ -5645,38 +5645,30 @@ PICKS_TEMPLATE = r"""<!doctype html>
        are excluded everywhere. The pill order reflects importance:
        Strongest first (the combined filter the user wants headlined),
        then AI, then individual tiers, then Overall at the end. #}
+    {# Slim day-record row (shipped 2026-10-29). Previously the row
+       rendered 5-8 pills (Strongest / Filter 2.0 / AI / 5-5 / 4-5 /
+       3-5 / Discord / Overall) all showing the SAME day's record
+       because every pick qualifies under one Unified Filter now.
+       Collapsed to one Today pill + a whale-count badge when any
+       whale picks are on the slate. #}
     {% if tier_tally and tier_tally.overall.picks %}
+    {% set _ov = tier_tally['overall'] %}
+    {% set _wh = tier_tally.get('whale') or {} %}
     <div class="day-record-row">
-      {% for tier in ['strongest', 'filter2', 'ai', 5, 4, 3, 'discord', 'overall'] %}
-      {% set b = tier_tally[tier] %}
-      {% if b.picks %}
-      <span class="drr-pill drr-{{
-        'strongest' if tier == 'strongest' else (
-          'filter2' if tier == 'filter2' else (
-            'ai' if tier == 'ai' else (
-              'discord' if tier == 'discord' else (
-                'overall' if tier == 'overall' else ('t' ~ tier)
-              )
-            )
-          )
-        )
-      }}">
-        <span class="drr-label">
-          {% if tier == 'strongest' %}&#x1F525; Strongest
-          {% elif tier == 'filter2' %}&#9733; Filter 2.0
-          {% elif tier == 'ai' %}&#x1F916; AI
-          {% elif tier == 'discord' %}&#x1F4E2; Discord
-          {% elif tier == 'overall' %}Today
-          {% else %}{{ tier }}/5{% endif %}
-        </span>
-        <span class="drr-rec">{{ b.W }}&ndash;{{ b.L }}{% if b.P %}&ndash;{{ b.P }}{% endif %}</span>
-        {% if b.settled %}
-          <span class="drr-units {{ 'good' if b.units > 0 else ('bad' if b.units < 0 else '') }}">{{ '%+.2f'|format(b.units) }}u</span>
+      <span class="drr-pill drr-overall">
+        <span class="drr-label">Today</span>
+        <span class="drr-rec">{{ _ov.W }}&ndash;{{ _ov.L }}{% if _ov.P %}&ndash;{{ _ov.P }}{% endif %}</span>
+        {% if _ov.settled %}
+          <span class="drr-units {{ 'good' if _ov.units > 0 else ('bad' if _ov.units < 0 else '') }}">{{ '%+.2f'|format(_ov.units) }}u</span>
         {% endif %}
-        {% if b.pending %}<span class="drr-pending">{{ b.pending }} pending</span>{% endif %}
+        {% if _ov.pending %}<span class="drr-pending">{{ _ov.pending }} pending</span>{% endif %}
+      </span>
+      {% if whale_count %}
+      <span class="drr-pill" style="border-color:#38bdf8;color:#38bdf8;background:color-mix(in oklab,#38bdf8 10%,transparent)" title="{{ whale_count }} whale-tier pick{{ 's' if whale_count != 1 else '' }} on today's board - bankroll-max staking.">
+        <span class="drr-label">&#x1F40B; Whale</span>
+        <span class="drr-rec">{{ whale_count }} on slate</span>
       </span>
       {% endif %}
-      {% endfor %}
     </div>
     {% endif %}
 
@@ -5892,41 +5884,12 @@ PICKS_TEMPLATE = r"""<!doctype html>
   {# Filter guide (shipped 2026-10-23). Collapsible explainer that
      spells out what each chip and each P&L bucket means, and marks
      Filter 2.0 explicitly. Same visual as the AI Picks explainer. #}
-  <details class="ai-picks-explainer collapse-filters">
-    <summary>
-      <span class="aie-icon">&#x1F50D;</span>
-      <span class="aie-title">What each filter means</span>
-      <span class="chev">&rsaquo;</span>
-    </summary>
-    <div class="aie-body">
-      <ul class="models-list">
-        <li>
-          <b style="color:#ef4444">&#x1F525; Strongest</b> &mdash; the headline combined filter. UNION of (Signal 3+) OR (Whale) OR (favorable line move &ge; +0.5pp). DNB excluded. Use this to see every premium signal in one view.
-        </li>
-        <li>
-          <b style="color:#f59e0b">&#9733; Filter 2.0</b> &mdash; <b>the current primary betting filter.</b> Signal composite &ge; 3/5 AND decimal &ge; 1.50 AND not DNB AND not model-only. This is what the TODAY board recommends and what the <a href="/logged" style="color:var(--good)">Current Filter 2.0</a> record on /logged tracks.
-        </li>
-        <li>
-          <b style="color:#38bdf8">&#x1F916; AI only</b> &mdash; the chip version of the AI filter. Shows ONLY picks where Claude Sonnet verdicted <i>Strong Take</i> or <i>Lean</i>, ranked by (verdict &gt; Signal &gt; EV), <b>top half kept</b>. The AI acts as a cross-sport filter instead of an inline tiebreaker: when the chip is active the board shrinks to the highest-conviction AI endorsements across all sports. Also shown in the right-hand AI Picks column on every page and tracked as its own record so AI's own hit rate is visible.
-        </li>
-        <li>
-          <b style="color:#38bdf8">&#x1F40B; Whale picks</b> &mdash; bankroll-max tier. Rules: model prob &ge; 68%, decimal 1.50&ndash;1.90, EV &ge; +1.5%, not DNB, no weather/injury risk flags. Rare but high-conviction &mdash; size at quarter-to-half Kelly (5&ndash;10% of bankroll).
-        </li>
-        <li>
-          <b style="color:#06b6d4">&uarr; Line toward me</b> &mdash; picks where Pinnacle's devigged probability for our side moved &ge; +1pp toward us over the past 3 days. Sharp money agreeing with our model is one of the strongest independent EV signals in the research.
-        </li>
-        <li>
-          <b>5/5 &middot; 4/5 &middot; 3/5 Signal</b> &mdash; buckets by Signal composite score. The composite adds +1 pt for each of: EV cushion &ge; 3% (and +2 for &ge; 6%), favorable line move, prob floor cleared, cross-book agreement, 3+ persistence anchors, Kalshi depth &ge; $5K. 5/5 is the top tier (very rare, ~1 per week).
-        </li>
-        <li>
-          <b style="color:var(--accent, #8b5cf6)">&#x1F3C6; Overall</b> &mdash; every bet-able pick on today's board (model-only + DNB still excluded). Shows the broadest hit rate so you can compare how much the filters actually improved on the baseline.
-        </li>
-      </ul>
-      <p class="aie-foot">
-        <b>DNB (DO NOT BET) picks</b> are excluded from every record. A pick flipped to DNB after posting (signal collapse, decimal &lt; 1.50 after move, AI Avoid verdict, Kalshi contra, etc.) no longer counts against any filter's win rate.
-      </p>
-    </div>
-  </details>
+  {# Removed 2026-10-29: "What each filter means" accordion. With
+     one Unified Filter running the board, there's nothing left to
+     explain here that the Help > How-to accordion above doesn't
+     cover. The old filter definitions (Strongest / Filter 2.0 /
+     Line toward me / 5-5 / 4-5 / 3-5 buckets) are retired display
+     labels. #}
 
   {# AI Picks section (shipped 2026-10-21): picks where Claude Haiku
      endorsed the bet (Strong Take or Lean verdict). Only Signal 4+
@@ -6333,66 +6296,10 @@ PICKS_TEMPLATE = r"""<!doctype html>
   </div>
   {% endif %}
 
-  {# Daily P&L Summary panel (shipped 2026-10-22, trimmed
-     2026-10-29). The old layout had an 8-tile grid + a redundant
-     table mirroring the exact same data. Table removed; tile set
-     narrowed to the 4 filters that actually drive the board:
-     Overall / Unified Filter / Whale / Discord. Signal 3-5 tiers
-     and the standalone AI tile folded into Overall + Unified. #}
-  {% if tier_tally and tier_tally.overall.picks %}
-  <section class="pnl-panel">
-    <div class="pnl-head">
-      <h2>&#x1F4CA; Today&#39;s P&amp;L</h2>
-      <span class="pnl-sub">{{ date_pretty }} &middot; flat 1u stake per bet &middot; model-only + DNB excluded</span>
-    </div>
-    <div class="pnl-tiles">
-      {% for tier in ['overall', 'strongest', 'filter2', 'discord'] %}
-      {% set b = tier_tally[tier] %}
-      <div class="pnl-tile {{
-        'strongest' if tier == 'strongest' else (
-          'filter2' if tier == 'filter2' else (
-            'ai' if tier == 'ai' else (
-              'discord' if tier == 'discord' else (
-                'overall' if tier == 'overall' else ('t' ~ tier)
-              )
-            )
-          )
-        )
-      }}">
-        <div class="pnl-tier">
-          {% if tier == 'strongest' %}&#x1F525; Strongest
-          {% elif tier == 'filter2' %}&#9733; Filter 2.0
-          {% elif tier == 'ai' %}&#x1F916; AI Picks
-          {% elif tier == 'discord' %}&#x1F4E2; Discord Sent
-          {% elif tier == 'overall' %}&#x1F3C6; Overall
-          {% else %}{{ tier }}/5 Signal{% endif %}
-        </div>
-        <div class="pnl-rate">
-          {% if b.win_rate is not none %}{{ '%.0f'|format(b.win_rate) }}%{% else %}&mdash;{% endif %}
-        </div>
-        <div class="pnl-record">
-          {{ b.W }}W &middot; {{ b.L }}L{% if b.P %} &middot; {{ b.P }}P{% endif %}
-          ({{ b.picks }} pick{{ 's' if b.picks != 1 else '' }})
-        </div>
-        {% if b.settled %}
-        <div class="pnl-units {{ 'good' if b.units > 0 else ('bad' if b.units < 0 else '') }}">
-          {{ '%+.2f'|format(b.units) }}u
-        </div>
-        <div class="pnl-roi {{ 'good' if (b.roi_pct or 0) > 0 else ('bad' if (b.roi_pct or 0) < 0 else '') }}">
-          {% if b.roi_pct is not none %}{{ '%+.1f'|format(b.roi_pct) }}% ROI{% else %}&mdash;{% endif %}
-        </div>
-        {% else %}
-        <div class="pnl-units">&mdash;</div>
-        <div class="pnl-roi">no settled picks</div>
-        {% endif %}
-        {% if b.pending %}
-        <div class="pnl-pending">{{ b.pending }} pending</div>
-        {% endif %}
-      </div>
-      {% endfor %}
-    </div>
-  </section>
-  {% endif %}
+  {# Removed 2026-10-29: Today's P&L panel. The slim day-record
+     row at the top of the page now carries the same number
+     (Today W-L -- units -- pending) with no competing tiles. For
+     the full historical breakdown, see /logged. #}
 
   <footer>
     <div>Picks blended per-sport (default 35/65 model/Pinnacle; NFL &amp; NCAAF 30/70, soccer 45/55, UFC 50/50) &middot; one row per game &middot; scan {{ scan_time_ms }} ms</div>
@@ -18019,90 +17926,116 @@ main.logged-page { max-width: 1040px; }
 
   {% if calib_bins or calib_bins_curfilter %}
     <section class="records-section">
-      <h2>Calibration <span style="color:var(--muted);font-size:13px">predicted vs actual hit rate</span></h2>
-      <div class="sub">Each dot is a 5pp probability bucket. Above the 45&deg; line = picks in that band win more than predicted (sandbagging — good). Below = overconfident. Dot size reflects sample count. Side-by-side shows whether the Signal filter is making calibration better than the raw model.</div>
-      <div class="calib-grid">
-        {% if calib_bins %}
-        <div class="calib-chart calib-side">
-          <div class="calib-head">All picks <span class="calib-sub">({{ calib_bins|map(attribute='n')|sum }} graded)</span></div>
-          {{ calib_svg(calib_bins) }}
+      <details style="margin:0">
+        <summary style="list-style:none;cursor:pointer;outline:none">
+          <h2 style="display:inline-block;margin:0">
+            <span style="color:var(--muted-2);font-size:14px">&rsaquo;</span>
+            Calibration <span style="color:var(--muted);font-size:13px">predicted vs actual hit rate</span>
+            <span style="color:var(--muted-2);font-weight:400;font-size:12px">&middot; click to expand</span>
+          </h2>
+        </summary>
+        <div class="sub" style="margin-top:10px">Each dot is a 5pp probability bucket. Above the 45&deg; line = picks in that band win more than predicted (sandbagging &mdash; good). Below = overconfident. Dot size reflects sample count. Side-by-side shows whether the Signal filter is making calibration better than the raw model.</div>
+        <div class="calib-grid">
+          {% if calib_bins %}
+          <div class="calib-chart calib-side">
+            <div class="calib-head">All picks <span class="calib-sub">({{ calib_bins|map(attribute='n')|sum }} graded)</span></div>
+            {{ calib_svg(calib_bins) }}
+          </div>
+          {% endif %}
+          {% if calib_bins_curfilter %}
+          <div class="calib-chart calib-side">
+            <div class="calib-head">Current-filter picks <span class="calib-sub">({{ calib_bins_curfilter|map(attribute='n')|sum }} graded)</span></div>
+            {{ calib_svg(calib_bins_curfilter) }}
+          </div>
+          {% endif %}
         </div>
-        {% endif %}
-        {% if calib_bins_curfilter %}
-        <div class="calib-chart calib-side">
-          <div class="calib-head">Current-filter picks <span class="calib-sub">({{ calib_bins_curfilter|map(attribute='n')|sum }} graded)</span></div>
-          {{ calib_svg(calib_bins_curfilter) }}
-        </div>
-        {% endif %}
-      </div>
+      </details>
     </section>
   {% endif %}
 
-  <div class="persist-status {{ 'ok' if persist_status.enabled else 'warn' }}">
-    {% if persist_status.enabled %}
-      <strong>Persistent storage:</strong> enabled &middot;
-      {{ persist_status.picks_files or 0 }} picks files &middot;
-      {{ persist_status.graded_files or 0 }} graded files in
-      <code>{{ persist_status.repo }}</code> (branch <code>{{ persist_status.branch }}</code>).
-      Snapshots survive Render restarts.
-    {% else %}
-      <strong>Persistent storage disabled.</strong>
-      {{ persist_status.reason or 'GITHUB_TOKEN not set.' }}
-      Set <code>GITHUB_TOKEN</code> on Render (fine-grained PAT with Contents: Read &amp; Write
-      on this repo) so logs survive the next spin-down.
-    {% endif %}
-  </div>
-
-  <div class="persist-status {{ 'ok' if (grader_status.odds_api_enabled or grader_status.espn_enabled) else 'warn' }}">
-    {% if grader_status.odds_api_enabled %}
-      <strong>Grading:</strong> enabled &middot; Odds API scores (all sports) + ESPN scoreboard + MLB statsapi fallback.
-    {% elif grader_status.espn_enabled %}
-      <strong>Grading:</strong> enabled &middot; ESPN scoreboard (free, no key) for every sport, plus MLB statsapi.
-      <code>ODDS_API_KEY</code> isn't set — ESPN handles grading on its own, so picks will still settle without it.
-    {% else %}
-      <strong>Grading:</strong> MLB only (statsapi fallback is live).
-      <code>ODDS_API_KEY</code> is not set, so NFL / NCAAF / NHL / soccer / UFC picks will stay pending
-      until the key is added on Render.
-    {% endif %}
-    {% if grader_status.per_sport %}
-      <div style="margin-top:6px;font-size:11px;color:var(--muted);display:flex;flex-wrap:wrap;gap:10px;align-items:center">
-      {% for slug, info in grader_status.per_sport.items() %}
-        <span title="{{ info.source }}; api key: {{ info.api_key }}{% if info.last_error %} — last error: {{ info.last_error }}{% endif %}">
-          <strong style="color:{% if info.events %}var(--good){% elif info.last_error %}#ef4444{% else %}var(--muted-2){% endif %}">{{ slug }}</strong>
-          <span style="font-variant-numeric:tabular-nums">{{ info.events }} ev</span>
-        </span>
-      {% endfor %}
-      <a href="/logged/regrade" style="margin-left:auto;color:var(--accent);text-decoration:underline;font-size:11px">force re-grade all &rarr;</a>
+  {# Admin status row (shipped 2026-10-29). The 3 persist-status
+     blocks (storage / grading per-sport / odds API usage) are
+     technical info that doesn't need to compete with the primary
+     record for first-screen attention. Wrapped in one <details>
+     and collapsed by default; any warn/bad state (storage
+     disabled, score-feed errors, odds API circuit open) auto-
+     expands so real problems aren't hidden. #}
+  {% set _admin_warn = (not persist_status.enabled)
+      or (not grader_status.odds_api_enabled and not grader_status.espn_enabled)
+      or (odds_usage and odds_usage.key_set and odds_usage.paused) %}
+  <details style="margin:12px 0" {% if _admin_warn %}open{% endif %}>
+    <summary style="list-style:none;cursor:pointer;outline:none;color:var(--muted);font-size:11px;padding:6px 0;display:flex;align-items:center;gap:6px;font-family:'JetBrains Mono',monospace;letter-spacing:0.14em;text-transform:uppercase">
+      <span style="color:var(--muted-2)">&rsaquo;</span>
+      System &middot; storage &middot; grading &middot; API usage
+      {% if _admin_warn %}<span style="color:var(--poor);text-transform:none;letter-spacing:0;font-size:11px">&middot; needs attention</span>{% else %}<span style="color:var(--muted-2);text-transform:none;letter-spacing:0;font-weight:400">&middot; click to expand</span>{% endif %}
+    </summary>
+    <div style="margin-top:8px">
+      <div class="persist-status {{ 'ok' if persist_status.enabled else 'warn' }}">
+        {% if persist_status.enabled %}
+          <strong>Persistent storage:</strong> enabled &middot;
+          {{ persist_status.picks_files or 0 }} picks files &middot;
+          {{ persist_status.graded_files or 0 }} graded files in
+          <code>{{ persist_status.repo }}</code> (branch <code>{{ persist_status.branch }}</code>).
+          Snapshots survive Render restarts.
+        {% else %}
+          <strong>Persistent storage disabled.</strong>
+          {{ persist_status.reason or 'GITHUB_TOKEN not set.' }}
+          Set <code>GITHUB_TOKEN</code> on Render (fine-grained PAT with Contents: Read &amp; Write
+          on this repo) so logs survive the next spin-down.
+        {% endif %}
       </div>
-      {# Explicit error list so API failures are impossible to miss #}
-      {% set err_sports = grader_status.per_sport.items() | selectattr('1.last_error') | list %}
-      {% if err_sports %}
-        <div style="margin-top:6px;font-size:11px;color:#ef4444;line-height:1.5">
-          <strong>Score-feed errors:</strong>
-          {% for slug, info in err_sports %}
-            <div><code>{{ slug }}</code>: {{ info.last_error }}</div>
-          {% endfor %}
-        </div>
-      {% endif %}
-    {% endif %}
-  </div>
 
-  {% if odds_usage and odds_usage.key_set %}
-  <div class="persist-status {{ 'bad' if odds_usage.paused else 'ok' }}">
-    <strong>Odds API usage:</strong>
-    {% if odds_usage.paused %}
-      <span style="color:var(--bad)">circuit open &mdash; API paused ({{ odds_usage.paused_min_left }} min remaining).
-      Monthly cap hit, or key auth failed. DK cross-book chips stay empty until this clears.</span>
-      &middot;
-    {% endif %}
-    {{ odds_usage.hour.credits or 0 }} credits in last hour &middot;
-    {{ odds_usage.day.credits or 0 }} in last 24h &middot;
-    {{ odds_usage.week.credits or 0 }} in last 7d &middot;
-    {{ odds_usage.month.credits or 0 }} in last 30d &middot;
-    cache TTL {{ odds_usage.ttl_minutes }} min &middot; markets: h2h only.
-    MC + AI dropdowns do not hit the Odds API — Pinnacle covers them.
-  </div>
-  {% endif %}
+      <div class="persist-status {{ 'ok' if (grader_status.odds_api_enabled or grader_status.espn_enabled) else 'warn' }}">
+        {% if grader_status.odds_api_enabled %}
+          <strong>Grading:</strong> enabled &middot; Odds API scores (all sports) + ESPN scoreboard + MLB statsapi fallback.
+        {% elif grader_status.espn_enabled %}
+          <strong>Grading:</strong> enabled &middot; ESPN scoreboard (free, no key) for every sport, plus MLB statsapi.
+          <code>ODDS_API_KEY</code> isn't set &mdash; ESPN handles grading on its own, so picks will still settle without it.
+        {% else %}
+          <strong>Grading:</strong> MLB only (statsapi fallback is live).
+          <code>ODDS_API_KEY</code> is not set, so NFL / NCAAF / NHL / soccer / UFC picks will stay pending
+          until the key is added on Render.
+        {% endif %}
+        {% if grader_status.per_sport %}
+          <div style="margin-top:6px;font-size:11px;color:var(--muted);display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+          {% for slug, info in grader_status.per_sport.items() %}
+            <span title="{{ info.source }}; api key: {{ info.api_key }}{% if info.last_error %} - last error: {{ info.last_error }}{% endif %}">
+              <strong style="color:{% if info.events %}var(--good){% elif info.last_error %}#ef4444{% else %}var(--muted-2){% endif %}">{{ slug }}</strong>
+              <span style="font-variant-numeric:tabular-nums">{{ info.events }} ev</span>
+            </span>
+          {% endfor %}
+          <a href="/logged/regrade" style="margin-left:auto;color:var(--accent);text-decoration:underline;font-size:11px">force re-grade all &rarr;</a>
+          </div>
+          {% set err_sports = grader_status.per_sport.items() | selectattr('1.last_error') | list %}
+          {% if err_sports %}
+            <div style="margin-top:6px;font-size:11px;color:#ef4444;line-height:1.5">
+              <strong>Score-feed errors:</strong>
+              {% for slug, info in err_sports %}
+                <div><code>{{ slug }}</code>: {{ info.last_error }}</div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        {% endif %}
+      </div>
+
+      {% if odds_usage and odds_usage.key_set %}
+      <div class="persist-status {{ 'bad' if odds_usage.paused else 'ok' }}">
+        <strong>Odds API usage:</strong>
+        {% if odds_usage.paused %}
+          <span style="color:var(--bad)">circuit open &mdash; API paused ({{ odds_usage.paused_min_left }} min remaining).
+          Monthly cap hit, or key auth failed. DK cross-book chips stay empty until this clears.</span>
+          &middot;
+        {% endif %}
+        {{ odds_usage.hour.credits or 0 }} credits in last hour &middot;
+        {{ odds_usage.day.credits or 0 }} in last 24h &middot;
+        {{ odds_usage.week.credits or 0 }} in last 7d &middot;
+        {{ odds_usage.month.credits or 0 }} in last 30d &middot;
+        cache TTL {{ odds_usage.ttl_minutes }} min &middot; markets: h2h only.
+        MC + AI dropdowns do not hit the Odds API &mdash; Pinnacle covers them.
+      </div>
+      {% endif %}
+    </div>
+  </details>
 
   {# Closing-Line Value is the primary skill indicator (research:
      "a long record of no-bet outputs and small positive CLV is the
