@@ -3087,18 +3087,18 @@ details.also-wrap .today-card { opacity: 0.88; }
   </details>
   {% endif %}
 
-  {# Daily P&L Summary panel (shipped 2026-10-22). Per-Signal-tier
-     record breakdown at the bottom of TODAY — four tiles for 5/5,
-     4/5, 3/5, Overall + a compact table below. Hidden entirely
-     when no bet-able picks exist today. #}
+  {# Daily P&L Summary panel (slimmed 2026-10-29). Four tiles for
+     the filters that actually drive the board: Overall, Unified
+     Filter / Strongest, Filter 2.0, Discord Sent. The old redundant
+     table + Signal 3-5 tier split were removed. #}
   {% if tier_tally and tier_tally.overall.picks %}
   <section class="pnl-panel">
     <div class="pnl-head">
-      <h2>&#x1F4CA; Daily P&amp;L Summary</h2>
+      <h2>&#x1F4CA; Today&#39;s P&amp;L</h2>
       <span class="pnl-sub">{{ date_pretty }} &middot; flat 1u stake per bet &middot; model-only + DNB excluded</span>
     </div>
     <div class="pnl-tiles">
-      {% for tier in ['strongest', 'filter2', 'ai', 5, 4, 3, 'discord', 'overall'] %}
+      {% for tier in ['overall', 'strongest', 'filter2', 'discord'] %}
       {% set b = tier_tally[tier] %}
       <div class="pnl-tile {{
         'strongest' if tier == 'strongest' else (
@@ -3143,56 +3143,6 @@ details.also-wrap .today-card { opacity: 0.88; }
       </div>
       {% endfor %}
     </div>
-    <div class="pnl-table-wrap"><table class="pnl-table">
-      <thead>
-        <tr>
-          <th>Filter</th>
-          <th>Picks</th>
-          <th>Wins</th>
-          <th>Losses</th>
-          <th>Push</th>
-          <th>Win rate</th>
-          <th>Units P&amp;L</th>
-          <th>ROI</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for tier in ['strongest', 'filter2', 'ai', 5, 4, 3, 'discord', 'overall'] %}
-        {% set b = tier_tally[tier] %}
-        <tr>
-          <td class="pnl-row-tier {{
-            'strongest' if tier == 'strongest' else (
-              'filter2' if tier == 'filter2' else (
-                'ai' if tier == 'ai' else (
-                  'discord' if tier == 'discord' else (
-                    'overall' if tier == 'overall' else ('t' ~ tier)
-                  )
-                )
-              )
-            )
-          }}">
-            {% if tier == 'strongest' %}&#x1F525; STRONGEST
-            {% elif tier == 'filter2' %}&#9733; FILTER 2.0
-            {% elif tier == 'ai' %}&#x1F916; AI
-            {% elif tier == 'discord' %}&#x1F4E2; DISCORD
-            {% elif tier == 'overall' %}ALL
-            {% else %}{{ tier }}/5{% endif %}
-          </td>
-          <td class="num">{{ b.picks }}</td>
-          <td class="num good">{{ b.W }}</td>
-          <td class="num bad">{{ b.L }}</td>
-          <td class="num">{% if b.P %}{{ b.P }}{% else %}&mdash;{% endif %}</td>
-          <td class="num">{% if b.win_rate is not none %}{{ '%.0f'|format(b.win_rate) }}%{% else %}&mdash;{% endif %}</td>
-          <td class="num {{ 'good' if b.units > 0 else ('bad' if b.units < 0 else '') }}">
-            {% if b.settled %}{{ '%+.2f'|format(b.units) }}u{% else %}&mdash;{% endif %}
-          </td>
-          <td class="num {{ 'good' if (b.roi_pct or 0) > 0 else ('bad' if (b.roi_pct or 0) < 0 else '') }}">
-            {% if b.roi_pct is not none %}{{ '%+.1f'|format(b.roi_pct) }}%{% else %}&mdash;{% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table></div>
   </section>
   {% endif %}
 
@@ -5730,10 +5680,18 @@ PICKS_TEMPLATE = r"""<!doctype html>
     </div>
     {% endif %}
 
-    {# Collapsible "How AI Picks work" explainer (shipped 2026-10-23).
-       Default collapsed so returning users see the board immediately.
-       Replaces the old ev-callout + verbose sub text — the detail
-       lives here now, out of the way until requested. #}
+    {# Help & How-To accordion (shipped 2026-10-29). Previously three
+       separate explainer boxes stacked vertically on the TODAY page.
+       Wrapped in a single outer <details> so returning users don't
+       scroll past three help cards every time; expand once to see
+       all three. #}
+    <details class="help-wrap" style="margin:4px 0 14px">
+      <summary style="list-style:none;cursor:pointer;outline:none;color:var(--muted);font-size:13px;padding:6px 0;display:flex;align-items:center;gap:6px">
+        <span style="color:var(--muted-2)">&rsaquo;</span>
+        <span style="font-family:'JetBrains Mono',monospace;letter-spacing:0.14em;text-transform:uppercase;font-size:11px">Help &middot; How-to</span>
+        <span style="color:var(--muted-2);font-weight:400">&middot; click to expand</span>
+      </summary>
+      <div style="margin-top:8px">
     <details class="ai-picks-explainer">
       <summary>
         <span class="aie-icon">&#x1F916;</span>
@@ -5825,6 +5783,8 @@ PICKS_TEMPLATE = r"""<!doctype html>
           <b class="pick-conf-inline c1">1/5</b> &lt;52%.
           Per-sport consensus (default 35/65 model/Pinnacle; NFL &amp; NCAAF 30/70, soccer 45/55, UFC 50/50).
         </p>
+      </div>
+    </details>
       </div>
     </details>
   </div>
@@ -6349,18 +6309,20 @@ PICKS_TEMPLATE = r"""<!doctype html>
   </div>
   {% endif %}
 
-  {# Daily P&L Summary panel (shipped 2026-10-22). Matches the
-     reference layout: per-Signal-tier tiles (5/5, 4/5, 3/5, Overall)
-     up top, each with hit rate + record + units P&L + ROI. Compact
-     table below repeats the same cuts in rows. #}
+  {# Daily P&L Summary panel (shipped 2026-10-22, trimmed
+     2026-10-29). The old layout had an 8-tile grid + a redundant
+     table mirroring the exact same data. Table removed; tile set
+     narrowed to the 4 filters that actually drive the board:
+     Overall / Unified Filter / Whale / Discord. Signal 3-5 tiers
+     and the standalone AI tile folded into Overall + Unified. #}
   {% if tier_tally and tier_tally.overall.picks %}
   <section class="pnl-panel">
     <div class="pnl-head">
-      <h2>&#x1F4CA; Daily P&amp;L Summary</h2>
+      <h2>&#x1F4CA; Today&#39;s P&amp;L</h2>
       <span class="pnl-sub">{{ date_pretty }} &middot; flat 1u stake per bet &middot; model-only + DNB excluded</span>
     </div>
     <div class="pnl-tiles">
-      {% for tier in ['strongest', 'filter2', 'ai', 5, 4, 3, 'discord', 'overall'] %}
+      {% for tier in ['overall', 'strongest', 'filter2', 'discord'] %}
       {% set b = tier_tally[tier] %}
       <div class="pnl-tile {{
         'strongest' if tier == 'strongest' else (
@@ -6405,56 +6367,6 @@ PICKS_TEMPLATE = r"""<!doctype html>
       </div>
       {% endfor %}
     </div>
-    <div class="pnl-table-wrap"><table class="pnl-table">
-      <thead>
-        <tr>
-          <th>Filter</th>
-          <th>Picks</th>
-          <th>Wins</th>
-          <th>Losses</th>
-          <th>Push</th>
-          <th>Win rate</th>
-          <th>Units P&amp;L</th>
-          <th>ROI</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for tier in ['strongest', 'filter2', 'ai', 5, 4, 3, 'discord', 'overall'] %}
-        {% set b = tier_tally[tier] %}
-        <tr>
-          <td class="pnl-row-tier {{
-            'strongest' if tier == 'strongest' else (
-              'filter2' if tier == 'filter2' else (
-                'ai' if tier == 'ai' else (
-                  'discord' if tier == 'discord' else (
-                    'overall' if tier == 'overall' else ('t' ~ tier)
-                  )
-                )
-              )
-            )
-          }}">
-            {% if tier == 'strongest' %}&#x1F525; STRONGEST
-            {% elif tier == 'filter2' %}&#9733; FILTER 2.0
-            {% elif tier == 'ai' %}&#x1F916; AI
-            {% elif tier == 'discord' %}&#x1F4E2; DISCORD
-            {% elif tier == 'overall' %}ALL
-            {% else %}{{ tier }}/5{% endif %}
-          </td>
-          <td class="num">{{ b.picks }}</td>
-          <td class="num good">{{ b.W }}</td>
-          <td class="num bad">{{ b.L }}</td>
-          <td class="num">{% if b.P %}{{ b.P }}{% else %}&mdash;{% endif %}</td>
-          <td class="num">{% if b.win_rate is not none %}{{ '%.0f'|format(b.win_rate) }}%{% else %}&mdash;{% endif %}</td>
-          <td class="num {{ 'good' if b.units > 0 else ('bad' if b.units < 0 else '') }}">
-            {% if b.settled %}{{ '%+.2f'|format(b.units) }}u{% else %}&mdash;{% endif %}
-          </td>
-          <td class="num {{ 'good' if (b.roi_pct or 0) > 0 else ('bad' if (b.roi_pct or 0) < 0 else '') }}">
-            {% if b.roi_pct is not none %}{{ '%+.1f'|format(b.roi_pct) }}%{% else %}&mdash;{% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table></div>
   </section>
   {% endif %}
 
@@ -18201,41 +18113,12 @@ main.logged-page { max-width: 1040px; }
      keys remain populated in summary for back-compat with any
      embedded dashboards or API consumers. #}
 
-  {# PRIMARY RECORD: Unified Filter (shipped 2026-10-29). This is
-     the single filter the TODAY board uses now. Previously there
-     were three overlapping sections (Current Filter 2.0 + Signal>=3
-     + Current-Filter Backtest) all showing variants of the same
-     math — those were collapsed into this one tile. #}
-  <section class="records-section" style="border:2px solid var(--good);border-radius:12px;padding:14px;background:color-mix(in oklab,var(--good) 7%,transparent)">
-    <h2>Unified Filter <span style="color:var(--good);font-size:13px">live default &mdash; what the TODAY board recommends</span></h2>
-    <div class="sub">
-      <strong>(Current Filter v2 &minus; static-CLV markets) &cup; Whale.</strong>
-      A pick qualifies when it either (a) passes CF v2 &mdash; Signal composite &ge; 3,
-      EV &ge; 3% (5% for alts), not model-only, decimal &ge; 1.50, stayed live
-      to kickoff &mdash; AND is NOT in a static-CLV market bucket (NHL Team Total,
-      NHL 1H Total), OR (b) qualifies as a Whale (mc_prob &ge; 0.68, 1.50 &le; dec
-      &le; 1.90, EV &ge; 1.5%, no DNB/weather/injury).
-      <span style="color:var(--muted-2)">Backtest 10/15-10/29: 54 picks over 15 days, 67.3% hit, +12.1% ROI, auto-caps at &sim;9/day.</span>
-    </div>
-    <div class="records-grid">
-      {% set _uni_7_settled = (summary['unified_7d'] or {}).settled %}
-      {% for key, label in [('unified_7d','Last 7 days'),('unified_30d','Last 30 days'),('unified_90d','Last 90 days')] %}
-      {% set r = summary[key] %}
-      {% set _dup = (key != 'unified_7d' and r.settled and _uni_7_settled and r.settled == _uni_7_settled) %}
-      <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}" style="border-color:var(--good)">
-        <div class="lbl">{{ label }}{% if _dup %} <span style="color:var(--muted-2);font-size:10px;font-weight:400;letter-spacing:0" title="Same settled count as Last 7 days — history doesn't extend further yet.">(insufficient history)</span>{% endif %}</div>
-        {% if r.settled %}
-        <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
-        <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
-        {% else %}
-        <div class="wl" style="color:var(--muted)">&mdash;</div>
-        <span class="units" style="color:var(--muted)">&mdash;</span>
-        {% endif %}
-        <div class="meta">{{ r.settled }} settled{% if r.pending %} &middot; {{ r.pending }} pending{% endif %}</div>
-      </div>
-      {% endfor %}
-    </div>
-  </section>
+  {# Removed 2026-10-29: deeper Unified Filter section (duplicate
+     of At a Glance at top). The At a Glance strip at the top
+     already surfaces unified_7d/30d/90d with large numbers; the
+     filter definition is documented in the hover-help on each tile
+     and in the Help accordion on /. Keeping two copies of the same
+     record just confused the layout. #}
 
   <section class="records-section" style="border:1px solid #38bdf8;border-radius:12px;padding:14px;background:color-mix(in oklab,#38bdf8 6%,transparent)">
     <h2>&#x1F40B; Whale Picks <span style="color:#38bdf8;font-size:13px">bankroll-maximum tier</span></h2>
@@ -18324,17 +18207,20 @@ main.logged-page { max-width: 1040px; }
   </section>
   {% endif %}
 
-  {# Discord Posted record — picks that were actually sent to the
-     Discord channel's daily slates. Shows how the top-5 selection
-     is performing vs. the broader current filter above. #}
+  {# Discord Posted record — the record for EVERY pick posted to
+     Discord, union of the slate top-5 dispatcher log and the
+     moderator's per-pick post log. User asked 2026-10-29 to show
+     the record for all discord picks, not just top-5. #}
   {% if discord_summary %}
-  <section class="records-section">
-    <h2>Discord Posted <span style="color:#7289da;font-size:13px">top-5 picks sent to Discord each slate</span></h2>
+  <section class="records-section" style="border:1px solid #7289da;border-radius:12px;padding:14px;background:color-mix(in oklab,#7289da 5%,transparent)">
+    <h2>Discord Posted <span style="color:#7289da;font-size:13px">every pick sent to Discord &mdash; slate + moderator posts</span></h2>
     <div class="sub">
-      Only the picks that made it out of the Discord dispatcher's top-5
-      per slate. Compare these numbers to Current Filter above — if
-      Discord is beating the broader filter, the top-5 selection is
-      adding real value on top of the Signal 3.5 bar.
+      Union of all picks that reached the Discord channel &mdash; the
+      moderator's per-pick posts plus any legacy slate top-5
+      dispatches. Compare to the Unified Filter record above: if
+      Discord numbers are better, the per-pick moderator is picking
+      strong winners; if worse, we're posting picks that don't earn
+      their spot.
     </div>
     <div class="records-grid">
       {% set _d7_settled = (discord_summary['discord_7d'] or {}).settled %}
@@ -22049,15 +21935,48 @@ def logged_plays():
         kalshi_summary = None
         kalshi_recent  = []
 
-    # Discord-posted record summary — mirror of plays_log.summary's
-    # curfilter_7d/30d/90d, filtered to pick ids that were actually
-    # sent to the Discord channel's daily slates.
+    # Discord-posted record summary — EVERY pick that was sent to
+    # Discord, pulled from BOTH log sources:
+    #   - discord_posted.json         (old slate top-5 dispatcher)
+    #   - discord_posted_individual.json (per-pick moderator posts)
+    # Prior version only read the slate top-5 log, which hid the
+    # moderator's individual-pick posts from the record. User asked
+    # 2026-10-29 to show the record for ALL picks sent to Discord,
+    # not just top-5.
     def _dsummary():
         from datetime import timedelta as _td
         windows = {"discord_7d": 7, "discord_30d": 30, "discord_90d": 90}
         out = {}
         today_d = datetime.now(CENTRAL).date()
-        posted = _load_discord_posted_log()
+        # Build a unified date -> set of pick_ids from both sources.
+        posted_slate = _load_discord_posted_log() or {}
+        posted_by_date = {}
+        for ds, pids in (posted_slate or {}).items():
+            posted_by_date.setdefault(ds, set()).update(pids or [])
+        # Moderator per-pick posts (keyed pick_id -> {posted_at: ISO}).
+        try:
+            import agents as _ag_dp
+            _ind = _ag_dp._load_posted_state() or {}
+            for pid, meta in _ind.items():
+                _pa = (meta or {}).get("posted_at") or ""
+                # Fallback to graded-file date-lookup if posted_at missing.
+                if _pa:
+                    try:
+                        # Normalise to local-day ISO
+                        _d_iso = _pa[:10]  # 2026-10-29T...
+                        posted_by_date.setdefault(_d_iso, set()).add(pid)
+                        continue
+                    except Exception:
+                        pass
+                # No posted_at — search graded files for this pid.
+                for ds, picks in (graded_by_date or {}).items():
+                    if any(p.get("id") == pid for p in picks):
+                        posted_by_date.setdefault(ds, set()).add(pid)
+                        break
+        except Exception:
+            pass
+        # Convert sets to lists so the loop downstream iterates them.
+        posted = {ds: list(pids) for ds, pids in posted_by_date.items()}
         for key, days in windows.items():
             w = l = pu = pend = 0
             units = 0.0
