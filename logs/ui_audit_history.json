@@ -1,84 +1,6 @@
 [
   {
-    "ran_at": "2026-10-27T07:03:45.756012Z",
-    "today": "2026-10-27",
-    "findings": [
-      {
-        "kind": "fewer_than_2_icons",
-        "severity": "WARNING",
-        "detail": "6 board picks have < 2 non-AI icons"
-      }
-    ],
-    "finding_count": 1,
-    "analysis": "=== DAILY UI AUDIT ===\n\n**OVERALL:** Data looks healthy. 18 board rows, 12 picks logged, all 12 pending, which is expected at 07:03 UTC before kickoffs. One WARNING on icon coverage.\n\n**FINDINGS:**\n- WARNING \u00b7 fewer_than_2_icons \u00b7 6 of 18 board picks show fewer than 2 non-AI icons. This is likely missing signal or badge data, or an icon-builder that silently drops icons when its inputs are null.\n\n=== PASTE-READY PROMPT ===\n\n```\nFix the daily UI audit WARNING: `fewer_than_2_icons`. Today (2026-10-27), 6 of 18 board picks have fewer than 2 non-AI icons.\n\nContext: the audit check named `fewer_than_2_icons` counts non-AI icons per board pick and flags any pick with fewer than 2. Find it by grepping for that string, then find the icon-building code it inspects.\n\nSteps:\n1. Locate the audit check (grep `fewer_than_2_icons`) and the board icon-generation code path (the function that assembles the icons/badges for each board row). Note the file names in your reply.\n2. Identify the 6 offending picks from today's board data. Print each pick's ID/name and its icon list, plus the source fields that feed each icon (e.g. trend, matchup, injury, odds-movement, or whatever inputs exist).\n3. Determine the root cause for each, which is one of:\n   a. Source data is missing or null, so the icon is silently skipped. Fix the upstream data join or population, or add a fallback.\n   b. The icon logic has a threshold or condition that is too strict, or a bug. Fix the logic.\n   c. The pick legitimately has fewer than 2 qualifying signals. In that case do NOT fabricate icons or default values. Either adjust the audit rule to exempt this case, with a clear comment, or render an explicit \"limited data\" indicator so the UI isn't misleading.\n4. Do not pad icons with placeholder or defaulted values shown as real signals.\n5. Re-run the audit and confirm that `fewer_than_2_icons` is 0, or that remaining cases are explained by 3c. Report the before and after counts.\n\nWhen done: commit with a clear message (e.g. \"Fix fewer_than_2_icons: <root cause>\"), push, and bust the UI/board cache so the dashboard reflects the fix. Confirm the cache bust succeeded.\n```"
-  },
-  {
-    "ran_at": "2026-10-27T08:49:21.135234Z",
-    "today": "2026-10-27",
-    "findings": [
-      {
-        "kind": "fewer_than_2_icons",
-        "severity": "WARNING",
-        "detail": "4 board picks have < 2 non-AI icons"
-      }
-    ],
-    "finding_count": 1,
-    "analysis": "## DAILY UI AUDIT\n\n**OVERALL:** Data health is mostly clean. 14 picks are logged and all pending, which is normal for 08:49 UTC before kickoffs. One WARNING on icon coverage.\n\n**FINDINGS:**\n- **WARNING \u00b7 fewer_than_2_icons** \u00b7 4 of the board picks show fewer than 2 non-AI icons. This is likely a missing-field or defaulted-value problem in the icon/signal rendering, not a real absence of signals.\n\nNote (not a finding): board_rows is 18 and picks_logged is 14. This is probably expected if the board includes non-pick rows, but it's worth a quick check if the gap isn't explained.\n\n---\n\n## PASTE-READY PROMPT\n\n```\nFix the daily UI audit WARNING: `fewer_than_2_icons` (4 board picks on 2026-10-27 have <2 non-AI icons).\n\n1. Locate the audit check: grep for `fewer_than_2_icons` in the audit script. Confirm what counts as a \"non-AI icon\" and which board field it reads.\n\n2. Identify the 4 offending picks. Query today's board rows (18 rows, 14 logged picks) and list each pick ID, the icons it has, and the source fields behind them. Report which of these is the cause:\n   a. The upstream signal data is missing or null for those picks. Fix the pipeline step that populates the field. If the data is truly unavailable, render nothing rather than a defaulted icon.\n   b. The icon-building code drops or collapses icons (dedupe bug, bad null handling, a defaulted value treated as absent). Fix the icon-builder logic in the board render path.\n   c. The audit rule is too strict for a legitimate case (for example, pick types that structurally can't have 2 icons). Adjust the check to exempt those types, with a comment explaining why.\n\n3. Do not pad icons with placeholders or defaults to satisfy the check. A missing signal should stay missing.\n\n4. Re-run the daily UI audit and confirm `fewer_than_2_icons` no longer fires, or fires only for picks that are justified. Also confirm that board_rows (18) vs picks_logged (14) is explained by non-pick rows. Flag it if not.\n\n5. Commit with a clear message (e.g. \"fix: icon coverage on board picks (fewer_than_2_icons)\"), push, and bust the UI cache so the dashboard reflects the fix.\n```"
-  },
-  {
-    "ran_at": "2026-10-28T07:05:02.425082Z",
-    "today": "2026-10-28",
-    "findings": [
-      {
-        "kind": "fewer_than_2_icons",
-        "severity": "WARNING",
-        "detail": "7 board picks have < 2 non-AI icons"
-      }
-    ],
-    "finding_count": 1,
-    "analysis": "=== DAILY UI AUDIT ===\n\n**OVERALL:** Data looks healthy. 20 board rows, 10 picks logged, all 10 pending with 0 settled, which is expected at 07:05 UTC before kickoffs. The only issue is an icon-coverage gap on the board.\n\n**FINDINGS:**\n- **WARNING \u00b7 fewer_than_2_icons** \u00b7 7 of 20 board picks show fewer than 2 non-AI icons. This is probably a missing signal/badge field or a defaulted value that isn't rendering.\n\n=== PASTE-READY PROMPT ===\n\n```\nThe daily UI audit flagged one WARNING for 2026-10-28:\n\nkind: fewer_than_2_icons\ndetail: \"7 board picks have < 2 non-AI icons\" (board_rows=20)\n\nGoal: find out why 7 board picks render with fewer than 2 non-AI icons, and fix the root cause. Don't just loosen the check.\n\nSteps:\n1. Locate the audit check that emits `fewer_than_2_icons` (grep for that string). Note which icon sources it counts as \"non-AI\" and its threshold logic.\n2. Find the board-rendering code path that assembles icons per pick (the icon/badge builder the check reads from). List the 7 affected picks for today's board and print each one's icon inputs: which fields are null, missing, or defaulted.\n3. Diagnose which of these applies:\n   a. An upstream field is missing or not populated for these picks (e.g. a signal or context field that never got written). Fix at the source or add a correct fallback.\n   b. The icon builder drops an icon when a value is null or defaulted. Fix it to render correctly, or to hide only when the data is truly absent.\n   c. The audit's \"non-AI icon\" classification is wrong or stale, for example an icon type that isn't counted. Fix the check only if the icons are genuinely present and valid.\n4. Don't fabricate icons or show defaulted values as real signals. If data is truly unavailable, leave the icon off and make sure the audit distinguishes \"data unavailable\" from \"bug\".\n5. Add or update a test covering a pick with null or partial icon inputs.\n6. Re-run the UI audit and confirm `fewer_than_2_icons` is cleared, or that any remaining instances are explained by genuinely missing data. Report which of 3a, 3b or 3c was the cause.\n\nWhen done: commit with a clear message referencing `fewer_than_2_icons`, push, and bust the cache so the dashboard serves the updated board.\n```"
-  },
-  {
-    "ran_at": "2026-10-28T09:10:32.997961Z",
-    "today": "2026-10-28",
-    "findings": [
-      {
-        "kind": "fewer_than_2_icons",
-        "severity": "WARNING",
-        "detail": "6 board picks have < 2 non-AI icons"
-      }
-    ],
-    "finding_count": 1,
-    "analysis": "=== DAILY UI AUDIT ===\n\n**OVERALL:** Data health is mostly clean. Counts are consistent (10 picks logged, 10 pending, 0 settled, which is expected at 09:10 UTC before kickoff). One WARNING on icon coverage.\n\n**FINDINGS:**\n- WARNING \u00b7 fewer_than_2_icons \u00b7 6 of the board picks show fewer than 2 non-AI icons. Either icon signals are missing upstream or the renderer is dropping or defaulting them.\n\n=== PASTE-READY PROMPT ===\n\n```\nFix the WARNING from today's UI audit (2026-10-28): kind `fewer_than_2_icons`.\n6 board picks have < 2 non-AI icons.\n\nContext: The audit check `fewer_than_2_icons` flags any board pick with fewer\nthan 2 non-AI icons. Find that check in the audit module, and find the code\nthat builds the icon list for each board pick (the board renderer or\nserializer).\n\nSteps:\n1. Locate the `fewer_than_2_icons` check and the icon-building code path it\n   inspects. Confirm which icon sources count as \"non-AI\" (e.g. line\n   movement, sharp money, injuries, weather, trends, rest/travel).\n2. Pull today's board (2026-10-28) and identify the 6 flagged picks. For each,\n   print the pick ID, the icon list, and the raw input fields behind each icon.\n3. Diagnose the root cause for each pick. Is it:\n   a) an upstream data field missing or null (fix the ingestion or join),\n   b) icon logic with a threshold or condition that is too strict or has a\n      bad default (fix the logic), or\n   c) a legitimate case where fewer than 2 signals apply (then adjust the\n      audit check to avoid false positives, e.g. exempt picks with\n      insufficient data, and do NOT fabricate icons)?\n4. Do not pad icons with defaulted or placeholder values. Only show icons\n   backed by real data.\n5. Add a unit test covering the fixed case, plus a regression test that\n   asserts every board pick either has >= 2 non-AI icons or is explicitly\n   exempt.\n6. Re-run the UI audit and confirm `fewer_than_2_icons` is cleared or\n   justified.\n\nWhen done: commit with a clear message referencing `fewer_than_2_icons`, push\nto main, and bust the board/UI cache so the dashboard reflects the fix.\nReport the root cause and the final audit output.\n```"
-  },
-  {
-    "ran_at": "2026-10-29T07:04:55.623773Z",
-    "today": "2026-10-29",
-    "findings": [
-      {
-        "kind": "fewer_than_2_icons",
-        "severity": "WARNING",
-        "detail": "7 board picks have < 2 non-AI icons"
-      }
-    ],
-    "finding_count": 1,
-    "analysis": "=== DAILY UI AUDIT ===\n\n**OVERALL:** Data health is mostly fine. The audit ran at 07:04 UTC, so 0 settled and 14 pending is expected. One WARNING: 7 of 17 board rows have thin icon/signal coverage.\n\n**FINDINGS:**\n- **WARNING \u00b7 fewer_than_2_icons** \u00b7 7 board picks have fewer than 2 non-AI icons. This is either a missing-field problem (icon inputs not populated or not joined) or the UI rendering fewer badges than the data supports. The 17 board rows vs 14 logged picks is not flagged, so it is treated as normal.\n\n=== PASTE-READY PROMPT ===\n\n```\nFix today's UI audit WARNING: kind `fewer_than_2_icons`\n(\"7 board picks have < 2 non-AI icons\", date 2026-10-29, 17 board rows).\n\nContext: the audit check named `fewer_than_2_icons` counts board picks that\nrender fewer than 2 non-AI icons. Either the icon inputs are missing or not\njoined for those picks, or the icon builder drops icons it should show.\nDon't suppress the check or lower the threshold.\n\nSteps:\n1. Locate the audit check that emits `fewer_than_2_icons` (grep for the\n   string) and the icon-building function it reads from (the code that\n   assembles the per-pick icon/badge list on the board).\n2. Identify the 7 affected picks for 2026-10-29. Log each pick's ID and\n   which icon source fields are null, empty, or defaulted (e.g. trend,\n   situational, sharp/line-move, injury, or weather flags, whichever\n   exist).\n3. Determine the root cause:\n   a. Upstream field missing, not joined, or stale cache: fix the\n      join/enrichment so the fields populate. Don't render defaulted\n      values as real signals.\n   b. Icon builder wrongly filters or drops icons (bad condition, wrong\n      key, AI icon counted in the wrong bucket): fix the logic.\n   c. Legitimately no signals for a pick: make the audit exclude those\n      cases explicitly (for example, only count picks where the source\n      fields are present), and document why in a code comment.\n4. Add a small test or assertion covering the fix: a pick with the\n   relevant fields present must yield at least 2 non-AI icons.\n5. Re-run the UI audit for 2026-10-29 and confirm `fewer_than_2_icons`\n   is gone, or that any remaining count is explained by case (c).\n\nWhen done: commit with a clear message (e.g. \"fix: populate board icons /\nfewer_than_2_icons audit\"), push, and bust the UI/board cache so the\ndashboard reflects the fix. Report the root cause, the affected pick IDs,\nand the audit re-run result.\n```"
-  },
-  {
-    "ran_at": "2026-10-29T08:51:41.290467Z",
-    "today": "2026-10-29",
-    "findings": [
-      {
-        "kind": "graded_before_kickoff",
-        "severity": "CRITICAL",
-        "detail": "1 pick(s) graded before kickoff"
-      }
-    ],
-    "finding_count": 1,
-    "analysis": "=== DAILY UI AUDIT ===\n\n**OVERALL:** Counts reconcile (14 picks = 1 settled + 13 pending), and the board has 17 rows. One integrity problem: a pick was settled before its game started, which makes the record untrustworthy.\n\n**FINDINGS:**\n- **CRITICAL \u00b7 graded_before_kickoff** \u00b7 1 pick was graded before kickoff. The audit ran at 08:51 UTC, so this is likely a premature grade, such as a wrong game match, a stale or prior-day result, or a prop graded from partial or placeholder data. The audit data doesn't say which pick it is.\n\n=== PASTE-READY PROMPT ===\n\n```\nFix a CRITICAL finding from today's (2026-10-29) UI audit: kind=graded_before_kickoff. 1 pick was settled before its game's kickoff. Today's counts: picks_logged=14, settled=1, pending=13.\n\nI don't have file paths, so please locate the code yourself.\n\n1. Find the offending pick\n   - Grep the repo for \"graded_before_kickoff\" to find the audit check, and for the grading/settlement code path that writes the settled status or result.\n   - Query today's picks where settled_at (or the equivalent grade timestamp) is earlier than the game's start time. Report the pick ID, the matchup, the market, the grade timestamp, the kickoff time, and the result source.\n   - Determine the root cause. Likely candidates are: matching a result to the wrong game (same teams, a different date, or a prior-day game); using a stale or cached score feed; treating a placeholder or partial score as final; and timezone/UTC vs. local kickoff comparison errors.\n\n2. Fix the grader\n   - Add a guard in the settlement path: never grade a pick unless the game status is final AND now > kickoff. Also match results on the game ID plus the date, not on team names alone.\n   - Fix the root cause you identified in step 1, not only the symptom.\n\n3. Repair the data\n   - Revert the offending pick to pending (clear result, settled_at, and any profit/loss), then let the normal grader re-settle it after the game finishes.\n   - Check that no record, ROI, or units totals on the UI still include the bad grade. Recompute them if they are cached or denormalized.\n\n4. Verify\n   - Re-run the UI audit and confirm finding_count=0 and settled+pending = picks_logged.\n   - Add a regression test, or an assertion in the grader, for grading before kickoff.\n\nWhen done, commit with a clear message (e.g. \"fix: block grading before kickoff; revert premature grade\"), push, and bust the UI/data cache so the dashboard reflects the corrected record. Then summarize the root cause and the pick you reverted.\n```"
-  },
-  {
-    "ran_at": "2026-10-29T16:35:31.607855Z",
+    "ran_at": "2026-10-29T17:03:01.012453Z",
     "today": "2026-10-29",
     "findings": [
       {
@@ -87,12 +9,27 @@
         "detail": "1 pick(s) graded before kickoff"
       },
       {
-        "kind": "fewer_than_2_icons",
+        "kind": "live_scores_file_missing",
         "severity": "WARNING",
-        "detail": "5 board picks have < 2 non-AI icons"
+        "detail": "logs/live_scores.json does not exist"
+      },
+      {
+        "kind": "fails_unified_filter",
+        "severity": "WARNING",
+        "detail": "9 pre-game board picks don't pass the unified filter (regression \u2014 board gate drifted from plays_log._passes_unified_filter)"
+      },
+      {
+        "kind": "over_daily_cap",
+        "severity": "WARNING",
+        "detail": "18 picks logged today (unified-filter target is <=10/day); filter may need tightening"
+      },
+      {
+        "kind": "today_empty_rows",
+        "severity": "WARNING",
+        "detail": "7 rendered board rows have 0 picks (row-prune regressed)"
       }
     ],
-    "finding_count": 2,
-    "analysis": "=== DAILY UI AUDIT ===\n\n**OVERALL:** Data health is mostly fine, but one pick was settled before its game started, which means a grading bug or a bad kickoff timestamp. Five board picks also render with thin icon sets.\n\n**FINDINGS:**\n- **CRITICAL \u00b7 graded_before_kickoff** \u00b7 1 of 18 logged picks (the only settled one) was graded before its kickoff. The result is likely false, and it feeds the settled count and any record or ROI figures.\n- **WARNING \u00b7 fewer_than_2_icons** \u00b7 5 of 17 board picks show fewer than 2 non-AI icons. This is probably a missing-field or defaulted-value problem in icon derivation, not a real absence of signals.\n\nNote: board_rows (17) vs picks_logged (18) is consistent with the one settled pick being off the board, so it is not flagged.\n\n=== PASTE-READY PROMPT ===\n\n```\nFix two issues from today's (2026-10-29) UI audit on the sports-betting dashboard.\n\n1. CRITICAL, kind=graded_before_kickoff\nOne pick was settled before its game's kickoff. Find the code path that emits this audit kind (grep \"graded_before_kickoff\"), then the settlement/grading job it checks.\n- Identify the pick(s): the one settled pick for 2026-10-29. Print its id, game, kickoff_time, graded_at, and result.\n- Determine the root cause. Likely candidates are a wrong or defaulted kickoff time (timezone/UTC mismatch, placeholder time), matching the pick to the wrong game, or grading from a stale or partial score feed.\n- Fix it in the grader: never settle unless now >= kickoff and the game status is final. Reject picks with a missing or defaulted kickoff.\n- Revert the bad pick to pending and clear its result, then re-grade it correctly after the game ends.\n- Recompute the settled/pending counts and any record or ROI aggregates that included it.\n\n2. WARNING, kind=fewer_than_2_icons\n5 board picks have fewer than 2 non-AI icons. Find the audit check (grep \"fewer_than_2_icons\") and the icon-building code for board rows.\n- List the 5 picks and the icon inputs each one has or lacks.\n- Determine whether the cause is missing upstream fields, a failed lookup, or a silent default that drops icons.\n- Fix the derivation so the icons populate from the real data. If the data truly isn't available, show an explicit \"n/a\" state rather than a blank or default that looks real.\n- Do not pad icons with placeholders.\n\nAfter the fixes:\n- Run the audit again and confirm finding_count is 0 for both kinds.\n- Commit with a clear message (e.g. \"fix: block pre-kickoff grading; repair board icon derivation\").\n- Push to the main branch.\n- Bust the cache (bump the asset/version key or purge the data cache) so the dashboard serves the corrected state.\n- Report what you changed and the root cause for each issue.\n```"
+    "finding_count": 5,
+    "analysis": "=== DAILY UI AUDIT ===\n\n**OVERALL:** Data health is poor today. A pick was graded before kickoff, and the board gate has drifted from the unified filter. That drift likely explains the 18 picks logged against a target of 10 or fewer. The live-score cache is missing and 7 empty rows are rendering.\n\n**FINDINGS:**\n- CRITICAL \u00b7 graded_before_kickoff \u00b7 1 pick was settled before its game started. The settled count (1) is wrong and may affect the record and P/L.\n- WARNING \u00b7 fails_unified_filter \u00b7 9 pre-game board picks fail `plays_log._passes_unified_filter`. The board gate has drifted from the logging gate.\n- WARNING \u00b7 over_daily_cap \u00b7 18 picks were logged against a target of \u226410/day. This is probably a symptom of the filter drift above.\n- WARNING \u00b7 today_empty_rows \u00b7 7 of 17 rendered board rows have 0 picks. Row pruning has regressed.\n- WARNING \u00b7 live_scores_file_missing \u00b7 `logs/live_scores.json` does not exist. Live scores and grading may be running without their source data.\n\nNote: `board_rows` (17) and `picks_logged` (18) don't match. Check this after the fixes.\n\n=== PASTE-READY PROMPT ===\n\n```\nFix the following issues from today's UI audit (2026-10-29). Search the repo for each `kind` string to find the code path.\n\n1. CRITICAL graded_before_kickoff: Find the settlement/grading path that settled 1 pick before its kickoff time. Add a guard so a pick can only be graded if now >= kickoff AND the game status is final (from the score source). Identify today's offending pick, revert it to pending, and fix any record/P&L totals it affected. Add a test.\n\n2. WARNING live_scores_file_missing: logs/live_scores.json doesn't exist. Find the writer (the live-score fetcher/job) and determine why it didn't run or write. Make it create the file (an empty valid JSON structure if there is no data) and log an error on failure. Make readers handle a missing file gracefully rather than silently defaulting. Check whether this caused item 1.\n\n3. WARNING fails_unified_filter: The board gate has drifted from plays_log._passes_unified_filter. 9 pre-game board picks fail it. Remove the duplicated board gating logic and have the board call plays_log._passes_unified_filter directly, so there is one source of truth. Add a test asserting every board pick passes it.\n\n4. WARNING over_daily_cap: 18 picks were logged against a target of \u226410/day. After fixing item 3, confirm whether the cap is enforced at logging time. If not, enforce it in plays_log (keep the top N by rank or confidence). Don't loosen the target. Verify today's count after the fix.\n\n5. WARNING today_empty_rows: 7 rendered board rows have 0 picks. Restore the row-prune step so rows with no picks are filtered out before render. Check for a regression in the prune condition or in the order of operations relative to the filter in item 3. Also reconcile board_rows (17) vs picks_logged (18).\n\nAfter the fixes, re-run the UI audit and confirm finding_count is 0 (or explain any remaining findings). Then commit with a clear message, push, and bust the cache so the dashboard serves fresh data.\n```"
   }
 ]
