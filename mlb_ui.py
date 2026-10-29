@@ -53,6 +53,24 @@ _CACHE_TTL_S = 30 * 60
 app = Flask(__name__)
 
 
+# Startup hook: ensure logs/live_scores.json exists before the
+# first request lands. On Render the filesystem resets on every
+# deploy, so a fresh instance starts without the file and the
+# audit flags live_scores_file_missing until the next
+# /cron/dispatch tick fires ensure_live_scores_file (up to 5 min
+# later). Creating it eagerly here means a fresh deploy is clean
+# from request #1.
+def _ensure_live_scores_on_boot():
+    try:
+        import agents as _ag_boot
+        _ag_boot.ensure_live_scores_file()
+    except Exception:
+        pass
+
+
+_ensure_live_scores_on_boot()
+
+
 @app.template_filter("ct")
 def _ct_filter(iso_str, fmt="%I:%M %p CT"):
     """Jinja filter: convert a UTC ISO timestamp to a Central-time display.

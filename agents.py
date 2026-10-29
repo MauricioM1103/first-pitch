@@ -1158,29 +1158,40 @@ def run_daily_ui_audit(post_to_discord=False):
     except Exception:
         pass
 
-    # 5) Unified-filter sanity: any pre-game pick on the board that
-    #    doesn't actually pass the unified filter (shouldn't happen
-    #    after the 2026-10-29 cutover, but catches regressions).
-    fails_unified = 0
-    for row in board_rows:
-        status = row.get("status") or ""
-        for p in (row.get("picks") or []):
-            if p.get("result") in ("W", "L", "P"):
-                continue
-            if status in ("live", "final"):
-                continue
-            if p.get("do_not_bet"):
-                continue
-            try:
-                if not plays_log._passes_unified_filter(p):
-                    fails_unified += 1
-            except Exception:
-                pass
-    if fails_unified:
+    # 5) Unified-filter sanity: _build_board_rows returns pre-prune
+    #    rows (the actual board filter runs in picks_landing against
+    #    _pick_qualifies_for_board, which calls the same unified
+    #    filter). Picks that fail the unified filter here are
+    #    EXPECTED - they'll be filtered off before render. We only
+    #    flag a regression when the saved plays_log has non-trivial
+    #    counts of pre-game picks that fail the unified filter
+    #    (those actually SHIP as "logged picks" in /logged's record).
+    fails_unified_logged = 0
+    for p in picks:
+        if p.get("result") in ("W", "L", "P"):
+            continue
+        if p.get("do_not_bet"):
+            continue
+        # Only pre-kickoff picks matter — live/final games stay even
+        # if the current filter wouldn't re-emit them.
+        st = p.get("start_time") or ""
+        try:
+            sd = datetime.fromisoformat(st.replace("Z", "+00:00")).replace(tzinfo=None)
+            if sd <= now_utc:
+                continue  # already in-flight
+        except Exception:
+            continue
+        try:
+            if not plays_log._passes_unified_filter(p):
+                fails_unified_logged += 1
+        except Exception:
+            pass
+    if fails_unified_logged:
         findings.append({"kind": "fails_unified_filter",
                          "severity": "WARNING",
-                         "detail": f"{fails_unified} pre-game board picks don't pass the unified filter "
-                                     f"(regression — board gate drifted from plays_log._passes_unified_filter)"})
+                         "detail": f"{fails_unified_logged} logged pre-game pick(s) don't pass the "
+                                     f"unified filter — plays_log save gate drifted (board gate is "
+                                     f"authoritative, these may be stragglers from a prior filter)"})
 
     # 6) AI breakdown missing on qualifying picks — AI is required
     #    CONTEXT on every unified-filter pick (not a selection input).
