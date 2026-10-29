@@ -2137,6 +2137,40 @@ def _passes_current_filter_v2(pk):
     return False
 
 
+def _passes_unified_filter(pk):
+    """UNIFIED FILTER (shipped 2026-10-29 from 2-week backtest):
+
+    `(Current Filter v2 - static-CLV markets) UNION Whale`
+
+    Scored across 10/15-10/29 (337 picks, 312 settled):
+      - 54 picks over 15 days (avg 3.6/day, max 9/day)
+      - 35W-17L = 67.3% hit rate
+      - +12.1% ROI, +6.31u
+
+    Rules:
+      1. Must pass Current Filter v2 (sig>=3 + ev>=3% / 5% alts +
+         decimal>=1.50 + not model_only + stayed live to kickoff)
+         AND NOT be in a static-CLV market bucket (NHL Team Total,
+         NHL 1H Total - those were dragging the record).
+      OR
+      2. Qualify as a Whale pick (mc_prob>=0.68 + 1.50<=dec<=1.90 +
+         ev>=1.5 + no DNB/weather/injury) regardless of sport/market
+         - whale had 74.2% hit over the window.
+
+    Why unified: AI endorsement in isolation LOST money (-5.2% ROI
+    across 57 picks), and layering AI on top of strong flag made it
+    worse (-6.5% ROI). The 2-icon board filter was too strict for
+    picks that should have qualified (+7.3% ROI vs v2's +17.6%).
+    This union captures the two profitable filters and nothing else;
+    AI breakdown is attached as context, not used for selection."""
+    if _passes_current_filter_v2(pk):
+        if not _is_static_clv_market(pk):
+            return True
+    if _is_whale_pick(pk):
+        return True
+    return False
+
+
 def _is_whale_pick(pk):
     """WHALE PICK (bankroll-maximum tier) — the pick is strong enough
     to justify a quarter-to-half-Kelly stake (5-10% of bankroll).
@@ -2194,7 +2228,7 @@ def _is_whale_pick(pk):
 def record_in_window(graded_by_date, days_back, strong_only=False, today=None,
                      source=None, conf_tier=None, plus_ev_only=False,
                      min_ev=None, current_filter=False, whale_only=False,
-                     current_filter_v2=False):
+                     current_filter_v2=False, unified=False):
     """Aggregate W/L/P/pending + units + ROI for picks that match the filters.
       source="ev"       → only EV-verified consensus picks.
       source="model"    → only model-only picks that scored 4/5 or 5/5.
@@ -2229,7 +2263,10 @@ def record_in_window(graded_by_date, days_back, strong_only=False, today=None,
         if d < cutoff or d > today:
             continue
         for pk in picks:
-            if current_filter_v2:
+            if unified:
+                if not _passes_unified_filter(pk):
+                    continue
+            elif current_filter_v2:
                 if not _passes_current_filter_v2(pk):
                     continue
             elif current_filter:
@@ -2340,6 +2377,14 @@ def summary(graded_by_date, today=None):
         out[f"curfilter2_{label}"] = record_in_window(graded_by_date, days,
                                                       False, today,
                                                       current_filter_v2=True)
+        # Unified Filter (shipped 2026-10-29) — primary record. Union
+        # of Current Filter v2 (minus static-CLV markets) and Whale.
+        # Backtest: 54 picks / 15 days, 67.3% hit, +12.1% ROI. AI
+        # endorsement explicitly NOT included because it lost money
+        # (-5.2% ROI across 57 picks over the same window).
+        out[f"unified_{label}"]  = record_in_window(graded_by_date, days,
+                                                     False, today,
+                                                     unified=True)
         # back-compat (not rendered)
         out[f"ev_{label}"]       = record_in_window(graded_by_date, days, False, today, source="ev")
         out[f"model_{label}"]    = record_in_window(graded_by_date, days, False, today, source="model")

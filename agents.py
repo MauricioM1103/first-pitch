@@ -1158,9 +1158,10 @@ def run_daily_ui_audit(post_to_discord=False):
     except Exception:
         pass
 
-    # 5) Pick-icon rule — any board pick with < 2 non-AI icons
-    #    (duplicates per-tick integrity sweep for daily reporting)
-    low_icon_picks = 0
+    # 5) Unified-filter sanity: any pre-game pick on the board that
+    #    doesn't actually pass the unified filter (shouldn't happen
+    #    after the 2026-10-29 cutover, but catches regressions).
+    fails_unified = 0
     for row in board_rows:
         status = row.get("status") or ""
         for p in (row.get("picks") or []):
@@ -1168,38 +1169,122 @@ def run_daily_ui_audit(post_to_discord=False):
                 continue
             if status in ("live", "final"):
                 continue
+            if p.get("do_not_bet"):
+                continue
             try:
-                sig = int(p.get("signal_score") or 0)
-                lmp = float(p.get("line_move_pp") or 0.0)
+                if not plays_log._passes_unified_filter(p):
+                    fails_unified += 1
             except Exception:
-                sig, lmp = 0, 0.0
-            n = 0
-            if (not p.get("do_not_bet")) and (sig >= 3 or p.get("whale") or lmp >= 0.005): n += 1
-            if p.get("strong") and not p.get("do_not_bet") and not p.get("model_only"): n += 1
-            if p.get("whale"): n += 1
-            if lmp >= 0.01: n += 1
-            if p.get("do_not_bet"): n += 1
-            if n < 2:
-                low_icon_picks += 1
-    if low_icon_picks:
-        findings.append({"kind": "fewer_than_2_icons",
+                pass
+    if fails_unified:
+        findings.append({"kind": "fails_unified_filter",
                          "severity": "WARNING",
-                         "detail": f"{low_icon_picks} board picks have < 2 non-AI icons"})
+                         "detail": f"{fails_unified} pre-game board picks don't pass the unified filter "
+                                     f"(regression — board gate drifted from plays_log._passes_unified_filter)"})
 
-    # 6) AI breakdown missing — Signal 4+ picks without ai_matchup
+    # 6) AI breakdown missing on qualifying picks — AI is required
+    #    CONTEXT on every unified-filter pick (not a selection input).
     ai_missing = 0
     for p in picks:
         try:
-            sig = int(p.get("signal_score") or 0)
+            if not plays_log._passes_unified_filter(p):
+                continue
         except Exception:
-            sig = 0
-        if sig >= 4 and not (p.get("ai_matchup") or p.get("ai_factors")):
+            continue
+        if not (p.get("ai_matchup") or p.get("ai_factors")):
             ai_missing += 1
     if ai_missing:
         findings.append({"kind": "missing_ai_breakdown",
                          "severity": "INFO",
-                         "detail": f"{ai_missing} Signal 4+ picks lack AI matchup/factors "
-                                     f"(either call never ran or save path stripped the fields)"})
+                         "detail": f"{ai_missing} unified-filter picks lack AI matchup/factors "
+                                     f"(AI call never fired, cache miss on save, or save path stripped fields)"})
+
+    # 7) Daily pick-volume cap — the Unified Filter target is <= 10
+    #    picks/day. Over-cap days flag so we know to tighten.
+    today_count = sum(1 for p in picks if not p.get("do_not_bet"))
+    if today_count > 10:
+        findings.append({"kind": "over_daily_cap",
+                         "severity": "WARNING",
+                         "detail": f"{today_count} picks logged today (unified-filter target is <=10/day); "
+                                     f"filter may need tightening"})
+
+    # 8-11) Per-tab health subaudits (shipped 2026-10-29). Each tab
+    #     gets a quick sanity sweep so the audit covers the whole UI
+    #     surface, not just the main board. INFO-level by default —
+    #     promote to WARNING when the tab is actually broken.
+    #
+    # 8) /logged — the record-tracking tab. Flag if the Unified Filter
+    #    30d has 0 settled (data pipeline isn't surfacing picks) or
+    #    the record_in_window summary dict is missing expected keys.
+    try:
+        _by_date = plays_log.grade_all(limit_dates=35) or {}
+        _summ = plays_log.summary(_by_date)
+        _uni_30 = _summ.get("unified_30d") or {}
+        _whale_30 = _summ.get("whale_30d") or {}
+        if _uni_30.get("settled", 0) == 0 and _uni_30.get("pending", 0) == 0:
+            findings.append({"kind": "logged_tab_empty",
+                             "severity": "WARNING",
+                             "detail": "unified_30d has 0 settled and 0 pending — "
+                                         "/logged tab has nothing to render for the primary tracker"})
+        _missing_keys = [k for k in ("unified_7d", "whale_7d", "all_7d")
+                         if k not in _summ]
+        if _missing_keys:
+            findings.append({"kind": "logged_summary_missing_keys",
+                             "severity": "CRITICAL",
+                             "detail": f"plays_log.summary missing keys: {_missing_keys}"})
+    except Exception as _le:
+        findings.append({"kind": "logged_tab_errored",
+                         "severity": "CRITICAL",
+                         "detail": f"plays_log.summary raised: {type(_le).__name__}: {_le}"})
+
+    # 9) /today — board sanity. Confirm every rendered row has at
+    #    least one qualifying pick (the row-prune guarantees this,
+    #    but regression check is cheap).
+    _empty_rows = sum(1 for r in board_rows if not r.get("picks"))
+    if _empty_rows:
+        findings.append({"kind": "today_empty_rows",
+                         "severity": "WARNING",
+                         "detail": f"{_empty_rows} rendered board rows have 0 picks "
+                                     f"(row-prune regressed)"})
+
+    # 10) /ai-tuner — weekly tune must have run within 10 days. If
+    #     the Sunday cron missed, this flags it.
+    try:
+        _tp = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "logs", "analyzer_suggestions.json")
+        with open(_tp) as _tf:
+            _tune_hist = json.load(_tf) or []
+        if _tune_hist:
+            _last = _tune_hist[-1] or {}
+            _ran = _last.get("ran_at") or ""
+            try:
+                _rd = datetime.fromisoformat(_ran.replace("Z", "")).replace(tzinfo=None)
+                _age_d = (now_utc - _rd).total_seconds() / 86400
+                if _age_d > 10:
+                    findings.append({"kind": "tuner_stale",
+                                     "severity": "WARNING",
+                                     "detail": f"last weekly tune was {_age_d:.1f} days ago "
+                                                 f"(Sunday cron likely missed)"})
+            except Exception:
+                pass
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
+
+    # 11) /ai-analysis — Haiku daily call cap. Protect the Anthropic
+    #     bill; if we're pushing toward the configured cap, flag it.
+    try:
+        _np = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "logs", "news_watcher_state.json")
+        with open(_np) as _nf:
+            _ns = json.load(_nf) or {}
+        _calls_today = int((_ns.get("llm_calls_today") or 0))
+        _cap = int(globals().get("_NEWS_LLM_DAILY_CAP") or 15)
+        if _calls_today >= _cap:
+            findings.append({"kind": "haiku_cap_hit",
+                             "severity": "WARNING",
+                             "detail": f"news watcher Haiku calls today ({_calls_today}) at or above cap ({_cap})"})
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        pass
 
     # Build audit data block for the LLM
     import json as _json_a

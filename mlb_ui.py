@@ -5726,23 +5726,25 @@ PICKS_TEMPLATE = r"""<!doctype html>
         <p>
           Every Signal 3+ pick on this board gets sent to a <b>Claude Sonnet</b>
           verdict pass that reads the matchup + model probability + Pinnacle
-          devig + EV + Signal score and returns one of four verdicts:
+          devig + EV + Signal score and returns one of three verdicts
+          (prior schema also listed <code>Strong Take</code> as a top tier;
+          it never fired in practice and was retired 2026-10-29):
         </p>
         <ul>
-          <li><b class="aie-verd strong">Strong Take</b> &mdash; exceptional edge, bumps the Signal score +1 and surfaces in the AI Picks column.</li>
-          <li><b class="aie-verd lean">Lean</b> &mdash; real edge at standard confidence, also surfaced in the AI Picks column.</li>
-          <li><b class="aie-verd pass">Pass</b> &mdash; thin edge or specific red flag; stays on the main board but no AI endorsement.</li>
+          <li><b class="aie-verd lean">Lean</b> &mdash; real edge at standard confidence; attaches a Matchup / Key Factors / Risks breakdown to the pick card.</li>
+          <li><b class="aie-verd pass">Pass</b> &mdash; thin edge or specific red flag; pick stays on the main board, no AI breakdown written.</li>
           <li><b class="aie-verd avoid">Avoid</b> &mdash; a clear reason the pick won't hit; flipped to DO NOT BET.</li>
         </ul>
         <p>
           Calls happen in a background thread (never blocks page load) and
           each pick is cached for 24h, so the daily API bill stays around
-          $0.50 even on a full board. The AI Picks column on the right
-          shows the subset of today's picks that earned a <b>Strong Take</b>
-          or <b>Lean</b> verdict &mdash; click any card to expand the one-line
-          reasoning. Main picks on the left stay driven by the Signal 0-5
-          composite (EV cushion + line move + prob floor + book agreement +
-          persistence + Kalshi depth); AI is a tiebreaker, not a gatekeeper.
+          $0.50 even on a full board. <b>AI is context, not selection</b>
+          (shipped 2026-10-29): the main board is driven solely by the
+          Unified Filter (Current Filter v2 minus NHL static-CLV markets,
+          UNION Whale), and every qualifying pick gets its AI breakdown
+          attached. The 2-week backtest showed AI endorsement <em>in
+          isolation</em> lost -5.2% ROI, so it was removed as a filter
+          input.
         </p>
         <p class="aie-foot">
           <b>{{ total_games }}</b> games across <b>{{ sports_with_games }}</b> sports &middot;
@@ -5949,7 +5951,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
     <div class="ai-pick-card" data-id="{{ ap.id }}">
       <div class="ai-pick-head" onclick="this.parentElement.classList.toggle('open')">
         <span class="chev">&rsaquo;</span>
-        <span class="ai-verd {{ 'strong' if ap.ai_verdict == 'Strong Take' else 'lean' }}">{{ ap.ai_verdict }}</span>
+        <span class="ai-verd lean">{{ ap.ai_verdict }}</span>
         <span class="ai-sport">{{ ap.sport_name or ap.sport_slug or '' }}</span>
         <span class="ai-matchup">{{ ap.away_team }} @ {{ ap.home_team }}</span>
         <span class="ai-mkt">&middot; {{ ap.market }}: {{ ap.pick }} @ {{ '%.2f'|format(ap.decimal) if ap.decimal else '?' }}</span>
@@ -6063,7 +6065,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
                    or ((p.line_move_pp or 0) >= 0.005)
                 ) %}
                 {% set _is_filter2 = p.strong and not p.do_not_bet and not p.model_only %}
-                {% set _is_ai_endorsed = p.ai_verdict in ('Strong Take', 'Lean') and not p.do_not_bet %}
+                {% set _is_ai_endorsed = p.ai_verdict == 'Lean' and not p.do_not_bet %}
                 {% set _is_linemove = (p.line_move_pp or 0) >= 0.01 %}
                 <div class="pick-badge-row
                             {{ 'strong' if p.strong else '' }}
@@ -6072,7 +6074,6 @@ PICKS_TEMPLATE = r"""<!doctype html>
                             {{ 'strongest' if _is_strongest_pick else '' }}
                             {{ 'filter2' if _is_filter2 else '' }}
                             {{ 'ai-endorsed' if _is_ai_endorsed else '' }}
-                            {{ 'ai-strong-take' if p.ai_verdict == 'Strong Take' and not p.do_not_bet else '' }}
                             {{ 'linemove-fav' if _is_linemove else '' }}
                             {{ 'do-not-bet-pick' if p.do_not_bet else '' }}"
                      data-filters="{{
@@ -6175,7 +6176,7 @@ PICKS_TEMPLATE = r"""<!doctype html>
                  missing all three sections AND the legacy reason
                  are dropped — Sonnet will re-populate them on the
                  next cycle. #}
-              {% if p.ai_verdict in ('Strong Take', 'Lean') and not p.do_not_bet
+              {% if p.ai_verdict == 'Lean' and not p.do_not_bet
                     and (p.ai_matchup or p.ai_factors or p.ai_risks or p.ai_reason) %}
                 {% set _ = _ai_endorsed.append(p) %}
               {% endif %}
@@ -6188,13 +6189,12 @@ PICKS_TEMPLATE = r"""<!doctype html>
                    from the Sonnet verdict prompt. The <summary> row
                    itself keeps the compact one-line layout from
                    before — only clicking opens the body. #}
-                <details class="ai-pick-mini
-                                {{ 'strong-take' if p.ai_verdict == 'Strong Take' else 'lean' }}
+                <details class="ai-pick-mini lean
                                 {{ 'with-whale' if p.whale else '' }}
                                 {{ 'with-filter2' if p.strong and not p.do_not_bet and not p.model_only else '' }}">
                   <summary class="aim-head">
                     <span class="aim-chev">&rsaquo;</span>
-                    <span class="aim-verd">{{ 'STRONG' if p.ai_verdict == 'Strong Take' else 'LEAN' }}</span>
+                    <span class="aim-verd">LEAN</span>
                     <span class="aim-pick">{{ p.pick_short }}</span>
                     {% if p.whale %}<span class="aim-tag whale" title="Also a Whale pick">&#x1F40B;</span>{% endif %}
                     {% if p.strong and not p.do_not_bet and not p.model_only %}<span class="aim-tag filter2" title="Also a Filter 2.0 pick">&#9733;</span>{% endif %}
@@ -9629,29 +9629,35 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
             # Wrapped in try/except so one bad pick field can't 500
             # the whole page build.
             try:
+                # UNIFIED FILTER + AI AS CONTEXT (shipped 2026-10-29):
+                # The 2-week backtest showed AI endorsement was a
+                # LOSING signal (-5.2% ROI across 57 picks). AI is
+                # therefore demoted from a filter input to pure
+                # context — the matchup/key-factors/risks breakdown
+                # is attached to every pick the unified filter keeps,
+                # but the verdict never shapes which picks make the
+                # board. The "Avoid" case still forces do_not_bet
+                # (safety override, not selection), but no bonus
+                # signal_score is added for Strong Take (that verdict
+                # effectively never fires anyway).
                 try:
                     _sig_now = int(p.get("signal_score") or 0)
                 except (TypeError, ValueError):
                     _sig_now = 0
+                import plays_log as _pl_ai
                 try:
-                    _lmp_now = float(p.get("line_move_pp") or 0.0)
-                except (TypeError, ValueError):
-                    _lmp_now = 0.0
-                # Count non-AI icons the pick ALREADY earns at this stage
-                # (model_only picks aren't eligible either way).
-                _ai_icons = 0
-                if _sig_now >= 3 or p.get("whale") or _lmp_now >= 0.005:
-                    _ai_icons += 1   # Strongest
-                if (p.get("strong") and not p.get("model_only")):
-                    _ai_icons += 1   # Filter 2.0
-                if p.get("whale"):
-                    _ai_icons += 1   # Whale (independent)
-                if _lmp_now >= 0.01:
-                    _ai_icons += 1   # Line+
+                    _unified_now = _pl_ai._passes_unified_filter(p)
+                except Exception:
+                    _unified_now = False
+                # Serve a cached verdict for any Signal 2+ pick (keeps
+                # historical cards decorated), but only pay for a NEW
+                # AI call when the pick is on the unified-filter path
+                # - no point burning a Sonnet credit on picks that
+                # won't make the board.
                 _qualifies_for_ai = (_sig_now >= 2
                                       and (p.get("decimal") or 0)
                                       and not p.get("model_only"))
-                _qualifies_for_new_ai = (_ai_icons >= 2
+                _qualifies_for_new_ai = (_unified_now
                                           and (p.get("decimal") or 0)
                                           and not p.get("model_only"))
                 if _qualifies_for_ai:
@@ -9669,14 +9675,10 @@ def _build_board_rows_uncached(date_str, today_date, sport_filter, strong_only=F
                         _v = _av.get("verdict")
                         if _v == "Avoid":
                             p["do_not_bet"] = True
-                        elif _v == "Strong Take":
-                            try:
-                                p["signal_score"] = min(5, int(p["signal_score"]) + 1)
-                            except (TypeError, ValueError):
-                                pass
                     elif _qualifies_for_new_ai:
-                        # Cache miss AND the pick will land on the
-                        # board — worth paying for a new Claude call.
+                        # Cache miss AND the pick is on the unified
+                        # path — worth paying for a new Claude call
+                        # so the card has its context block.
                         try:
                             _queue_ai_verdict_fill(p)
                         except Exception:
@@ -11349,6 +11351,13 @@ def picks_landing():
         if p.get("do_not_bet"): n += 1
         return n
     def _pick_qualifies_for_board(p):
+        """UNIFIED FILTER (shipped 2026-10-29): a pick qualifies for the
+        board when it passes `(Current Filter v2 - NHL static-CLV) ∪ Whale`.
+        AI endorsement is NOT a selection input — it's attached as
+        context on every qualifying pick. Backtest over 10/15-10/29:
+        54 picks / 15 days, 67.3% hit, +12.1% ROI, auto-caps at ~9/day.
+        The 2+ non-AI icon rule it replaces was too strict (+7.3% ROI)
+        and also false-positived during the line_move_pp save bug."""
         try:
             # Always keep graded picks (W/L/P) for the record view.
             if p.get("result") in ("W", "L", "P"):
@@ -11362,8 +11371,9 @@ def picks_landing():
             # pulled from plays_log for live/final rows.
             if p.get("_row_status") in ("live", "final"):
                 return True
-            # Pre-game picks need >= 2 non-AI icons.
-            return _non_ai_icon_count(p) >= 2
+            # Pre-game: unified filter is the single gate.
+            import plays_log as _pl_board
+            return _pl_board._passes_unified_filter(p)
         except Exception:
             return True  # don't 500 on bad fields
     try:
@@ -18137,23 +18147,27 @@ main.logged-page { max-width: 1040px; }
      keys remain populated in summary for back-compat with any
      embedded dashboards or API consumers. #}
 
-  {# PRIMARY RECORD: Current Filter 2.0 (promoted 2026-10-21 to be
-     the first tile on /logged so it matches what TODAY actually
-     recommends). #}
+  {# PRIMARY RECORD: Unified Filter (shipped 2026-10-29). This is
+     the single filter the TODAY board uses now. Previously there
+     were three overlapping sections (Current Filter 2.0 + Signal>=3
+     + Current-Filter Backtest) all showing variants of the same
+     math — those were collapsed into this one tile. #}
   <section class="records-section" style="border:2px solid var(--good);border-radius:12px;padding:14px;background:color-mix(in oklab,var(--good) 7%,transparent)">
-    <h2>Current Filter 2.0 <span style="color:var(--good);font-size:13px">live default &mdash; what the TODAY board recommends</span></h2>
+    <h2>Unified Filter <span style="color:var(--good);font-size:13px">live default &mdash; what the TODAY board recommends</span></h2>
     <div class="sub">
-      The record for picks that would clear <strong>today's live filter</strong>:
-      Signal composite &ge; 3/5 AND EV &ge; 3% (5% for alts) AND not model-only
-      AND decimal &ge; 1.50 (heavy favorites excluded per 2026-10-19 backtest &mdash;
-      they underperformed expectation). Membership rule: a pick counts here only
-      if it was still in the recommended set within 60 min of game start.
+      <strong>(Current Filter v2 &minus; static-CLV markets) &cup; Whale.</strong>
+      A pick qualifies when it either (a) passes CF v2 &mdash; Signal composite &ge; 3,
+      EV &ge; 3% (5% for alts), not model-only, decimal &ge; 1.50, stayed live
+      to kickoff &mdash; AND is NOT in a static-CLV market bucket (NHL Team Total,
+      NHL 1H Total), OR (b) qualifies as a Whale (mc_prob &ge; 0.68, 1.50 &le; dec
+      &le; 1.90, EV &ge; 1.5%, no DNB/weather/injury).
+      <span style="color:var(--muted-2)">Backtest 10/15-10/29: 54 picks over 15 days, 67.3% hit, +12.1% ROI, auto-caps at &sim;9/day.</span>
     </div>
     <div class="records-grid">
-      {% set _cf2_7_settled = (summary['curfilter2_7d'] or {}).settled %}
-      {% for key, label in [('curfilter2_7d','Last 7 days'),('curfilter2_30d','Last 30 days'),('curfilter2_90d','Last 90 days')] %}
+      {% set _uni_7_settled = (summary['unified_7d'] or {}).settled %}
+      {% for key, label in [('unified_7d','Last 7 days'),('unified_30d','Last 30 days'),('unified_90d','Last 90 days')] %}
       {% set r = summary[key] %}
-      {% set _dup = (key != 'curfilter2_7d' and r.settled and _cf2_7_settled and r.settled == _cf2_7_settled) %}
+      {% set _dup = (key != 'unified_7d' and r.settled and _uni_7_settled and r.settled == _uni_7_settled) %}
       <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}" style="border-color:var(--good)">
         <div class="lbl">{{ label }}{% if _dup %} <span style="color:var(--muted-2);font-size:10px;font-weight:400;letter-spacing:0" title="Same settled count as Last 7 days — history doesn't extend further yet.">(insufficient history)</span>{% endif %}</div>
         {% if r.settled %}
@@ -18169,36 +18183,13 @@ main.logged-page { max-width: 1040px; }
     </div>
   </section>
 
-  <section class="records-section">
-    <h2>Signal &ge; 3 Picks <span style="color:var(--good);text-shadow:var(--ev-strong-glow);font-size:16px">&#9733;</span></h2>
-    <div class="sub">Picks worth placing today — Signal composite &ge; 3/5 (EV cushion + favorable line move + prob floor). What the TODAY tab counts under 'N picks worth placing today'.</div>
-    <div class="records-grid">
-      {% for key, label in [('strong_7d','Last 7 days'),('strong_30d','Last 30 days'),('strong_90d','Last 90 days')] %}
-      {% set r = summary[key] %}
-      <div class="rec-tile strong-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
-        <div class="lbl">{{ label }}</div>
-        {% if r.settled %}
-        <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
-        <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
-        {% else %}
-        <div class="wl" style="color:var(--muted)">&mdash;</div>
-        <span class="units" style="color:var(--muted)">&mdash;</span>
-        {% endif %}
-        <div class="meta">{{ r.settled }} settled{% if r.pending %} &middot; {{ r.pending }} pending{% endif %}</div>
-      </div>
-      {% endfor %}
-    </div>
-    {{ mini_3d('signal', 'Signal >= 3') }}
-  </section>
-
   <section class="records-section" style="border:1px solid #38bdf8;border-radius:12px;padding:14px;background:color-mix(in oklab,#38bdf8 6%,transparent)">
     <h2>&#x1F40B; Whale Picks <span style="color:#38bdf8;font-size:13px">bankroll-maximum tier</span></h2>
     <div class="sub">
-      <b>Fresh filter (restarts 2026-10-18):</b> fair prob &ge; 72% AND decimal 1.30&ndash;1.65
-      AND Signal &ge; 4 AND EV &ge; 1.5% AND no DNB/weather/injury flags.
-      Volume: 0&ndash;2 per day. Sized to a quarter-to-half Kelly stake
-      (5&ndash;10% of bankroll) &mdash; variance is low enough at these
-      criteria to justify large exposure per pick. Record starts from zero.
+      <b>Current filter:</b> mc_prob &ge; 0.68 AND 1.50 &le; decimal &le; 1.90
+      AND EV &ge; 1.5% AND no DNB/weather/injury flags. Highest hit rate of any
+      tier (74.2% over 10/15-10/29) and part of the Unified Filter above. Sized
+      to a quarter-to-half Kelly stake (5-10% of bankroll).
     </div>
     <div class="records-grid">
       {% for key, label in [('whale_7d','Last 7 days'),('whale_30d','Last 30 days'),('whale_90d','Last 90 days')] %}
@@ -18219,41 +18210,13 @@ main.logged-page { max-width: 1040px; }
     {{ mini_3d('whale', 'Whale picks') }}
   </section>
 
-  <section class="records-section">
-    <h2>Current-Filter Backtest <span style="color:var(--good);font-size:13px">if we had used today's filter all along</span></h2>
-    <div class="sub">
-      Historical re-grade: for every pick in the last window, we recompute
-      <b>what the current (post-Phase 4) filter would have done</b> — Signal
-      composite &ge; 3/5 AND EV &ge; 3% (5% for alts) AND not model-only —
-      then re-aggregate the W/L/ROI across just the picks that would have
-      survived. Compare to Overall Record above to see the lift the filter
-      actually produces on real graded games.
-    </div>
-    <div class="sub" style="font-size:12px;color:var(--muted-2);margin-top:-6px;margin-bottom:10px">
-      Membership rule: a pick counts here only if it was still in the recommended set within 60 minutes of game start (not pulled off the board early when the market bets the EV out).
-    </div>
-    <div class="records-grid">
-      {% set _cf7_settled = (summary['curfilter_7d'] or {}).settled %}
-      {% for key, label in [('curfilter_7d','Last 7 days'),('curfilter_30d','Last 30 days'),('curfilter_90d','Last 90 days')] %}
-      {% set r = summary[key] %}
-      {% set _dup = (key != 'curfilter_7d' and r.settled and _cf7_settled and r.settled == _cf7_settled) %}
-      <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
-        <div class="lbl">{{ label }}{% if _dup %} <span style="color:var(--muted-2);font-size:10px;font-weight:400;letter-spacing:0" title="This window shows the same settled count as Last 7 days — history doesn't go back far enough yet to see distinct {{ 'last 30' if key == 'curfilter_30d' else 'last 90' }} day data.">(insufficient history)</span>{% endif %}</div>
-        {% if r.settled %}
-        <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
-        <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
-        {% else %}
-        <div class="wl" style="color:var(--muted)">&mdash;</div>
-        <span class="units" style="color:var(--muted)">&mdash;</span>
-        {% endif %}
-        <div class="meta">{{ r.settled }} settled{% if r.pending %} &middot; {{ r.pending }} pending{% endif %}</div>
-      </div>
-      {% endfor %}
-    </div>
-    {{ mini_3d('curfilter', 'current filter') }}
-  </section>
-
-  {# Current Filter 2.0 moved to the top — see first section on this page. #}
+  {# Retired 2026-10-29: Current Filter 2.0, Signal >= 3, and
+     Current-Filter Backtest sections. All three showed overlapping
+     variants of the same math; the Unified Filter tile above is
+     now the single source of truth for "what the board recommends."
+     The underlying summary keys (curfilter2_*, strong_*, curfilter_*)
+     remain populated for back-compat with embedded dashboards and
+     the Agent #7 weekly tuner's data collection. #}
 
   {% if by_sport_curfilter %}
   <section class="records-section">
@@ -18422,30 +18385,39 @@ main.logged-page { max-width: 1040px; }
   {% endif %}
 
   <section class="records-section">
-    <h2>High-EV Picks <span style="color:var(--accent);font-size:13px">ev_pct &ge; +9%</span></h2>
-    <div class="sub">
-      Picks where the model's probability × posted price produced at least
-      +9% expected value — the top of the EV distribution. Longer odds, more
-      variance per pick, but the biggest sample-size-weighted edge if the
-      model's probability estimates are honest at this tier.
-    </div>
-    <div class="records-grid">
-      {% for key, label in [('plusev9_7d','Last 7 days'),('plusev9_30d','Last 30 days'),('plusev9_90d','Last 90 days')] %}
-      {% set r = summary[key] %}
-      <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
-        <div class="lbl">{{ label }}</div>
-        {% if r.settled %}
-        <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
-        <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
-        {% else %}
-        <div class="wl" style="color:var(--muted)">&mdash;</div>
-        <span class="units" style="color:var(--muted)">&mdash;</span>
-        {% endif %}
-        <div class="meta">{{ r.settled }} settled{% if r.pending %} &middot; {{ r.pending }} pending{% endif %}</div>
+    <details style="margin:0">
+      <summary style="cursor:pointer;list-style:none;outline:none">
+        <h2 style="display:inline-block;margin:0">
+          <span style="color:var(--muted-2);font-size:14px">&rsaquo;</span>
+          High-EV Picks <span style="color:var(--accent);font-size:13px">ev_pct &ge; +9%</span>
+          <span style="color:var(--muted-2);font-weight:400;font-size:12px">&middot; click to expand</span>
+        </h2>
+      </summary>
+      <div class="sub" style="margin-top:10px">
+        Picks where the model's probability &times; posted price produced at least
+        +9% expected value &mdash; the top of the EV distribution. Longer odds, more
+        variance per pick, but the biggest sample-size-weighted edge if the
+        model's probability estimates are honest at this tier. Collapsed by
+        default since the Unified Filter above is the primary tracker.
       </div>
-      {% endfor %}
-    </div>
-    {{ mini_3d('ev9', '+EV >= 9%') }}
+      <div class="records-grid">
+        {% for key, label in [('plusev9_7d','Last 7 days'),('plusev9_30d','Last 30 days'),('plusev9_90d','Last 90 days')] %}
+        {% set r = summary[key] %}
+        <div class="rec-tile {{ 'good' if r.units > 0 else ('bad' if r.units < 0 else '') }}">
+          <div class="lbl">{{ label }}</div>
+          {% if r.settled %}
+          <div class="wl">{{ r.wins }}-{{ r.losses }}{% if r.pushes %}-{{ r.pushes }}{% endif %}<span class="pct">{{ '%.1f' % r.win_pct }}%</span></div>
+          <span class="units">{{ '%+.2f' % r.units }}u ({{ '%+.1f' % r.roi_pct }}% ROI)</span>
+          {% else %}
+          <div class="wl" style="color:var(--muted)">&mdash;</div>
+          <span class="units" style="color:var(--muted)">&mdash;</span>
+          {% endif %}
+          <div class="meta">{{ r.settled }} settled{% if r.pending %} &middot; {{ r.pending }} pending{% endif %}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {{ mini_3d('ev9', '+EV >= 9%') }}
+    </details>
   </section>
 
   {# DraftKings history section removed — source-specific record not
