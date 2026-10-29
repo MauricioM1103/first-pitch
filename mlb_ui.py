@@ -5781,20 +5781,29 @@ PICKS_TEMPLATE = r"""<!doctype html>
     </details>
   </div>
 
+  {# Analyzer-tuned bar (shipped 2026-10-29 slim-mockup pass): wrap
+     in a <details> collapsed by default. It's a tuner diagnostic the
+     user doesn't need to see every time; one click surfaces it. #}
   {% if active_adj and active_adj.any %}
-  <div class="active-adj" style="margin: 4px 0 14px;">
-    <strong>Analyzer-tuned:</strong>
-    {% for sport, w in active_adj.weights.items() %}
-      <span class="adj-chip">{{ sport }} weights {{ (w.pricing*100)|int }}/{{ (w.mc*100)|int }}</span>
-    {% endfor %}
-    {% for sport, f in active_adj.floors.items() %}
-      <span class="adj-chip">{{ sport }} min prob {{ (f*100)|int }}%</span>
-    {% endfor %}
-    {% for m in active_adj.blacklist %}
-      <span class="adj-chip bad">drop {{ m }}</span>
-    {% endfor %}
-    <a href="/logged" class="adj-chip" style="text-decoration:none">why?</a>
-  </div>
+  <details class="active-adj" style="margin: 4px 0 14px;">
+    <summary style="list-style:none;cursor:pointer;outline:none;color:var(--muted);font-size:11px;font-family:'JetBrains Mono',monospace;letter-spacing:0.14em;text-transform:uppercase;padding:4px 0;display:flex;align-items:center;gap:6px">
+      <span style="color:var(--muted-2)">&rsaquo;</span>
+      Analyzer-tuned
+      <span style="color:var(--muted-2);font-weight:400">&middot; click to expand</span>
+    </summary>
+    <div style="margin-top:6px">
+      {% for sport, w in active_adj.weights.items() %}
+        <span class="adj-chip">{{ sport }} weights {{ (w.pricing*100)|int }}/{{ (w.mc*100)|int }}</span>
+      {% endfor %}
+      {% for sport, f in active_adj.floors.items() %}
+        <span class="adj-chip">{{ sport }} min prob {{ (f*100)|int }}%</span>
+      {% endfor %}
+      {% for m in active_adj.blacklist %}
+        <span class="adj-chip bad">drop {{ m }}</span>
+      {% endfor %}
+      <a href="/logged" class="adj-chip" style="text-decoration:none">why?</a>
+    </div>
+  </details>
   {% endif %}
 
   {# Preserve toggles across sport-chip clicks and vice versa. #}
@@ -5825,60 +5834,11 @@ PICKS_TEMPLATE = r"""<!doctype html>
          href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ whale_suffix }}{{ linemove_suffix }}{{ strongest_suffix }}{{ ai_suffix }}&mode=volume"
          title="Switch to Volume mode (v9 Blend from the 28-day backtest). Adds every strong pick with EV>=5% to the board. More picks per day, slightly lower ROI, more cumulative units. Click again to return.">+ Volume mode</a>
     {% endif %}
-    <span class="chip-divider" aria-hidden="true"></span>
-    {# 🔥 STRONGEST — union of Signal 3+ OR Whale OR favorable line move.
-       The headline filter the user wanted to combine all premium signals. #}
-    {% if strongest_only %}
-      <a class="chip strongest-chip active" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ whale_suffix }}{{ linemove_suffix }}"
-         title="Showing only Strongest picks (Signal 3+ OR Whale OR +0.5pp line move toward us, DNB excluded). Click to clear.">&#x1F525; Strongest ({{ strongest_count }})</a>
-    {% else %}
-      <a class="chip strongest-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ whale_suffix }}{{ linemove_suffix }}&strongest=1"
-         title="Show only Strongest picks — the union of Signal 3+ OR Whale OR favorable line-movement picks, DNB excluded. One click to see every premium signal on the board.">&#x1F525; Strongest{% if strongest_count %} ({{ strongest_count }}){% endif %}</a>
-    {% endif %}
-    {# ★ Filter 2.0 (Signal ≥ 3) toggle. This is the live default —
-       picks worth placing — and corresponds to the "Current Filter
-       2.0" record on /logged. Rules: Signal composite >= 3/5 AND
-       decimal >= 1.50 (shorter prices auto-DNB) AND not model_only
-       AND not do_not_bet. #}
-    {% if strong_only %}
-      <a class="chip strong-chip active" href="/?date={{ date_str }}{{ sport_suffix }}{{ whale_suffix }}{{ linemove_suffix }}"
-         title="Filter 2.0 — Signal >= 3 AND decimal >= 1.50 AND not DNB AND not model-only. The current primary betting filter. Click to clear.">&#9733; Filter 2.0 ({{ strong_count }})</a>
-    {% else %}
-      <a class="chip strong-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ whale_suffix }}{{ linemove_suffix }}&strong=1"
-         title="Filter 2.0 — Signal composite >= 3/5 (EV cushion + line move + prob floor + book agreement + persistence + Kalshi depth) AND decimal >= 1.50 AND not DNB AND not model-only. The current primary betting filter.">&#9733; Filter 2.0{% if strong_count %} ({{ strong_count }}){% endif %}</a>
-    {% endif %}
-    {# 🐋 WHALE picks — bankroll-maximum tier. Fresh criteria
-       (2026-10-18): fp ≥ 0.72, dec 1.30–1.65, Signal ≥ 4, EV ≥ 1.5%,
-       no DNB/weather/injury flags. 0–2 picks per typical day; sized
-       at quarter-to-half Kelly (5–10% of bankroll) when they appear. #}
-    {% if whale_only %}
-      <a class="chip whale-chip active" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ linemove_suffix }}"
-         title="Showing only Whale picks (fp ≥ 72%, dec 1.30–1.65, Signal ≥ 4, EV ≥ 1.5%, no risk flags). Click to clear.">&#x1F40B; Whale ({{ whale_count }})</a>
-    {% else %}
-      <a class="chip whale-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ linemove_suffix }}&whale=1"
-         title="Show only Whale picks — bankroll-maximum tier. 0–2 picks per typical day meeting fp ≥ 72%, dec 1.30–1.65, Signal ≥ 4, EV ≥ 1.5%, no weather/injury/DNB flags. Sized at quarter-to-half Kelly stake.">&#x1F40B; Whale{% if whale_count %} ({{ whale_count }}){% endif %}</a>
-    {% endif %}
-    {# Line-move toggle: show only picks where Pinnacle's devigged prob
-       moved toward our side by ≥ 1pp over the last ≤3 days. Sharp money
-       agreeing with us is one of the strongest independent EV signals. #}
-    {% if favorable_move_only %}
-      <a class="chip linemove-chip active" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}"
-         title="Showing only picks where the market moved toward our side ≥ +1pp. Click to clear.">&uarr; Line toward me ({{ linemove_count }})</a>
-    {% else %}
-      <a class="chip linemove-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}&linemove=1"
-         title="Show only picks where Pinnacle's devigged prob moved toward our side by ≥ +1pp over the past 3 days (sharp agreement signal)">&uarr; Line toward me{% if linemove_count %} ({{ linemove_count }}){% endif %}</a>
-    {% endif %}
-    {# 🤖 AI only (shipped 2026-10-23). Shows only picks AI
-       verdicted Strong Take or Lean, ranked by (verdict > Signal >
-       EV), top half kept. The AI acts as a cross-sport filter in
-       its own right rather than a per-pick expansion. #}
-    {% if ai_only %}
-      <a class="chip ai-chip active" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ whale_suffix }}{{ linemove_suffix }}"
-         title="Showing only AI-endorsed picks (Strong Take + top-half of Lean picks by Signal + EV). Click to clear.">&#x1F916; AI only ({{ ai_count }})</a>
-    {% else %}
-      <a class="chip ai-chip" href="/?date={{ date_str }}{{ sport_suffix }}{{ strong_suffix }}{{ whale_suffix }}{{ linemove_suffix }}&ai=1"
-         title="Show only AI-endorsed picks — Claude Sonnet verdicted Strong Take or Lean, ranked by verdict + Signal + EV, top half kept. The AI acts as a cross-sport filter instead of an inline tiebreaker.">&#x1F916; AI only{% if ai_count %} ({{ ai_count }}){% endif %}</a>
-    {% endif %}
+    {# Removed 2026-10-29 (slim-mockup pass): Strongest / Filter 2.0 /
+       Whale filter / Line toward me / AI only chips. With the Unified
+       Filter running every row on the board, these sub-filters just
+       added noise. Toggles still work via URL params when needed.
+       The in-row "🐋 Whale" and "🤖 AI breakdown" badges remain. #}
   </div>
 
   {# Filter guide (shipped 2026-10-23). Collapsible explainer that
@@ -6061,13 +6021,13 @@ PICKS_TEMPLATE = r"""<!doctype html>
                   </span>
                   <span class="pick-ico {{ p.icon_cls }}">{{ p.icon }}</span>
                   <span class="pick-lbl">{{ p.pick_short }}</span>
-                  <span class="pick-conf c{{ p.conf }}">{{ p.conf }}/5</span>
-                  {% if p.signal_score is not none %}
-                    <span class="pick-signal s{{ p.signal_score }}"
-                          title="Signal {{ p.signal_score }}/5 = EV cushion (0-2 pts: ≥6% EV=2, 3-6%=1) + favorable line move (+1) + cross-book agreement (+1) + model fair prob ≥ 60% (+1). Pure composite — no single component gates the badge.">
-                      sig {{ p.signal_score }}
-                    </span>
-                  {% endif %}
+                  {# Removed 2026-10-29 (slim-mockup pass): per-row
+                     conf (N/5) + signal (sig N) pills. Both are
+                     implied by the pick being on the Unified Filter
+                     board. The EV source tag (ALT/MODEL/EV +N%)
+                     stays below — it tells the user the actual edge
+                     and matches the mockup's "EV +2%" display. The
+                     tooltip on the row still carries the detail. #}
                   {% if p.source == 'alt' or p.alt_line_flag %}
                     <span class="src-tag alt" title="Alt-line candidate — priced off Pinnacle's own alt-total candidate when available, else fair prob only; verify at DK/FD.">ALT{% if p.ev_pct is not none and p.ev_pct > 0.5 %} +{{ '%.0f'|format(p.ev_pct) }}%{% endif %}</span>
                   {% elif p.model_only %}
