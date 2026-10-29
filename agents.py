@@ -283,13 +283,17 @@ def model_tune_weekly():
 # ============================================================
 
 EOD_RECAP_PROMPT = """You are a sharp sports-model analyst writing a
-day-in-review for the Discord subscribers. Below is today's record.
+day-in-review for the Discord subscribers. Below is today's record
+PLUS the trailing 7-day Unified Filter record for context.
 Write 2-3 short paragraphs:
 
 - Lead with the overall record + units for the day. Call out the
   biggest win (specific pick, sport, result) and the biggest bleed.
 - Note which filter/tier performed best (Strongest, Filter 2.0,
   Whale, AI).
+- Reference the 7-day Unified Filter number once so subscribers
+  see today in context ("today's X-X continues a 7d run of Y-Z /
+  +Nu / +M% ROI" style - do not restate the raw number).
 - Close with one honest line about what the day says about the
   model (hot streak, variance, specific sport trending). No fluff.
 
@@ -301,7 +305,9 @@ peer, not a customer.
 TODAY: {date_label}
 Record: {wlp}  Units: {units}  ROI: {roi}
 
-Per-tier breakdown:
+Last 7 days (Unified Filter): {seven_day_wlp}  {seven_day_units}u  {seven_day_roi} ROI  ({seven_day_n} settled)
+
+Per-tier breakdown (today):
 {tier_table}
 
 Picks (sorted by profit):
@@ -378,6 +384,30 @@ def _collect_eod_data(date_str=None):
         pick_lines.append(f"  {p.get('result','?')} {p.get('sport',''):8s} "
                            f"{(p.get('pick') or '')[:40]:40s} {float(pr):+.2f}u")
 
+    # 7-day trailing Unified Filter record for context under today's
+    # headline numbers. Pulls from plays_log.summary (which the
+    # /logged tab uses) so Discord + dashboard stay in lockstep.
+    seven_day_wlp = "0-0"
+    seven_day_units = "+0.00"
+    seven_day_roi = "+0.0%"
+    seven_day_n = 0
+    try:
+        _wk = plays_log.grade_all(limit_dates=10) or {}
+        _s7 = (plays_log.summary(_wk) or {}).get("unified_7d") or {}
+        _w7 = int(_s7.get("wins", 0))
+        _l7 = int(_s7.get("losses", 0))
+        _p7 = int(_s7.get("pushes", 0))
+        _u7 = float(_s7.get("units", 0.0))
+        _r7 = float(_s7.get("roi_pct", 0.0))
+        _n7 = int(_s7.get("settled", 0))
+        if _n7:
+            seven_day_wlp = f"{_w7}-{_l7}" + (f"-{_p7}" if _p7 else "")
+            seven_day_units = f"{_u7:+.2f}"
+            seven_day_roi = f"{_r7:+.1f}%"
+            seven_day_n = _n7
+    except Exception:
+        pass
+
     return {
         "date_label": datetime.strptime(day, "%Y-%m-%d").strftime("%A, %B %d"),
         "wlp":  f"{w}-{l}" + (f"-{push}" if push else ""),
@@ -385,6 +415,10 @@ def _collect_eod_data(date_str=None):
         "roi":   f"{roi_pct:+.1f}%",
         "tier_table": "\n".join(tier_lines) or "  (none)",
         "pick_list":  "\n".join(pick_lines) or "  (no settled picks)",
+        "seven_day_wlp":   seven_day_wlp,
+        "seven_day_units": seven_day_units,
+        "seven_day_roi":   seven_day_roi,
+        "seven_day_n":     seven_day_n,
     }
 
 
@@ -408,8 +442,22 @@ def compose_eod_recap(date_str=None, post_to_discord=False):
             webhook = _resolve_discord_webhook(settings)
             if webhook:
                 import discord_bot
-                discord_bot.post_text(webhook,
-                    f":bar_chart: **EOD Recap — {data['date_label']}**\n\n{reply}")
+                # Header block carries both the day's and the trailing
+                # 7-day Unified Filter numbers explicitly, so the record
+                # is visible even if the LLM prose doesn't restate it.
+                _hdr = (
+                    f":bar_chart: **EOD Recap — {data['date_label']}**\n"
+                    f"**Today:** {data['wlp']}  ·  {data['units']}  ·  {data['roi']} ROI\n"
+                )
+                if data.get("seven_day_n"):
+                    _hdr += (
+                        f"**Last 7 days (Unified Filter):** "
+                        f"{data['seven_day_wlp']}  ·  "
+                        f"{data['seven_day_units']}u  ·  "
+                        f"{data['seven_day_roi']} ROI "
+                        f"({data['seven_day_n']} settled)\n"
+                    )
+                discord_bot.post_text(webhook, f"{_hdr}\n{reply}")
         except Exception:
             pass
     return {"ok": True, "prose": reply, "data": data}
