@@ -1354,6 +1354,29 @@ def grade_pick(pick, event):
     below for determinism; we just rewrite 'P' -> 'L' at the exit."""
     def _no_push(r):
         return "L" if r == "P" else r
+    # HARD KICKOFF GUARD (shipped 2026-10-29). A pick whose game has
+    # not started yet CANNOT be settled - no matter what event the
+    # scores feed hands us. This guard catches:
+    #   - ESPN name-matched the wrong game (same team, different week)
+    #   - Odds API returned a stale/cached scoreboard
+    #   - find_result_event picked a prior-game event with similar
+    #     teams (e.g. a bye-week-adjacent repeat matchup)
+    # Agent #9's rewind sweep was catching these on the next tick, but
+    # once grading can re-fire it just regrades again next cycle. The
+    # only durable fix is to never settle in the first place. On a
+    # pre-kickoff pick we always return "pending" and let the next
+    # grader tick (now, past kickoff) re-run against a fresh event.
+    try:
+        _st = pick.get("start_time") or ""
+        if _st:
+            _sd = datetime.fromisoformat(_st.replace("Z", "+00:00")).replace(tzinfo=None)
+            if _sd > datetime.utcnow():
+                return "pending"
+    except (TypeError, ValueError, AttributeError):
+        # Can't parse the kickoff - fall through to the existing
+        # grading path rather than freeze picks that have a bad
+        # start_time field.
+        pass
     if not event:
         return "pending"
     # Belt-and-suspenders: find_result_event already filters to
