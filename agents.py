@@ -1237,15 +1237,18 @@ def run_daily_ui_audit(post_to_discord=False):
                          "severity": "CRITICAL",
                          "detail": f"plays_log.summary raised: {type(_le).__name__}: {_le}"})
 
-    # 9) /today — board sanity. Confirm every rendered row has at
-    #    least one qualifying pick (the row-prune guarantees this,
-    #    but regression check is cheap).
+    # 9) /today — board sanity. _build_board_rows returns pre-prune
+    #    rows (the prune happens in picks_landing after the icon
+    #    pass), so some empty rows are expected. Only flag when
+    #    EVERY row is empty — that means the board will render blank
+    #    even though picks exist in the pipeline, which is a real bug.
+    _total_rows = len(board_rows)
     _empty_rows = sum(1 for r in board_rows if not r.get("picks"))
-    if _empty_rows:
-        findings.append({"kind": "today_empty_rows",
-                         "severity": "WARNING",
-                         "detail": f"{_empty_rows} rendered board rows have 0 picks "
-                                     f"(row-prune regressed)"})
+    if _total_rows and _empty_rows == _total_rows:
+        findings.append({"kind": "today_all_rows_empty",
+                         "severity": "CRITICAL",
+                         "detail": f"all {_total_rows} rendered board rows have 0 picks "
+                                     f"— board will render blank"})
 
     # 10) /ai-tuner — weekly tune must have run within 10 days. If
     #     the Sunday cron missed, this flags it.
