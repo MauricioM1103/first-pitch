@@ -733,7 +733,7 @@ def render_pick_card_png(pick):
     y += 56                        # pills row
     reasons = pick.get("reasons") or []
     if reasons:
-        y += 42
+        y += 46                        # chip row (matches draw-phase)
     bb = pick.get("best_book"); bp = pick.get("best_price")
     if bb and bp:
         y += 42
@@ -876,15 +876,30 @@ def render_pick_card_png(pick):
                        fg=_PICK_CARD_INK, bg=ai_bg)
     y += 56
 
-    # Signals-firing chip row
+    # Signals-firing chip row.
+    # Fixed 2026-10-29: previous chip bg (45,47,52) was within 2
+    # units of the card bg (43,45,49) and rendered as invisible
+    # pills - the dim-grey text looked like it was floating on
+    # nothing. On whale picks the whale glow made this worse. New
+    # bg has a stronger contrast; whale picks get a cyan-tinted
+    # bg + white text so chips pop against the cyan accent, and
+    # the font bumps from 18 to 20 to match the pills row above.
     if reasons:
-        f_chip = _pc_font(18)
+        f_chip = _pc_font(20, bold=True)
         rx = pad_x
+        if is_whale:
+            chip_bg = (14, 85, 118)        # deep cyan slab
+            chip_fg = (240, 253, 255)      # near-white
+            chip_border = _WHALE_BLUE
+        else:
+            chip_bg = (62, 65, 72)         # +18 on each channel vs card bg
+            chip_fg = _PICK_CARD_INK
+            chip_border = (90, 93, 102)
         for r in reasons:
-            rx = _pc_pill(draw, rx, y, r, f_chip, fg=_PICK_CARD_INK_DIM,
-                           bg=(45, 47, 52), pad=(10, 5))
-            rx += 8
-        y += 42
+            rx = _pc_pill(draw, rx, y, r, f_chip, fg=chip_fg,
+                           bg=chip_bg, pad=(12, 6))
+            rx += 10
+        y += 46
 
     # Shop chip
     bd = pick.get("best_price_delta_pct")
