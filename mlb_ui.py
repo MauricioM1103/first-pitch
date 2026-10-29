@@ -18677,9 +18677,14 @@ main.logged-page { max-width: 1040px; }
           </div>
           <span class="odd">{{ p.american }}</span>
           {% set clv = p.get('clv_pp') %}
+          {% set clv_src = p.get('clv_source') %}
           {% if clv is not none %}
             <span class="clv {{ 'pos' if clv > 0 else ('neg' if clv < 0 else '') }}" title="Line movement from first-save to close (pp of Pinnacle devig). Positive = sharp signal.">
               <span class="clv-lbl">CLV</span>{{ '%+.1f'|format(clv) }}
+            </span>
+          {% elif clv_src == 'static_market' %}
+            <span class="clv" style="color:var(--muted-2)" title="Pinnacle's guest API serves a cached devigged line for this market (NHL alt totals) and never reposts across the capture window. CLV would always read 0.0pp from a frozen feed, so we don't display it. Treat as 'no CLV signal available for this bucket.'">
+              <span class="clv-lbl">CLV</span>n/a
             </span>
           {% else %}
             <span class="clv">&mdash;</span>

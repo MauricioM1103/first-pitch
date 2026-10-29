@@ -1314,6 +1314,30 @@ def fetch_soccer_halftime(sport_slug, event_id):
     return result
 
 
+# Market buckets whose Pinnacle devigged probability is provably
+# static across the full capture window — guest-API cache behavior,
+# NOT a real "line didn't move" signal. Confirmed empirically on
+# 2026-10-29: 0 of 64 NHL Team Total and 0 of 49 NHL 1H Total
+# settled picks ever recorded non-zero CLV. Picks in these buckets
+# emit clv_pp=None + clv_source="static_market" so they're excluded
+# from CLV averages and don't surface misleading +0.0pp readings in
+# tuner recaps. Add a bucket only after confirming the same zero-
+# movement property with a 25+ pick sample.
+_STATIC_CLV_MARKETS = {
+    ("nhl", "team total"),
+    ("nhl", "1h total"),
+}
+
+
+def _is_static_clv_market(pk):
+    """True if this pick's (sport, market) sits in a Pinnacle bucket
+    whose devigged probability is served from a static cache. Match
+    on sport_slug (fallback to sport) + market, both lowered."""
+    sport = (pk.get("sport_slug") or pk.get("sport") or "").strip().lower()
+    market = (pk.get("market") or "").strip().lower()
+    return (sport, market) in _STATIC_CLV_MARKETS
+
+
 def grade_pick(pick, event):
     """Return 'W' | 'L' | 'P' | 'pending' for the pick given the result event.
 
@@ -1815,25 +1839,42 @@ def grade_date(date_str, sport_key_by_slug, force=False, rescore=False):
         # emitted as clv_pp=0.0 — indistinguishable from a true "market
         # didn't move" reading. clv_pp=None here keeps those picks out of
         # CLV averages instead of pulling them toward zero.
+        #
+        # Also skip CLV for market buckets whose Pinnacle devig is
+        # provably static across the capture window (see
+        # _is_static_clv_market). Over 100+ logged picks across NHL
+        # Team Total and 1H Total, zero recorded non-zero CLV — the
+        # guest API serves a cached snapshot that never reposts for
+        # these low-liquidity alt markets. Rendering 0.0pp from a
+        # frozen feed as if it were a measured "no movement" reading
+        # misled the weekly tuner into counting it as a real CLV
+        # signal. clv_source="static_market" lets the UI label it.
         first_pin = p.get("first_pinnacle_prob")
         close_pin = p.get("pinnacle_prob")
         _first_at = p.get("first_snapshot_at")
         _snap_at  = p.get("snapshotted_at")
         single_sample = bool(_first_at) and (_first_at == _snap_at)
+        static_market = _is_static_clv_market(p)
         clv_pp = None
         clv_pct = None  # EV at close using the price we actually got
         if (first_pin is not None and close_pin is not None
-                and not single_sample):
+                and not single_sample
+                and not static_market):
             try:
                 clv_pp = (float(close_pin) - float(first_pin)) * 100.0
             except (TypeError, ValueError):
                 clv_pp = None
         dec = p.get("decimal") or p.get("first_decimal")
-        if close_pin is not None and dec and not single_sample:
+        if (close_pin is not None and dec
+                and not single_sample
+                and not static_market):
             try:
                 clv_pct = (float(close_pin) * float(dec) - 1.0) * 100.0
             except (TypeError, ValueError):
                 clv_pct = None
+        clv_source = ("static_market" if static_market
+                      else ("single_sample" if single_sample and clv_pp is None
+                            else None))
         graded_picks.append({
             **p,
             "result":     res,
@@ -1843,6 +1884,7 @@ def grade_date(date_str, sport_key_by_slug, force=False, rescore=False):
             "away_score": away_s,
             "clv_pp":     clv_pp,
             "clv_ev_pct": clv_pct,
+            "clv_source": clv_source,
             "graded_at":  datetime.utcnow().isoformat(timespec="seconds") + "Z" if res in ("W","L","P") else None,
         })
 
