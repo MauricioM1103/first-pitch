@@ -848,6 +848,7 @@ _PRIMARY_SECTIONS = [
     ("analysis", "AI Analysis", "/ai-analysis"),
     ("tuner",    "AI Tuner",    "/ai-tuner"),
     ("results",  "Results",     "/logged"),
+    ("tools",    "Tools",       "/tools"),
     ("lab",      "Lab",         "/lab"),
 ]
 
@@ -3285,6 +3286,498 @@ LAB_TEMPLATE = r"""<!doctype html>
     </div>
   </div>
 </div>
+</body>
+</html>
+"""
+
+
+# --- Pro Handicapping Tools (shipped 2026-10-29) ---------------------
+# Client-side calculators that let the user plug their own numbers into
+# the same math our backend applies to every pick: odds conversion
+# across American/Decimal/Fractional/Implied prob, +EV against a
+# user-supplied win rate, Kelly-criterion stake, unit sizing against a
+# user-set bankroll. All math runs in the browser; the bankroll + unit %
+# persist in localStorage so no server state is needed.
+TOOLS_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Betting Tools &mdash; Pro Handicapping Tools</title>
+{{ fonts_link|safe }}
+<style>
+{{ shared_style|safe }}
+.pt-hero { padding: 20px 0 6px; }
+.pt-hero h1 {
+  margin: 0 0 6px; font-size: 28px; font-weight: 700;
+  letter-spacing: -0.015em;
+  font-family: "Fraunces", Georgia, serif;
+}
+.pt-hero .byline {
+  margin: 2px 0 10px; color: var(--good); font-size: 12px;
+  font-weight: 600; letter-spacing: 0.4px; text-transform: uppercase;
+  font-family: 'JetBrains Mono', monospace;
+}
+.pt-hero p { margin: 0; color: var(--muted); font-size: 14px; max-width: 760px; line-height: 1.55; }
+.pt-grid {
+  display: grid; gap: 16px; margin: 20px 0 48px;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  max-width: 1200px;
+}
+.pt-card {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: 12px; padding: 20px;
+  box-shadow: var(--card-shadow);
+}
+.pt-card.span-2 { grid-column: 1 / -1; }
+.pt-card h2 {
+  margin: 0 0 4px; font-size: 15px; font-weight: 700;
+  color: var(--ink); display: flex; align-items: center; gap: 8px;
+}
+.pt-card h2 .pt-tag {
+  font-size: 10px; font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  padding: 2px 7px; border-radius: 6px;
+  background: color-mix(in oklab, var(--good) 15%, transparent);
+  color: var(--good); font-weight: 600;
+}
+.pt-card .sub {
+  margin: 0 0 16px; color: var(--muted); font-size: 12.5px;
+  line-height: 1.5;
+}
+.pt-field {
+  display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px;
+}
+.pt-field label {
+  font-size: 10px; font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted); font-weight: 600;
+}
+.pt-field input {
+  background: var(--surface); border: 1px solid var(--rule);
+  border-radius: 6px; padding: 10px 12px; color: var(--ink);
+  font-family: 'JetBrains Mono', monospace; font-size: 14px;
+  font-weight: 600; outline: none;
+  transition: border-color 120ms ease;
+}
+.pt-field input:focus {
+  border-color: var(--good);
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--good) 40%, transparent);
+}
+.pt-field input::-webkit-outer-spin-button,
+.pt-field input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.pt-field input[type=number] { appearance: textfield; -moz-appearance: textfield; }
+.pt-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.pt-row.three { grid-template-columns: repeat(3, 1fr); }
+.pt-row.four  { grid-template-columns: repeat(4, 1fr); }
+.pt-out {
+  display: grid; gap: 10px; margin-top: 14px;
+  grid-template-columns: 1fr 1fr;
+}
+.pt-tile {
+  padding: 12px; border-radius: 8px;
+  border: 1px solid var(--rule); background: var(--surface);
+}
+.pt-tile.good  { border-color: color-mix(in oklab, var(--good) 50%, var(--rule)); background: color-mix(in oklab, var(--good) 6%, var(--surface)); }
+.pt-tile.bad   { border-color: color-mix(in oklab, var(--poor) 50%, var(--rule)); background: color-mix(in oklab, var(--poor) 6%, var(--surface)); }
+.pt-tile.warn  { border-color: color-mix(in oklab, var(--warn) 50%, var(--rule)); background: color-mix(in oklab, var(--warn) 6%, var(--surface)); }
+.pt-tile .lbl {
+  font-size: 10px; font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted); font-weight: 600; margin-bottom: 4px;
+}
+.pt-tile .big {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 24px; font-weight: 700; letter-spacing: -0.02em;
+  color: var(--ink);
+}
+.pt-tile.good .big  { color: var(--good); }
+.pt-tile.bad .big   { color: var(--poor); }
+.pt-tile.warn .big  { color: var(--warn); }
+.pt-tile .meta { color: var(--muted); font-size: 11px; margin-top: 3px; }
+.pt-methodology {
+  display: grid; gap: 10px; margin-top: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+.pt-method {
+  padding: 12px 14px; border-radius: 8px;
+  border: 1px solid var(--rule); background: var(--surface);
+}
+.pt-method .mt {
+  font-size: 12px; font-weight: 700; color: var(--ink);
+  display: flex; align-items: center; gap: 6px; margin-bottom: 4px;
+}
+.pt-method .md { color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+.pt-divider {
+  height: 1px; background: var(--rule);
+  margin: 14px 0 10px; border: 0;
+}
+.pt-note {
+  font-size: 11px; color: var(--muted-2); line-height: 1.5;
+  margin-top: 10px; padding: 8px 10px; border-left: 2px solid var(--rule);
+}
+@media (max-width: 640px) {
+  .wrap { padding-left: 12px; padding-right: 12px; }
+  .pt-grid { grid-template-columns: 1fr; }
+  .pt-row.three, .pt-row.four { grid-template-columns: 1fr 1fr; }
+  .pt-out { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+{{ sport_strip|safe }}
+<div class="wrap">
+  <div class="pt-hero">
+    <div class="byline">PRO HANDICAPPING TOOLKIT &middot; v2</div>
+    <h1>Tools</h1>
+    <p>Plug your own numbers into the same math the TODAY board applies to every pick: odds conversion, implied probability, +EV against your projected win rate, Kelly-criterion stake, and unit sizing against your own bankroll. Nothing is sent to a server &mdash; your bankroll and unit size are stored in your browser only.</p>
+  </div>
+
+  <div class="pt-grid">
+
+    <!-- ================= BANKROLL + UNIT ================= -->
+    <div class="pt-card">
+      <h2>Bankroll &amp; unit size <span class="pt-tag">step 1</span></h2>
+      <p class="sub">Set your bankroll once. The +EV and Kelly calculators below convert their stake outputs into units at the % you choose (default: 1u = 1% of bankroll). Saved to this browser only.</p>
+      <div class="pt-row">
+        <div class="pt-field">
+          <label for="bk">Bankroll ($)</label>
+          <input id="bk" type="number" min="0" step="10" value="1000" inputmode="decimal">
+        </div>
+        <div class="pt-field">
+          <label for="upct">1 unit (% of bankroll)</label>
+          <input id="upct" type="number" min="0.1" max="10" step="0.1" value="1" inputmode="decimal">
+        </div>
+      </div>
+      <div class="pt-out">
+        <div class="pt-tile">
+          <div class="lbl">1 unit =</div>
+          <div class="big" id="unit1">$10.00</div>
+          <div class="meta">from <span id="unitPct">1</span>% of $<span id="unitBk">1,000</span></div>
+        </div>
+        <div class="pt-tile">
+          <div class="lbl">risk range</div>
+          <div class="big" id="unitRange">0.5u &ndash; 3u</div>
+          <div class="meta">$<span id="unitMin">5.00</span> &ndash; $<span id="unitMax">30.00</span></div>
+        </div>
+      </div>
+      <div class="pt-note">Standard sizing: regular plays 1u, confident plays 2u, Whale plays 3u (quarter&ndash;half Kelly). Never exceed 3u on a single bet &mdash; a 5-loss cold streak at 3u costs 15% of bankroll.</div>
+    </div>
+
+    <!-- ================= ODDS CONVERTER ================= -->
+    <div class="pt-card">
+      <h2>Odds converter <span class="pt-tag">step 2</span></h2>
+      <p class="sub">Type a value in any field. The other three update instantly. Implied probability is the no-vig breakeven win rate the bookmaker is pricing in &mdash; your real projection needs to beat it for the bet to carry +EV.</p>
+      <div class="pt-row four">
+        <div class="pt-field">
+          <label for="oA">American</label>
+          <input id="oA" type="text" value="-110" inputmode="numeric">
+        </div>
+        <div class="pt-field">
+          <label for="oD">Decimal</label>
+          <input id="oD" type="number" step="0.01" min="1.01" value="1.91" inputmode="decimal">
+        </div>
+        <div class="pt-field">
+          <label for="oF">Fractional</label>
+          <input id="oF" type="text" value="10/11" inputmode="text">
+        </div>
+        <div class="pt-field">
+          <label for="oP">Implied %</label>
+          <input id="oP" type="number" step="0.1" min="0.1" max="99.9" value="52.4" inputmode="decimal">
+        </div>
+      </div>
+      <div class="pt-note">The implied probability is <em>raw</em>: it includes the bookmaker's vig. To approximate a fair price, deduct ~2.3pp for a typical US book or ~1.2pp for Pinnacle. The TODAY board uses Pinnacle's two-way devig for every pick already.</div>
+    </div>
+
+    <!-- ================= +EV CALCULATOR ================= -->
+    <div class="pt-card span-2">
+      <h2>Value &amp; Kelly calculator <span class="pt-tag">step 3</span></h2>
+      <p class="sub">Enter the decimal odds you see at your book and your <em>own projected win rate</em> (or the model's fair prob from a TODAY pick). We'll return expected value per $1 risked, the full-Kelly bet share, a safe quarter-Kelly stake, and the unit size against the bankroll you set above.</p>
+      <div class="pt-row three">
+        <div class="pt-field">
+          <label for="evD">Decimal odds @ book</label>
+          <input id="evD" type="number" step="0.01" min="1.01" value="2.00" inputmode="decimal">
+        </div>
+        <div class="pt-field">
+          <label for="evW">Your projected win %</label>
+          <input id="evW" type="number" step="0.1" min="0.1" max="99.9" value="55" inputmode="decimal">
+        </div>
+        <div class="pt-field">
+          <label for="evS">Stake ($)</label>
+          <input id="evS" type="number" step="1" min="0" value="100" inputmode="decimal">
+        </div>
+      </div>
+      <div class="pt-out" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))">
+        <div class="pt-tile" id="evImpTile">
+          <div class="lbl">Book implied %</div>
+          <div class="big" id="evImp">50.0%</div>
+          <div class="meta">no-vig breakeven</div>
+        </div>
+        <div class="pt-tile" id="evEdgeTile">
+          <div class="lbl">Your edge</div>
+          <div class="big" id="evEdge">+5.0pp</div>
+          <div class="meta" id="evEdgeMeta">you &gt; book by 5pp</div>
+        </div>
+        <div class="pt-tile" id="evPerTile">
+          <div class="lbl">EV per $1</div>
+          <div class="big" id="evPer">+$0.10</div>
+          <div class="meta" id="evPerMeta">+10.0% expected return</div>
+        </div>
+        <div class="pt-tile" id="evTotTile">
+          <div class="lbl">EV on $<span id="evTotStake">100</span></div>
+          <div class="big" id="evTot">+$10.00</div>
+          <div class="meta" id="evTotMeta">long-run average</div>
+        </div>
+        <div class="pt-tile" id="evKlyTile">
+          <div class="lbl">Full Kelly %</div>
+          <div class="big" id="evKly">5.0%</div>
+          <div class="meta">of bankroll</div>
+        </div>
+        <div class="pt-tile" id="evQklyTile">
+          <div class="lbl">¼ Kelly stake</div>
+          <div class="big" id="evQklyUnits">1.25u</div>
+          <div class="meta" id="evQklyDollars">$12.50 of $<span id="evKlyBk">1,000</span></div>
+        </div>
+      </div>
+      <hr class="pt-divider">
+      <p class="sub" style="margin-top:0"><strong>Reading the output.</strong> EV per $1 is the long-run average profit per dollar risked at this edge. Full Kelly is the stake share that maximizes long-run growth &mdash; aggressive. We size at <em>quarter</em> Kelly to survive variance; the TODAY board's Whale tier is sized the same way. Edge below 0 means the book has you beat &mdash; walk away.</p>
+    </div>
+
+    <!-- ================= METHODOLOGY GLOSSARY ================= -->
+    <div class="pt-card span-2">
+      <h2>Methodology tags <span class="pt-tag">reference</span></h2>
+      <p class="sub">What the chips on each pick mean &mdash; and how our pipeline marks each one.</p>
+      <div class="pt-methodology">
+        <div class="pt-method">
+          <div class="mt" style="color:#38bdf8">&#x1F40B; Whale</div>
+          <div class="md">Bankroll-max tier. Fair prob &ge; 68%, dec 1.50&ndash;1.90, Signal &ge; 4, EV &ge; 1.5%, no risk flags. Size at &frac14;&ndash;&frac12; Kelly (3u). 0&ndash;2 per typical day.</div>
+        </div>
+        <div class="pt-method">
+          <div class="mt">&#x1F916; AI breakdown</div>
+          <div class="md">Claude Haiku attached a matchup / factors / risks breakdown. Click the pick on TODAY to expand.</div>
+        </div>
+        <div class="pt-method">
+          <div class="mt" style="color:var(--poor)">&#x1F6AB; Do not bet</div>
+          <div class="md">Safety override. Weather, injury, retracted market, or news flag. The pick stays visible but the stake is 0u.</div>
+        </div>
+        <div class="pt-method">
+          <div class="mt">EV +N%</div>
+          <div class="md">Pinnacle-devigged consensus vs. the posted price. Cushion matters: &ge;3% is the baseline bar, &ge;5% is the volume-mode bar.</div>
+        </div>
+        <div class="pt-method">
+          <div class="mt">ALT +N%</div>
+          <div class="md">Alt-line candidate: priced off Pinnacle's own alt total/handicap when available. Verify at your book &mdash; the main-line price is a fallback.</div>
+        </div>
+        <div class="pt-method">
+          <div class="mt">&uarr; +N.Npp</div>
+          <div class="md">Pinnacle's devigged probability moved toward our side by this much since the opening line. Sharp agreement signal.</div>
+        </div>
+        <div class="pt-method">
+          <div class="mt">&#x1F4B5; book &lt;price&gt;</div>
+          <div class="md">A US book (DK / FD / MGM / Caesars) has a materially better decimal price than Pinnacle. Place the bet there.</div>
+        </div>
+        <div class="pt-method">
+          <div class="mt">&#x2713;&#x1F4E2;</div>
+          <div class="md">Pick posted to the Discord moderator feed earlier today. Only picks that pass the Unified Filter are posted.</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---- helpers ----
+  const $ = (id) => document.getElementById(id);
+  const fmtMoney = (v) => {
+    const s = (v < 0 ? '-' : '') + '$' + Math.abs(v).toFixed(2);
+    return s;
+  };
+  const fmtMoneyK = (v) =>
+    '$' + v.toLocaleString('en-US', { maximumFractionDigits: 0 });
+  const fmtPct = (p, dp = 1) => (p >= 0 ? '' : '') + p.toFixed(dp) + '%';
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+  // Fraction parser: "10/11" -> 10/11, "7/4" -> 1.75
+  const parseFrac = (s) => {
+    s = String(s || '').trim();
+    const m = s.match(/^(-?\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/);
+    if (!m) return null;
+    const num = parseFloat(m[1]), den = parseFloat(m[2]);
+    if (!isFinite(num) || !isFinite(den) || den === 0) return null;
+    return num / den;
+  };
+  // Decimal -> fractional "num/den" (approximate, denominator cap 50)
+  const decToFrac = (d) => {
+    const frac = d - 1;
+    if (frac <= 0) return '0/1';
+    let bestN = 1, bestD = 1, bestErr = Infinity;
+    for (let den = 1; den <= 50; den++) {
+      const num = Math.round(frac * den);
+      if (num <= 0) continue;
+      const err = Math.abs(num / den - frac);
+      if (err < bestErr) { bestErr = err; bestN = num; bestD = den; }
+    }
+    return bestN + '/' + bestD;
+  };
+  // Decimal <-> American
+  const decToAm = (d) => {
+    if (d >= 2) return '+' + Math.round((d - 1) * 100);
+    return String(Math.round(-100 / (d - 1)));
+  };
+  const amToDec = (am) => {
+    const a = parseFloat(String(am).replace(/[^-\d.]/g, ''));
+    if (!isFinite(a) || a === 0) return null;
+    return a > 0 ? 1 + a / 100 : 1 - 100 / a;
+  };
+  // Decimal <-> implied prob (0..1)
+  const decToP = (d) => (d > 1 ? 1 / d : 0);
+  const pToDec = (p) => (p > 0 && p < 1 ? 1 / p : 0);
+
+  // ---- state (bankroll + unit, persisted) ----
+  const STORAGE_KEY = 'proTools.bk.v1';
+  const loadState = () => {
+    try {
+      const s = localStorage.getItem(STORAGE_KEY);
+      if (!s) return null;
+      const o = JSON.parse(s);
+      if (typeof o !== 'object' || !o) return null;
+      return o;
+    } catch (e) { return null; }
+  };
+  const saveState = (o) => {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(o)); } catch (e) {}
+  };
+
+  const state = loadState() || { bk: 1000, upct: 1 };
+  $('bk').value = state.bk;
+  $('upct').value = state.upct;
+
+  const renderBankroll = () => {
+    const bk = Math.max(0, parseFloat($('bk').value) || 0);
+    const upct = clamp(parseFloat($('upct').value) || 1, 0.1, 10);
+    const unit = bk * upct / 100;
+    $('unit1').textContent = fmtMoney(unit);
+    $('unitPct').textContent = upct;
+    $('unitBk').textContent = bk.toLocaleString('en-US');
+    $('unitMin').textContent = (unit * 0.5).toFixed(2);
+    $('unitMax').textContent = (unit * 3).toFixed(2);
+    $('evKlyBk').textContent = bk.toLocaleString('en-US');
+    state.bk = bk; state.upct = upct; saveState(state);
+    renderEV();
+  };
+  $('bk').addEventListener('input', renderBankroll);
+  $('upct').addEventListener('input', renderBankroll);
+
+  // ---- odds converter (bi-directional) ----
+  let syncing = false;
+  const syncFrom = (dec) => {
+    if (syncing || !isFinite(dec) || dec <= 1) return;
+    syncing = true;
+    $('oD').value = dec.toFixed(2);
+    $('oA').value = decToAm(dec);
+    $('oF').value = decToFrac(dec);
+    $('oP').value = (decToP(dec) * 100).toFixed(1);
+    syncing = false;
+  };
+  $('oA').addEventListener('input', () => {
+    const d = amToDec($('oA').value);
+    if (d) syncFrom(d);
+  });
+  $('oD').addEventListener('input', () => {
+    const d = parseFloat($('oD').value);
+    if (d > 1) syncFrom(d);
+  });
+  $('oF').addEventListener('input', () => {
+    const f = parseFrac($('oF').value);
+    if (f !== null && f > 0) syncFrom(1 + f);
+  });
+  $('oP').addEventListener('input', () => {
+    const p = parseFloat($('oP').value) / 100;
+    if (p > 0 && p < 1) syncFrom(pToDec(p));
+  });
+
+  // ---- +EV / Kelly calculator ----
+  const renderEV = () => {
+    const dec = parseFloat($('evD').value);
+    const winPct = parseFloat($('evW').value);
+    const stake = Math.max(0, parseFloat($('evS').value) || 0);
+    const bk = state.bk;
+    const upct = state.upct;
+
+    if (!isFinite(dec) || dec <= 1 || !isFinite(winPct)
+        || winPct <= 0 || winPct >= 100) {
+      $('evImp').textContent = '—';
+      $('evEdge').textContent = '—';
+      $('evPer').textContent = '—';
+      $('evTot').textContent = '—';
+      $('evKly').textContent = '—';
+      $('evQklyUnits').textContent = '—';
+      return;
+    }
+
+    const p = winPct / 100;
+    const b = dec - 1;              // net odds (fractional)
+    const imp = 1 / dec;            // raw implied prob
+    const edgePP = (p - imp) * 100; // percentage-point edge
+    const evPerDollar = p * b - (1 - p) * 1;   // profit per $1 risked
+    const evTotal = evPerDollar * stake;
+
+    // Kelly fraction: f* = (bp - q) / b = (p(b+1) - 1) / b
+    const kelly = b > 0 ? (p * (b + 1) - 1) / b : 0;
+    const qKelly = Math.max(0, kelly) * 0.25;
+    const qKellyStake = bk * qKelly;
+    const unit = bk * upct / 100;
+    const qKellyUnits = unit > 0 ? qKellyStake / unit : 0;
+
+    $('evImp').textContent = fmtPct(imp * 100);
+    const edgeTxt = (edgePP >= 0 ? '+' : '') + edgePP.toFixed(1) + 'pp';
+    $('evEdge').textContent = edgeTxt;
+    $('evEdgeMeta').textContent = edgePP >= 0
+      ? 'you > book by ' + edgePP.toFixed(1) + 'pp'
+      : 'book > you by ' + Math.abs(edgePP).toFixed(1) + 'pp';
+    $('evPer').textContent = (evPerDollar >= 0 ? '+' : '-') +
+      '$' + Math.abs(evPerDollar).toFixed(2);
+    $('evPerMeta').textContent = (evPerDollar >= 0 ? '+' : '') +
+      (evPerDollar * 100).toFixed(1) + '% expected return';
+    $('evTot').textContent = (evTotal >= 0 ? '+' : '-') +
+      '$' + Math.abs(evTotal).toFixed(2);
+    $('evTotStake').textContent = Math.round(stake);
+
+    $('evKly').textContent = (kelly * 100).toFixed(1) + '%';
+    $('evQklyUnits').textContent = qKellyUnits.toFixed(2) + 'u';
+    $('evQklyDollars').textContent =
+      '$' + qKellyStake.toFixed(2) + ' of ' + fmtMoneyK(bk);
+
+    // Color-code tiles by sign.
+    const applyTone = (id, pos) => {
+      const el = $(id);
+      el.classList.remove('good', 'bad', 'warn');
+      el.classList.add(pos ? 'good' : 'bad');
+    };
+    applyTone('evEdgeTile', edgePP >= 0);
+    applyTone('evPerTile', evPerDollar >= 0);
+    applyTone('evTotTile', evTotal >= 0);
+    const kellyTile = $('evKlyTile');
+    kellyTile.classList.remove('good', 'bad', 'warn');
+    if (kelly <= 0) kellyTile.classList.add('bad');
+    else if (kelly < 0.05) kellyTile.classList.add('warn');
+    else kellyTile.classList.add('good');
+    const qklyTile = $('evQklyTile');
+    qklyTile.classList.remove('good', 'bad', 'warn');
+    qklyTile.classList.add(kelly > 0 ? 'good' : 'bad');
+  };
+  ['evD', 'evW', 'evS'].forEach((id) =>
+    $(id).addEventListener('input', renderEV)
+  );
+
+  // Initial paint.
+  renderBankroll();
+})();
+</script>
 </body>
 </html>
 """
@@ -10117,6 +10610,22 @@ def lab_landing():
         fonts_link=FONTS_LINK,
         shared_style=SHARED_STYLE,
         sport_strip=render_sport_strip("lab"),
+    )
+
+
+@app.route("/tools")
+def pro_tools():
+    """Pro Handicapping Tools (shipped 2026-10-29). Client-side
+    calculators that let the user plug their own numbers into the
+    same math our backend uses on every pick: odds conversion,
+    implied probability, +EV, Kelly stake, and unit sizing against a
+    user-set bankroll. Pure Jinja + JS — no API calls, no server
+    state (bankroll persists in the browser via localStorage)."""
+    return render_template_string(
+        TOOLS_TEMPLATE,
+        fonts_link=FONTS_LINK,
+        shared_style=SHARED_STYLE,
+        sport_strip=render_sport_strip("tools"),
     )
 
 
