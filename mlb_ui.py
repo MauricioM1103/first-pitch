@@ -3534,7 +3534,7 @@ TOOLS_TEMPLATE = r"""<!doctype html>
           <div class="meta">of bankroll</div>
         </div>
         <div class="pt-tile" id="evQklyTile">
-          <div class="lbl">¼ Kelly stake</div>
+          <div class="lbl">1/4 Kelly stake</div>
           <div class="big" id="evQklyUnits">1.25u</div>
           <div class="meta" id="evQklyDollars">$12.50 of $<span id="evKlyBk">1,000</span></div>
         </div>
