@@ -108,5 +108,33 @@
     ],
     "finding_count": 3,
     "analysis": "=== DAILY UI AUDIT ===\n\n**OVERALL:** Board and pick state are consistent (28 rows, 14 pending, 0 settled, which is normal at 08:00). The save-path gate has drifted from the board's unified filter, so too many picks are being logged, and most of them don't qualify.\n\n**FINDINGS:**\n- **WARNING \u00b7 fails_unified_filter** \u00b7 11 of 14 logged pre-game picks don't pass the unified filter. The plays_log save gate is out of sync with the authoritative board gate.\n- **WARNING \u00b7 over_daily_cap** \u00b7 14 picks logged against a target of \u226410/day. This is likely a symptom of the same gate drift: only 3 picks pass the filter, so the extra 11 are stragglers.\n- **INFO \u00b7 missing_ai_breakdown** \u00b7 3 unified-filter picks lack AI matchup/factors. No action required unless it recurs. The prompt below includes an optional check.\n\n=== PASTE-READY PROMPT ===\n\n```\nFix two related WARNING findings from today's UI audit (2026-11-01).\nLikely one root cause: the plays_log save gate has drifted from the\nboard's unified filter.\n\n1. kind: fails_unified_filter\n   14 picks were logged, but 11 don't pass the unified filter.\n   - Find the plays_log save path (where picks are appended/persisted)\n     and the unified filter used by the board.\n   - Make the board's unified filter the single source of truth: have\n     the save path import and call the same function/predicate instead\n     of using its own thresholds or conditions. Remove duplicated or\n     legacy gate logic.\n   - Check for older code paths (backfills, alternate writers, retries)\n     that write to plays_log without going through the gate.\n   - Do not delete today's existing rows blindly. Report the 11\n     offending picks (ids, matchup, which filter condition each fails)\n     so I can decide whether to purge them.\n\n2. kind: over_daily_cap\n   14 picks logged vs. the <=10/day target.\n   - Confirm whether the cap is enforced at save time. If not, add\n     enforcement in the save path, keeping the top-ranked picks by the\n     filter's own ranking.\n   - After fix #1, verify that today's logged count would be <=10 when\n     replayed through the unified filter.\n\n3. Optional (kind: missing_ai_breakdown, INFO)\n   3 unified-filter picks lack AI matchup/factors. While in the save\n   path, check that fields aren't stripped on save and that a cache\n   miss doesn't silently save without them. Don't make changes unless\n   a clear bug is found.\n\nAdd a test or assertion that any pick saved to plays_log passes the\nboard's unified filter. Then commit, push, and bust the cache so the\nUI reflects the changes.\n```"
+  },
+  {
+    "ran_at": "2026-11-01T09:26:02.486990Z",
+    "today": "2026-11-01",
+    "findings": [
+      {
+        "kind": "graded_before_kickoff",
+        "severity": "CRITICAL",
+        "detail": "2 pick(s) graded before kickoff"
+      },
+      {
+        "kind": "fails_unified_filter",
+        "severity": "WARNING",
+        "detail": "10 logged pre-game pick(s) don't pass the unified filter \u2014 plays_log save gate drifted (board gate is authoritative, these may be stragglers from a prior filter)"
+      },
+      {
+        "kind": "missing_ai_breakdown",
+        "severity": "INFO",
+        "detail": "3 unified-filter picks lack AI matchup/factors (AI call never fired, cache miss on save, or save path stripped fields)"
+      },
+      {
+        "kind": "over_daily_cap",
+        "severity": "WARNING",
+        "detail": "14 picks logged today (unified-filter target is <=10/day); filter may need tightening"
+      }
+    ],
+    "finding_count": 4,
+    "analysis": "=== DAILY UI AUDIT ===\n\nOVERALL: Data health is poor. Two picks were graded before kickoff, which corrupts results, and the save gate has drifted: 14 picks were logged against a target of 10 or fewer, and 10 of them fail the unified filter. The board shows 10 rows and the log holds 14, so the log and board disagree.\n\nFINDINGS:\n- CRITICAL \u00b7 graded_before_kickoff \u00b7 2 picks were settled before kickoff (settled=2 of 14). These grades are invalid and are inflating or corrupting the record.\n- WARNING \u00b7 fails_unified_filter \u00b7 10 logged pre-game picks don't pass the unified filter. The plays_log save gate has drifted from the board gate, which is authoritative.\n- WARNING \u00b7 over_daily_cap \u00b7 14 picks logged against a target of 10 or fewer per day. This is likely the same root cause as the filter drift, because the 10 failing picks plus 4 passing picks add up to 14.\n- INFO \u00b7 missing_ai_breakdown \u00b7 3 unified-filter picks lack AI matchup/factors. No fix is requested here, but check whether the cause is the save path stripping fields.\n\n=== PASTE-READY PROMPT ===\n\n```\nFix the following issues in the sports-betting dashboard. Today's audit (2026-11-01) flagged them.\n\n1. CRITICAL, kind `graded_before_kickoff`:\n   Find the settlement/grading code path (the grader that moves picks from pending to settled). Add a guard so a pick can only be graded if now >= the game's kickoff time (and the game status is final). Never grade on a partial score or on a missing or defaulted start time. Then find the 2 picks already graded before kickoff in plays_log, revert them to pending, and clear their result/profit fields. Log the pick IDs you reverted. Check whether the cause was a timezone/UTC mismatch on kickoff or a wrong game-ID match, and fix the root cause.\n\n2. WARNING, kind `fails_unified_filter`:\n   The plays_log save gate has drifted from the board gate, which is authoritative. Find where picks are written to plays_log and make it call the same unified filter function the board uses, instead of a separate or older copy of the logic. Do not duplicate the thresholds. Identify the 10 logged pre-game picks that fail the filter and report why each fails. Remove or mark them as stragglers only if they are unsettled. Do not touch settled picks without confirming with me.\n\n3. WARNING, kind `over_daily_cap`:\n   14 picks were logged against a target of 10 or fewer per day. This should be resolved by fix 2. After that fix, enforce the daily cap in the save path (rank by the filter's score and keep the top 10) and confirm today's count is 10 or fewer.\n\nOptional, INFO `missing_ai_breakdown`: 3 unified-filter picks have no AI matchup/factors. Check whether the save path strips those fields, and report what you find without making changes.\n\nWhen done, add or update a test for each fix. Then commit with a clear message, push, and bust the cache so the dashboard reflects the corrected counts. Report the final board_rows, picks_logged, settled, and pending numbers.\n```"
   }
 ]
