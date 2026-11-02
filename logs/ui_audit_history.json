@@ -167,5 +167,18 @@
     ],
     "finding_count": 2,
     "analysis": "=== DAILY UI AUDIT ===\n\nOVERALL: Data is mostly healthy (22 board rows, 4 picks logged), but 2 of the 2 settled picks were graded before kickoff. That makes the settled count and any record or P/L built on it unreliable. The audit ran at 08:03 UTC, which is early, so check whether those games had actually started.\n\nFINDINGS:\n- CRITICAL \u00b7 graded_before_kickoff \u00b7 2 picks were graded before kickoff. These are all of today's settled picks (settled=2), so the win/loss record is likely wrong. Likely causes: grading matches on the wrong game or date, a stale result from a prior game between the same teams, or a missing kickoff-time guard.\n- INFO \u00b7 missing_ai_breakdown \u00b7 3 unified-filter picks have no AI matchup/factors. No action needed, but if it recurs, check the AI call or the save path.\n\n=== PASTE-READY PROMPT ===\n\n```\nFix a CRITICAL issue from today's UI audit (2026-11-02): kind `graded_before_kickoff`. 2 picks were marked settled before their games' kickoff. Both of today's settled picks are affected, so the record and P/L are suspect.\n\n1. Grading guard (grader/settlement module, wherever picks move from pending to settled):\n   - Add a hard guard: never grade a pick unless now >= game kickoff time AND the result source reports the game as final.\n   - If the guard fails, leave the pick pending and log a warning with the pick id, kickoff time, and result source.\n   - Confirm the kickoff timestamp is compared in UTC. Check for timezone or date-parsing errors, since the audit ran at 08:03 UTC.\n\n2. Result matching:\n   - Check how results are matched to picks. Look for matching on team name or date only, which could pull a prior game or a same-team different-date result. Match on game id or on teams plus kickoff date.\n   - Check for any default or placeholder result (e.g. 0-0 or a missing score treated as final) that triggers grading.\n\n3. Repair the bad data:\n   - Find today's 2 picks flagged by `graded_before_kickoff`. Revert them to pending, clearing result, grade, and P/L.\n   - Recompute the settled/pending counts and any aggregate record or P/L derived from them.\n   - Re-run the audit and confirm `graded_before_kickoff` is 0.\n\n4. Add a regression test: a pick whose kickoff is in the future must not be gradable even if a result row exists.\n\nDo not change anything for `missing_ai_breakdown`. It is INFO only.\n\nWhen done: commit with a clear message, push, and bust the UI cache so the dashboard shows corrected counts. Report which picks were reverted and the root cause.\n```"
+  },
+  {
+    "ran_at": "2026-11-02T10:31:06.643401Z",
+    "today": "2026-11-02",
+    "findings": [
+      {
+        "kind": "missing_ai_breakdown",
+        "severity": "INFO",
+        "detail": "3 unified-filter picks lack AI matchup/factors (AI call never fired, cache miss on save, or save path stripped fields)"
+      }
+    ],
+    "finding_count": 1,
+    "analysis": "=== DAILY UI AUDIT ===\n\n**OVERALL:** Data health is clean. 22 board rows and 4 picks logged, all pending with none settled, which is normal for a 10:31 UTC run. The one finding is INFO-level.\n\n**FINDINGS:**\n- **INFO \u00b7 missing_ai_breakdown** \u00b7 3 of 4 unified-filter picks lack AI matchup/factors. Possible causes are the AI call never firing, a cache miss on save, or the save path stripping fields. It's not actionable by itself, but if it recurs on later days, investigate the save path.\n\n=== PASTE-READY PROMPT ===\n\nNo code changes needed \u2014 everything is clean. Skip the commit."
   }
 ]
