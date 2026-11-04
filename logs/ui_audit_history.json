@@ -219,5 +219,18 @@
     ],
     "finding_count": 1,
     "analysis": "=== DAILY UI AUDIT ===\n\nOVERALL: Data is healthy. The board has 31 rows, 3 picks are logged and all 3 are pending, which is normal at 08:01 UTC with nothing settled yet. The only finding is INFO-level.\n\nFINDINGS:\n- INFO \u00b7 missing_ai_breakdown \u00b7 1 unified-filter pick has no AI matchup/factors. The cause could be that the AI call never fired, a cache miss on save, or a save path that stripped the fields. This is a single instance and nothing is shown as a real value, so it needs no action unless it recurs across days.\n\n=== PASTE-READY PROMPT ===\n\nNo code changes needed \u2014 everything is clean. Skip the commit."
+  },
+  {
+    "ran_at": "2026-11-04T09:10:57.879762Z",
+    "today": "2026-11-04",
+    "findings": [
+      {
+        "kind": "missing_ai_breakdown",
+        "severity": "INFO",
+        "detail": "1 unified-filter picks lack AI matchup/factors (AI call never fired, cache miss on save, or save path stripped fields)"
+      }
+    ],
+    "finding_count": 1,
+    "analysis": "=== DAILY UI AUDIT ===\n\nOVERALL: Data looks healthy. The board has 31 rows, 3 picks are logged and all 3 are pending, and nothing has settled yet, which is normal for a 09:10 UTC run. The one finding is INFO-level.\n\nFINDINGS:\n- INFO \u00b7 missing_ai_breakdown \u00b7 1 unified-filter pick has no AI matchup/factors. Possible causes are that the AI call never fired, a cache miss on save, or the save path stripped the fields. This is not blocking, but if it recurs across days, investigate the save path.\n\nCounts reconcile (3 logged = 0 settled + 3 pending). No graded-before-kickoff, stale-cache, or defaulted-value issues were flagged.\n\n=== PASTE-READY PROMPT ===\n\nNo code changes needed \u2014 everything is clean. Skip the commit."
   }
 ]
