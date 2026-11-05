@@ -21070,6 +21070,45 @@ def discord_delete_today():
                         status=500, mimetype="application/json")
 
 
+@app.route("/discord/delete-all", methods=["POST", "GET"])
+def discord_delete_all():
+    """V2 MIGRATION PURGE: delete EVERY moderator pick card the
+    webhook ever posted, across all history we captured message_ids
+    for. Also wipes the dedup state. Uses the webhook's own DELETE
+    endpoint — no bot token required.
+
+    Supports ?dry=1 to return the planned deletion set without
+    hitting Discord. Supports ?confirm=1 as the actual kill. Without
+    either, returns a summary + the count that would be deleted so
+    the operator sees the blast radius before firing.
+
+    This endpoint is irreversible — once Discord executes the DELETE
+    the audit log has no restore. The V2 kill switch (set in
+    agents.py) is a prerequisite so no new posts can be created
+    during the purge window."""
+    import json as _json
+    args = request.args
+    dry  = args.get("dry") in ("1", "true", "yes")
+    confirm = args.get("confirm") in ("1", "true", "yes")
+    try:
+        import agents
+        if not dry and not confirm:
+            # Preview mode: do a dry-run so the operator sees the
+            # count and the first 50 planned deletions before firing.
+            r = agents.delete_all_my_posts(dry_run=True)
+            r["usage"] = ("preview only — add ?confirm=1 to execute, "
+                          "or ?dry=1 to see the planned deletions")
+            return Response(_json.dumps(r, indent=2),
+                            mimetype="application/json")
+        r = agents.delete_all_my_posts(dry_run=dry)
+        return Response(_json.dumps(r, indent=2),
+                        mimetype="application/json")
+    except Exception as e:
+        return Response(_json.dumps({"ok": False,
+                                       "error": f"{type(e).__name__}: {e}"}),
+                        status=500, mimetype="application/json")
+
+
 @app.route("/discord/dedup-sweep")
 def discord_dedup_sweep():
     """Scan the Discord channel's recent history and delete any

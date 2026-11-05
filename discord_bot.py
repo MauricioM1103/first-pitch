@@ -507,6 +507,8 @@ def send_discord_image(webhook_url, png_bytes, filename, message="",
     If a shared rate-limit cooldown is active (triggered when a prior
     call got HTTP 429), returns False without hitting the webhook so
     we don't extend the Cloudflare 1015 window."""
+    if _v2_paused():
+        return False
     if not webhook_url or not png_bytes:
         return False
     if _rate_limit_active():
@@ -955,9 +957,29 @@ def sys_posix():
     return not _s.platform.startswith("win")
 
 
+def _v2_paused():
+    """True when Discord posting is paused for the V2 migration.
+    Mirrors agents._discord_paused() but defined here so this module
+    can short-circuit outbound sends without an import cycle during
+    the module's own init. Reads the DISCORD_PAUSED env var; falls
+    back to True (paused) if agents.DISCORD_PAUSED_FOR_V2 is True."""
+    env = (os.environ.get("DISCORD_PAUSED") or "").strip().lower()
+    if env in ("0", "false", "no", "off"):
+        return False
+    if env in ("1", "true", "yes", "on"):
+        return True
+    try:
+        import agents
+        return bool(getattr(agents, "DISCORD_PAUSED_FOR_V2", False))
+    except Exception:
+        return False
+
+
 def send_pick_card(webhook_url, pick, body_text, return_id=True):
     """Send a pick as PNG header + text analysis body in ONE Discord
     message. Returns the message_id on success (or True / False)."""
+    if _v2_paused():
+        return False
     png = render_pick_card_png(pick)
     if not png:
         # PIL missing — fall back to text-only
@@ -978,6 +1000,8 @@ def post_text(webhook_url, message, return_id=False):
     success (or the message_id when return_id=True — uses ?wait=true
     to force Discord to return the created message so we can delete
     it later). Respects the shared 429 cooldown."""
+    if _v2_paused():
+        return False
     if not webhook_url or not message:
         return False
     if _rate_limit_active():

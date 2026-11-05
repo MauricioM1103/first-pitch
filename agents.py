@@ -26,6 +26,37 @@ import time
 from datetime import datetime, timedelta
 
 
+# ----------------------------------------------------------------------
+# V2 MIGRATION KILL SWITCH (shipped 2026-11-05)
+# ----------------------------------------------------------------------
+# Global off-switch for every Discord-facing send path (moderator pick
+# cards, EOD recap, slate summary, weekly tune broadcast, UI audit
+# broadcast). Default: ON (posting disabled) to keep this session's
+# intent sticky even if an env var is unset during migration.
+# Flip to False in code AND unset DISCORD_PAUSED env var to re-enable.
+# The env var takes precedence so the operator can toggle without a
+# redeploy if they ever bring the service back up before V2 lands.
+#
+# Reversibility: changing one line + redeploy restores posting. No
+# message history, dedup state, or webhook config is touched by this
+# flag — only the post-send call sites return early.
+# ----------------------------------------------------------------------
+DISCORD_PAUSED_FOR_V2 = True
+
+
+def _discord_paused():
+    """True when Discord posting is paused for the V2 migration.
+    Reads DISCORD_PAUSED env var first ('0'/'false'/'no' overrides
+    the code default to force-on posting; anything else or unset
+    falls back to the code constant)."""
+    env = (os.environ.get("DISCORD_PAUSED") or "").strip().lower()
+    if env in ("0", "false", "no", "off"):
+        return False
+    if env in ("1", "true", "yes", "on"):
+        return True
+    return DISCORD_PAUSED_FOR_V2
+
+
 # Lazy accessor so cross-module imports don't break if agents.py
 # gets imported before mlb_ui's _record_ai_usage is wired up.
 def _record_usage(model, in_toks, out_toks):
@@ -1679,6 +1710,78 @@ def resend_picks_posted_after(hour_ct=15, webhook_url=None, dry=False):
         "resent":       resent,
         "missing_from_log": missing,
     }
+
+
+def delete_all_my_posts(webhook_url=None, dry_run=False):
+    """Delete EVERY moderator pick card whose message_id we captured,
+    across all history in discord_posted_individual.json. Used for the
+    V2-migration clean slate — one call wipes every message the
+    moderator ever posted via this webhook.
+
+    Uses the webhook's own DELETE endpoint (no bot token required).
+    The webhook can only delete messages it posted itself, which is
+    what we want — nothing manually sent by moderators is touched.
+
+    dry_run=True returns the planned deletes without hitting Discord.
+    Clears the dedup state on success so V2 can repost cleanly if it
+    chooses to reuse this webhook, or safely abandon it.
+
+    Returns {ok, deleted_count, skipped_count, deleted: [...], skipped: [...]}."""
+    try:
+        import mlb_ui
+        import discord_bot
+    except Exception:
+        return {"ok": False, "error": "mlb_ui / discord_bot import failed"}
+    if not webhook_url:
+        try:
+            settings = mlb_ui._load_settings()
+            webhook_url = _resolve_discord_webhook(settings)
+        except Exception:
+            webhook_url = None
+    if not webhook_url:
+        return {"ok": False, "error": "no webhook configured"}
+    posted_state = _load_posted_state()
+    deleted = []
+    skipped = []
+    for pid, entry in list(posted_state.items()):
+        msg_id = entry.get("message_id")
+        if not msg_id:
+            skipped.append({"pid": pid, "reason": "no_message_id",
+                             "day": entry.get("day")})
+            continue
+        if dry_run:
+            deleted.append({"pid": pid, "message_id": msg_id,
+                             "day": entry.get("day"), "dry_run": True})
+            continue
+        try:
+            ok = discord_bot.delete_webhook_message(webhook_url, msg_id)
+        except Exception as e:
+            skipped.append({"pid": pid, "message_id": msg_id,
+                             "reason": "exception",
+                             "err": repr(e)[:160],
+                             "day": entry.get("day")})
+            continue
+        if ok:
+            deleted.append({"pid": pid, "message_id": msg_id,
+                             "day": entry.get("day")})
+        else:
+            skipped.append({"pid": pid, "message_id": msg_id,
+                             "reason": "delete_failed",
+                             "day": entry.get("day")})
+    if not dry_run and deleted:
+        # Wipe the dedup entries we successfully deleted so the state
+        # file reflects reality. We DON'T wipe skipped entries — those
+        # might still have a live message that failed to delete this
+        # pass (stale cache, 429, Discord 5xx) and are worth re-trying.
+        deleted_pids = {d["pid"] for d in deleted}
+        new_state = {pid: v for pid, v in posted_state.items()
+                       if pid not in deleted_pids}
+        _save_posted_state(new_state)
+    return {"ok": True, "deleted_count": len(deleted),
+            "skipped_count": len(skipped),
+            "total_known": len(posted_state),
+            "dry_run": dry_run,
+            "deleted": deleted[:50], "skipped": skipped[:50]}
 
 
 def delete_my_posts_today(webhook_url=None):
