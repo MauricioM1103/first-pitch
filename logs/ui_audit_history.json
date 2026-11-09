@@ -148,5 +148,18 @@
     "findings": [],
     "finding_count": 0,
     "analysis": "=== DAILY UI AUDIT ===\n\n**OVERALL:** Data health is clean. The board has 12 rows, and 0 picks are logged, settled or pending. That is consistent with an early run (08:37 UTC), so it is not a finding. The audit reported 0 findings.\n\n**FINDINGS:**\n- None.\n\n=== PASTE-READY PROMPT ===\n\nNo code changes needed \u2014 everything is clean. Skip the commit."
+  },
+  {
+    "ran_at": "2026-11-09T10:38:29.479235Z",
+    "today": "2026-11-09",
+    "findings": [
+      {
+        "kind": "fails_unified_filter",
+        "severity": "WARNING",
+        "detail": "1 logged pre-game pick(s) don't pass the unified filter \u2014 plays_log save gate drifted (board gate is authoritative, these may be stragglers from a prior filter)"
+      }
+    ],
+    "finding_count": 1,
+    "analysis": "=== DAILY UI AUDIT ===\n\nOVERALL: Data health is mostly clean. The board has 12 rows, 1 pick is logged and pending, and nothing is settled, which is normal for a 10:38 UTC run. The one issue is that a logged pick fails the unified filter, so the save gate has drifted from the board gate.\n\nFINDINGS:\n- WARNING \u00b7 fails_unified_filter \u00b7 1 logged pre-game pick doesn't pass the unified filter. The plays_log save gate has drifted from the authoritative board gate, so this may be a straggler from a prior filter.\n\n=== PASTE-READY PROMPT ===\n\n```\nFix a WARNING from today's UI audit (2026-11-09): kind=`fails_unified_filter`.\n\nProblem: 1 pre-game pick in plays_log doesn't pass the unified filter. The board gate is authoritative, so the plays_log save gate has drifted from it. The pick may be a straggler logged under an older filter.\n\nTasks:\n1. Find the plays_log save gate (the code that decides whether a pick gets written to plays_log). Compare its conditions with the unified filter used by the board. List every difference (thresholds, window/mod checks, market or sport allowlists, etc.).\n2. Remove the drift. Make the save gate call the same unified filter function the board uses, rather than keeping a duplicate copy of the conditions. If the function can't be shared, port the conditions exactly and add a comment that points to the board gate as the source of truth.\n3. Identify today's offending pick. Re-run the unified filter against the pending pick(s) in plays_log for 2026-11-09 and report which one fails and why:\n   - If it's a stale straggler from an old filter and it's still pending (ungraded), report it to me before deleting or voiding it. Don't change the record silently.\n   - If the board filter is wrong and the pick is legitimate, tell me instead of changing the pick.\n4. Make the audit check (`fails_unified_filter`) use the same shared filter function, so the audit and the gates can't disagree.\n5. Add a small test: a pick that fails the unified filter must not be saved to plays_log, and a pick that passes must be saved.\n\nDon't touch settled picks or historical records. When done, run the tests, then commit with a clear message, push, and bust the cache so the dashboard reflects the change. Reply with the diff summary and what you found for the offending pick.\n```"
   }
 ]
