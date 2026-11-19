@@ -1,23 +1,5 @@
 [
   {
-    "ran_at": "2026-11-06T08:01:56.971955Z",
-    "today": "2026-11-06",
-    "findings": [
-      {
-        "kind": "fails_unified_filter",
-        "severity": "WARNING",
-        "detail": "3 logged pre-game pick(s) don't pass the unified filter \u2014 plays_log save gate drifted (board gate is authoritative, these may be stragglers from a prior filter)"
-      },
-      {
-        "kind": "missing_ai_breakdown",
-        "severity": "INFO",
-        "detail": "2 unified-filter picks lack AI matchup/factors (AI call never fired, cache miss on save, or save path stripped fields)"
-      }
-    ],
-    "finding_count": 2,
-    "analysis": "=== DAILY UI AUDIT ===\n\nOVERALL: Board is healthy at 22 rows with 7 picks logged, all pending (normal for 08:01 UTC). One WARNING: the plays_log save gate has drifted from the board's unified filter. One minor INFO on missing AI breakdowns.\n\nFINDINGS:\n- WARNING \u00b7 fails_unified_filter \u00b7 3 of 7 logged pre-game picks don't pass the unified filter. The plays_log save gate has drifted from the authoritative board gate, so these are likely stragglers from an older filter. They inflate the picks_logged count and may be graded or shown as real plays.\n- INFO \u00b7 missing_ai_breakdown \u00b7 2 unified-filter picks lack AI matchup/factors (AI call never fired, cache miss on save, or save path stripped fields). No fix required now. If it recurs, check the save path.\n\n=== PASTE-READY PROMPT ===\n\n```\nFix the following issue in the sports-betting dashboard.\n\nWARNING \u00b7 kind: fails_unified_filter\nToday (2026-11-06), 3 of 7 logged pre-game picks in plays_log don't pass the unified filter. The board gate is authoritative, but the plays_log save gate has drifted from it.\n\nTasks:\n1. Find the plays_log save path (the function that writes picks to plays_log) and the unified filter used by the board. Identify where the save gate's criteria differ from the board's (thresholds, window/mod checks, market eligibility, etc.).\n2. Make the save gate call the same unified filter function the board uses, rather than keeping a duplicate or parallel set of conditions. There should be a single source of truth.\n3. Identify the 3 picks today that fail the unified filter. Determine which criteria they fail and whether they were saved under an older filter version. Do not delete anything silently. List them in your reply and, if they are confirmed stale stragglers and still pending, remove them from plays_log or mark them as excluded, so they don't affect counts or grading.\n4. Add a regression test or assertion: every pick written to plays_log must pass the unified filter at save time. Log a warning if it doesn't.\n5. Confirm the audit's fails_unified_filter check and the picks_logged count agree after the fix.\n\nOptional (INFO, only if trivial): for kind missing_ai_breakdown, 2 unified-filter picks lack AI matchup/factors. Check whether the save path strips these fields or whether the AI call is skipped on cache miss. Report the cause, and only fix it if the change is small.\n\nWhen done: summarize the changes, commit with a clear message, push, and bust the cache so the dashboard reflects the corrected counts.\n```"
-  },
-  {
     "ran_at": "2026-11-06T08:39:31.151957Z",
     "today": "2026-11-06",
     "findings": [
@@ -449,5 +431,23 @@
     ],
     "finding_count": 1,
     "analysis": "## DAILY UI AUDIT\n\n**OVERALL:** Data health is mostly clean. The board has 16 rows, 3 picks are logged and pending, and nothing is settled, which is normal for a 09:50 UTC run. One gate-drift issue: 2 of the 3 logged picks wouldn't pass today's board filter.\n\n**FINDINGS:**\n- **WARNING \u00b7 fails_unified_filter** \u00b7 2 of 3 logged pre-game picks fail the unified filter. The `plays_log` save gate has drifted from the board gate, which is authoritative. These may be stragglers saved under an earlier filter. They could inflate pick counts and record stats with plays the board wouldn't show.\n\n## PASTE-READY PROMPT\n\n```\nFix a WARNING from today's UI audit (2026-11-18): kind=`fails_unified_filter`.\n\nProblem: 2 of 3 logged pre-game picks in plays_log don't pass the unified filter. The board gate is authoritative, and the plays_log save gate has drifted from it.\n\nPlease do the following:\n\n1. Locate the code path that emits `fails_unified_filter` (the audit check) and the plays_log save/write gate (wherever picks are appended to plays_log). Compare the two predicates.\n\n2. Fix the drift by making the save gate call the same unified filter function the board uses. Do not keep a duplicate or hand-copied condition. If no shared function exists, extract one and use it in the board, the plays_log save gate, and the audit check.\n\n3. Identify the 2 offending picks for 2026-11-18. For each, report which unified-filter condition it fails and whether it was saved before a filter change (straggler) or the gate is still letting it through (live bug).\n   - If it's a straggler and the pick is still pending, remove it from today's plays_log, or mark it so it's excluded from counts and record stats.\n   - Do not touch any settled picks.\n\n4. Add a regression check (test or assertion) that anything passing the save gate also passes the unified filter, so the audit finding can't recur silently.\n\n5. Re-run the daily UI audit and confirm `fails_unified_filter` is gone and picks_logged matches the board-eligible count.\n\nWhen done, commit with a clear message (e.g. \"Unify plays_log save gate with board filter\"), push, and bust the cache so the UI reflects the corrected counts. Report the 2 picks' details and the final audit output.\n```"
+  },
+  {
+    "ran_at": "2026-11-19T08:03:51.080533Z",
+    "today": "2026-11-19",
+    "findings": [
+      {
+        "kind": "fails_unified_filter",
+        "severity": "WARNING",
+        "detail": "1 logged pre-game pick(s) don't pass the unified filter \u2014 plays_log save gate drifted (board gate is authoritative, these may be stragglers from a prior filter)"
+      },
+      {
+        "kind": "missing_ai_breakdown",
+        "severity": "INFO",
+        "detail": "2 unified-filter picks lack AI matchup/factors (AI call never fired, cache miss on save, or save path stripped fields)"
+      }
+    ],
+    "finding_count": 2,
+    "analysis": "=== DAILY UI AUDIT ===\n\nOVERALL: Board and log counts look sane (16 board rows, 5 picks logged, 5 pending, 0 settled, which is normal for 08:03 UTC). One WARNING shows the save gate drifted from the board filter. One INFO shows missing AI breakdown fields.\n\nFINDINGS:\n- WARNING \u00b7 fails_unified_filter \u00b7 1 logged pre-game pick doesn't pass the unified filter. The plays_log save gate has drifted from the board gate, which is authoritative. The pick may be a straggler from an older filter and could be shown or graded as a real play.\n- INFO \u00b7 missing_ai_breakdown \u00b7 2 unified-filter picks lack AI matchup/factors (AI call didn't fire, cache miss on save, or the save path stripped fields). There is no code change yet. Escalate if it recurs or grows.\n\n=== PASTE-READY PROMPT ===\n\n```\nFix the following issue in the sports-betting dashboard, found by the daily UI audit (2026-11-19).\n\nWARNING \u00b7 kind: fails_unified_filter\n1 logged pre-game pick in plays_log doesn't pass the unified filter. The board gate is authoritative, and the plays_log save gate has drifted from it.\n\nSteps:\n1. Find the code path that emits the `fails_unified_filter` audit finding. Note which function it uses to evaluate the unified filter.\n2. Find the plays_log save path (where picks are appended or logged). Make it call the same shared unified-filter function the board uses. Don't keep a duplicate copy of the thresholds or conditions. If the logic is duplicated, extract it into one shared helper and use it in both places.\n3. Identify the one pick that fails the filter today. Print its id, game, and the reason it fails, and tell me whether it's a stale straggler from an older filter or a live drift bug.\n   - If it's a straggler, remove it from plays_log, or mark it so it's excluded from counts and grading. Show me the change before applying it.\n   - If it's a live drift bug, fix the root cause.\n4. Add a regression test or assertion: every pick that the save gate accepts must pass the unified filter.\n\nOptional, low priority (INFO \u00b7 kind: missing_ai_breakdown):\n2 unified-filter picks have no AI matchup/factors. While you're in the save path, check whether the save step strips those fields, or whether the AI call is skipped or fails on a cache miss. Only fix it if the cause is obvious. Otherwise report what you found.\n\nWhen done:\n- Run the tests and confirm the audit no longer reports `fails_unified_filter`.\n- Commit with a clear message, push, and bust the cache so the dashboard reflects the fix.\n```"
   }
 ]
