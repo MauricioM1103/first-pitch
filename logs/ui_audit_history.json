@@ -1,23 +1,5 @@
 [
   {
-    "ran_at": "2026-11-10T09:23:59.924081Z",
-    "today": "2026-11-10",
-    "findings": [
-      {
-        "kind": "fails_unified_filter",
-        "severity": "WARNING",
-        "detail": "1 logged pre-game pick(s) don't pass the unified filter \u2014 plays_log save gate drifted (board gate is authoritative, these may be stragglers from a prior filter)"
-      },
-      {
-        "kind": "missing_ai_breakdown",
-        "severity": "INFO",
-        "detail": "1 unified-filter picks lack AI matchup/factors (AI call never fired, cache miss on save, or save path stripped fields)"
-      }
-    ],
-    "finding_count": 2,
-    "analysis": "=== DAILY UI AUDIT ===\n\nOVERALL: Data is mostly healthy: 16 board rows, 5 picks logged, all 5 pending, and no settlement problems. One WARNING: the plays_log save gate has drifted from the board's unified filter.\n\nFINDINGS:\n- WARNING \u00b7 fails_unified_filter \u00b7 1 logged pre-game pick doesn't pass the unified filter. The save gate in plays_log has drifted from the authoritative board gate, so this is likely a straggler from an older filter.\n- INFO \u00b7 missing_ai_breakdown \u00b7 1 unified-filter pick lacks AI matchup/factors. Possible causes: the AI call never fired, a cache miss on save, or the save path stripped fields. No fix requested unless it recurs. It may be the same pick as the WARNING, so check for overlap.\n\n=== PASTE-READY PROMPT ===\n\n```\nFix the following issue from today's UI audit (2026-11-10).\n\nWARNING \u00b7 kind: fails_unified_filter\n1 logged pre-game pick in plays_log does not pass the unified filter. The plays_log save gate has drifted from the board gate, which is authoritative.\n\nChanges:\n1. Find the code path that emits the `fails_unified_filter` audit finding. Identify which pick is flagged today (5 logged, 1 fails). Report its ID, the reason it fails, and when it was saved.\n2. Locate the plays_log save gate (the function that decides whether a pick is written to plays_log). Make it call the same unified filter function the board uses, rather than a duplicated or older condition. There should be one shared predicate and no copy-pasted logic.\n3. Decide on the flagged pick:\n   - If it's a stale straggler from a prior filter, remove it from plays_log or mark it as excluded. Don't leave it counted in picks_logged or pending.\n   - If the board filter is wrongly excluding it, tell me and don't change the filter without confirmation.\n4. Add a small test or assertion that every pick written to plays_log passes the unified filter, so this drift is caught at save time.\n\nAlso check (INFO \u00b7 missing_ai_breakdown): see whether the pick lacking AI matchup/factors is the same pick as above. If it is, no further action is needed. If it's a different pick, tell me whether the cause was a missed AI call, a cache miss on save, or a save path that strips fields. Don't change anything for it unless the cause is an obvious bug.\n\nWhen done: run the audit again to confirm finding_count drops, then commit with a clear message, push, and bust the UI cache.\n```"
-  },
-  {
     "ran_at": "2026-11-11T08:04:28.876832Z",
     "today": "2026-11-11",
     "findings": [
@@ -481,5 +463,23 @@
     ],
     "finding_count": 2,
     "analysis": "=== DAILY UI AUDIT ===\n\nOVERALL: Data is mostly healthy (20 board rows, 3 picks logged: 1 settled, 2 pending), but one pick was graded before kickoff, which corrupts the record and needs a fix.\n\nFINDINGS:\n- CRITICAL \u00b7 graded_before_kickoff \u00b7 1 pick was settled before its game's kickoff time. The grader is likely matching the wrong event, using a stale or defaulted result, or lacking a kickoff guard.\n- INFO \u00b7 missing_ai_breakdown \u00b7 1 unified-filter pick has no AI matchup/factors. Cause is unknown (AI call never fired, cache miss on save, or save path stripped fields). No action is required unless it recurs.\n\n=== PASTE-READY PROMPT ===\n\n```\nFix the following issue in the sports-betting dashboard.\n\nCRITICAL: `graded_before_kickoff` (1 pick graded before kickoff, 2026-11-23)\n\n1. Find the grading/settlement code path (the grader/settler job or function that writes won/lost/push status to picks). Add a hard guard: never settle a pick unless now >= the game's kickoff time AND the data source reports the game as final/completed. If either check fails, leave the pick as pending.\n\n2. Check how the grader matches picks to results. Confirm it matches on the correct event ID and date, not just team name. A same-team match against a prior game or a stale cached score can cause an early grade. Fix any loose matching.\n\n3. Identify today's affected pick. Query the picks logged for 2026-11-23 where status is settled and settled_at < kickoff_time. Log its ID and the cause you find, then reset it to pending (clear result, settled_at, and any P/L) so it re-grades correctly after the game ends.\n\n4. Make sure the audit check for `graded_before_kickoff` and the grader use the same kickoff timestamp field and timezone (UTC). Fix any mismatch, since a timezone error could produce a false positive.\n\n5. Add a small regression test or assertion for the guard: a pick with a future kickoff must not be settled.\n\nDo not change the `missing_ai_breakdown` behavior. It is INFO only. If you notice an obvious cause while in the save path, just mention it in your summary.\n\nWhen done: run tests, commit with a clear message (e.g. \"fix: block grading before kickoff + reset mis-graded pick\"), push, and bust the UI/data cache so the dashboard reflects the corrected pick status and record.\n```"
+  },
+  {
+    "ran_at": "2026-11-23T09:53:27.308550Z",
+    "today": "2026-11-23",
+    "findings": [
+      {
+        "kind": "graded_before_kickoff",
+        "severity": "CRITICAL",
+        "detail": "1 pick(s) graded before kickoff"
+      },
+      {
+        "kind": "missing_ai_breakdown",
+        "severity": "INFO",
+        "detail": "1 unified-filter picks lack AI matchup/factors (AI call never fired, cache miss on save, or save path stripped fields)"
+      }
+    ],
+    "finding_count": 2,
+    "analysis": "=== DAILY UI AUDIT ===\n\nOVERALL: Board and pick counts reconcile (3 logged = 1 settled + 2 pending), but one pick was graded before kickoff, so the settled count and any P/L derived from it are unreliable.\n\nFINDINGS:\n- CRITICAL \u00b7 graded_before_kickoff \u00b7 1 pick was settled before its game's kickoff. The grader is likely matching the wrong game, using a stale or incorrect score, or skipping a start-time check.\n- INFO \u00b7 missing_ai_breakdown \u00b7 1 unified-filter pick lacks AI matchup/factors. No action required unless it recurs. The detail doesn't say which cause (AI call never fired, cache miss on save, or save path stripping fields), so there's nothing specific to fix yet.\n\n=== PASTE-READY PROMPT ===\n\n```\nFix a CRITICAL issue flagged by today's UI audit (2026-11-23): finding kind `graded_before_kickoff`. One pick was graded (settled) before its game's kickoff time.\n\nTasks:\n\n1. Locate the grading/settlement code path (the function that moves picks from pending to settled, and the audit check that emits `graded_before_kickoff`). Identify which pick was graded early by querying today's picks where settled_at < game start time (or where status != pending and kickoff > now).\n\n2. Find the root cause. Check for:\n   - Matching the pick to the wrong game (same teams on a different date, or a game ID/team-name collision)\n   - Treating a partial, live, or placeholder score (e.g., 0-0) as final\n   - A timezone/UTC mismatch in the kickoff comparison\n   - A missing \"game status == final\" check\n\n3. Add a guard in the grader: never settle a pick unless the game status is final AND current time >= kickoff. Log a warning and skip it if the check fails.\n\n4. Revert the incorrectly settled pick to pending, clear its result/P&L, and recompute the settled/pending counts and any record or P/L totals derived from it. Do not touch correctly graded picks.\n\n5. Add a regression test or assertion covering a pick whose kickoff is in the future and verify it stays pending.\n\nDo NOT make changes for the INFO finding `missing_ai_breakdown`. It is informational only.\n\nWhen finished: commit with a clear message (e.g., \"Fix grading picks before kickoff; add final-status + kickoff guard\"), push, and bust the cache so the dashboard reflects the corrected counts.\n```"
   }
 ]
