@@ -1,18 +1,5 @@
 [
   {
-    "ran_at": "2026-11-11T08:04:28.876832Z",
-    "today": "2026-11-11",
-    "findings": [
-      {
-        "kind": "fails_unified_filter",
-        "severity": "WARNING",
-        "detail": "1 logged pre-game pick(s) don't pass the unified filter \u2014 plays_log save gate drifted (board gate is authoritative, these may be stragglers from a prior filter)"
-      }
-    ],
-    "finding_count": 1,
-    "analysis": "=== DAILY UI AUDIT ===\n\nOVERALL: Data health is mostly good. The board has 18 rows, with 3 picks logged and all 3 pending, and no settlement problems. One WARNING shows the pick save gate has drifted from the board's unified filter.\n\nFINDINGS:\n- WARNING \u00b7 fails_unified_filter \u00b7 1 of 3 logged pre-game picks does not pass the unified filter. The `plays_log` save gate has drifted from the authoritative board gate, so this may be a straggler from an earlier filter version. This inflates the picks_logged count and could affect the record if the pick is graded.\n\nNothing else is flagged. 0 settled and 3 pending at 08:04 UTC is normal for the time of day.\n\n=== PASTE-READY PROMPT ===\n\n```\nFix a WARNING from today's UI audit (2026-11-11): kind `fails_unified_filter`.\n1 logged pre-game pick in plays_log does not pass the unified filter. The\nboard gate is authoritative, and the plays_log save gate has drifted from it.\n\nTasks:\n\n1. Find the plays_log save/write path (where picks are persisted) and the\n   unified filter the board uses to select rows. Diff their criteria\n   (thresholds, window/mod blocks, market eligibility, etc.). Make the save\n   gate call the same unified filter function instead of keeping its own\n   copy of the logic, so the two cannot drift again.\n\n2. Identify the 1 logged pick that fails the unified filter. Re-run the\n   unified filter against today's plays_log entries and print which pick\n   fails and why. If it is a straggler from a prior filter and is still\n   pending (not graded), remove it or mark it as void/excluded per our\n   existing convention. Do not touch settled picks. Report what you did\n   before deleting anything.\n\n3. In the audit code that emits `fails_unified_filter`, include the pick\n   id(s) and the failing reason in the `detail` string so future findings\n   are actionable.\n\n4. Add a quick test or assertion: for a sample of board rows and logged\n   picks, the save gate and the board gate return identical results.\n\nAfter the changes, verify that today's audit reports 0 findings and that\npicks_logged matches the number of picks that pass the unified filter.\nThen commit with a clear message (e.g. \"Unify plays_log save gate with\nboard filter; fix fails_unified_filter\"), push, and bust the UI cache so\nthe dashboard reflects the corrected counts.\n```"
-  },
-  {
     "ran_at": "2026-11-11T09:18:36.853466Z",
     "today": "2026-11-11",
     "findings": [
@@ -481,5 +468,23 @@
     ],
     "finding_count": 2,
     "analysis": "=== DAILY UI AUDIT ===\n\nOVERALL: Board and pick counts reconcile (3 logged = 1 settled + 2 pending), but one pick was graded before kickoff, so the settled count and any P/L derived from it are unreliable.\n\nFINDINGS:\n- CRITICAL \u00b7 graded_before_kickoff \u00b7 1 pick was settled before its game's kickoff. The grader is likely matching the wrong game, using a stale or incorrect score, or skipping a start-time check.\n- INFO \u00b7 missing_ai_breakdown \u00b7 1 unified-filter pick lacks AI matchup/factors. No action required unless it recurs. The detail doesn't say which cause (AI call never fired, cache miss on save, or save path stripping fields), so there's nothing specific to fix yet.\n\n=== PASTE-READY PROMPT ===\n\n```\nFix a CRITICAL issue flagged by today's UI audit (2026-11-23): finding kind `graded_before_kickoff`. One pick was graded (settled) before its game's kickoff time.\n\nTasks:\n\n1. Locate the grading/settlement code path (the function that moves picks from pending to settled, and the audit check that emits `graded_before_kickoff`). Identify which pick was graded early by querying today's picks where settled_at < game start time (or where status != pending and kickoff > now).\n\n2. Find the root cause. Check for:\n   - Matching the pick to the wrong game (same teams on a different date, or a game ID/team-name collision)\n   - Treating a partial, live, or placeholder score (e.g., 0-0) as final\n   - A timezone/UTC mismatch in the kickoff comparison\n   - A missing \"game status == final\" check\n\n3. Add a guard in the grader: never settle a pick unless the game status is final AND current time >= kickoff. Log a warning and skip it if the check fails.\n\n4. Revert the incorrectly settled pick to pending, clear its result/P&L, and recompute the settled/pending counts and any record or P/L totals derived from it. Do not touch correctly graded picks.\n\n5. Add a regression test or assertion covering a pick whose kickoff is in the future and verify it stays pending.\n\nDo NOT make changes for the INFO finding `missing_ai_breakdown`. It is informational only.\n\nWhen finished: commit with a clear message (e.g., \"Fix grading picks before kickoff; add final-status + kickoff guard\"), push, and bust the cache so the dashboard reflects the corrected counts.\n```"
+  },
+  {
+    "ran_at": "2026-11-24T08:03:12.847210Z",
+    "today": "2026-11-24",
+    "findings": [
+      {
+        "kind": "fails_unified_filter",
+        "severity": "WARNING",
+        "detail": "3 logged pre-game pick(s) don't pass the unified filter \u2014 plays_log save gate drifted (board gate is authoritative, these may be stragglers from a prior filter)"
+      },
+      {
+        "kind": "missing_ai_breakdown",
+        "severity": "INFO",
+        "detail": "1 unified-filter picks lack AI matchup/factors (AI call never fired, cache miss on save, or save path stripped fields)"
+      }
+    ],
+    "finding_count": 2,
+    "analysis": "# DAILY UI AUDIT \u00b7 2026-11-24\n\n**OVERALL:** The board is healthy: 15 rows, 5 picks logged and all pending, with nothing settled yet, which is expected at 08:03 UTC. One real issue: 3 of the 5 logged picks (60%) fail the board's unified filter, so the save gate has drifted from the board gate.\n\n**FINDINGS:**\n- **WARNING \u00b7 fails_unified_filter** \u00b7 3 of 5 logged pre-game picks don't pass the unified filter. The `plays_log` save gate has drifted from the authoritative board gate. These may be stragglers from an earlier filter, and they inflate the picks_logged count and any record or grading built on it.\n- **INFO \u00b7 missing_ai_breakdown** \u00b7 1 unified-filter pick has no AI matchup/factors. The cause is unclear: the AI call never fired, a cache miss on save, or the save path stripped the fields. No fix requested unless it recurs.\n\n---\n\n# PASTE-READY PROMPT\n\n```\nFix the following UI audit finding from 2026-11-24.\n\nWARNING \u00b7 kind: fails_unified_filter\n3 of 5 logged pre-game picks in plays_log do not pass the unified filter.\nThe board gate is authoritative; the plays_log save gate has drifted.\n\n1. Locate the audit check that emits `fails_unified_filter` and the\n   plays_log save path (where picks are written). Compare the filter\n   conditions in both.\n2. Make the save path call the same unified-filter function the board\n   uses. Do not duplicate the logic. Remove any stale or divergent\n   conditions.\n3. Identify today's 3 offending picks (logged but failing the unified\n   filter). Determine whether they are leftovers from an older filter\n   version or a live gate bug. Report which.\n4. If they are stragglers, remove or flag them in today's plays_log so\n   picks_logged and the record/grading counts reflect only\n   filter-passing picks. Do not touch settled picks. Show me the rows\n   before deleting anything.\n5. Add a regression test: a pick that fails the unified filter must\n   not be persisted by the save path.\n\nOptional, no change required: INFO `missing_ai_breakdown` (1 pick\nlacking AI matchup/factors). While in the save path, check whether\nfields are stripped or the AI call is skipped on cache miss, and\nreport only. Do not change behavior.\n\nWhen done: run the tests, commit with a clear message, push, and bust\nthe cache so the dashboard reflects the corrected counts. Then confirm\nthe audit re-run shows no `fails_unified_filter` finding.\n```"
   }
 ]
