@@ -1,23 +1,5 @@
 [
   {
-    "ran_at": "2026-11-16T08:02:22.028865Z",
-    "today": "2026-11-16",
-    "findings": [
-      {
-        "kind": "fails_unified_filter",
-        "severity": "WARNING",
-        "detail": "1 logged pre-game pick(s) don't pass the unified filter \u2014 plays_log save gate drifted (board gate is authoritative, these may be stragglers from a prior filter)"
-      },
-      {
-        "kind": "today_all_rows_empty",
-        "severity": "CRITICAL",
-        "detail": "all 21 rendered board rows have 0 picks \u2014 board will render blank"
-      }
-    ],
-    "finding_count": 2,
-    "analysis": "=== DAILY UI AUDIT ===\n\n**OVERALL:** Data health is degraded. 21 board rows are rendering with zero picks even though 1 pick is logged (pending, 0 settled). The logged pick fails the unified filter, so the two findings are probably linked.\n\n**FINDINGS:**\n- **CRITICAL \u00b7 today_all_rows_empty** \u00b7 All 21 rendered board rows show 0 picks, so the board will render blank. This conflicts with `picks_logged = 1`. It is either a join/render bug or a filter that drops everything.\n- **WARNING \u00b7 fails_unified_filter** \u00b7 1 logged pre-game pick fails the unified filter. The `plays_log` save gate has drifted from the board gate, which is authoritative. This is likely a straggler from an older filter, and it may be why the board shows nothing.\n\nNote: the run was at 08:02 UTC, so an empty board could be legitimate if the filter or mod window blocks everything. Rows are only a problem if they are blank while a valid pick exists. Verify that before treating the blank board as a render bug.\n\n=== PASTE-READY PROMPT ===\n\n```\nFix two issues from today's UI audit (2026-11-16). Grep the codebase for the\n`kind` strings below to find the exact code paths.\n\n1. CRITICAL `today_all_rows_empty`: All 21 rendered board rows have 0 picks,\n   yet picks_logged = 1. Find where the audit computes this check and where\n   the board builds per-row pick lists. Determine why the logged pick isn't\n   attached to any row (join key mismatch such as game_id/date/team\n   normalization, timezone/date bucketing, or the unified filter dropping it).\n   Fix the root cause. If the board is legitimately empty because the filter\n   blocked all picks, change the audit so it only fires when\n   picks that pass the unified filter > 0 and rows still show 0. Also make\n   the UI show an explicit \"no qualifying picks\" empty state instead of\n   blank rows.\n\n2. WARNING `fails_unified_filter`: 1 logged pre-game pick doesn't pass the\n   unified filter. The `plays_log` save gate has drifted from the board gate\n   (the board gate is authoritative). Refactor the save gate to import and\n   call the same unified filter function the board uses, so there is one\n   source of truth. Then identify the offending pick, and either remove it\n   or mark it as legacy/excluded so it doesn't count in picks_logged or\n   pending. Report which pick it was and why it failed the filter.\n\nAfter the fixes, re-run the UI audit and confirm both findings clear, or\nthat the empty board is correctly explained. Then commit with a clear\nmessage, push, and bust the cache so the dashboard serves fresh data.\n```"
-  },
-  {
     "ran_at": "2026-11-16T10:23:41.597828Z",
     "today": "2026-11-16",
     "findings": [
@@ -531,5 +513,28 @@
     ],
     "finding_count": 3,
     "analysis": "=== DAILY UI AUDIT ===\n\nOVERALL: Board is populated (80 rows) and all 29 logged picks are pending, which is normal at 08:03 UTC. The real problem is the save gate: it is logging far more picks than the unified filter allows, and most of them fail that filter.\n\nFINDINGS:\n- WARNING \u00b7 fails_unified_filter \u00b7 26 of 29 logged pre-game picks don't pass the unified filter. The plays_log save gate has drifted from the authoritative board gate.\n- WARNING \u00b7 over_daily_cap \u00b7 29 picks logged against a target of \u226410/day. This is likely the same root cause as above: only 3 picks pass the filter, so the excess is leaking through the save gate.\n- INFO \u00b7 missing_ai_breakdown \u00b7 2 unified-filter picks lack AI matchup/factors. No action needed unless it recurs.\n\nNote: the two WARNINGs are probably one bug. 29 \u2212 26 = 3 passing picks, which is under the cap, so the cap problem is the stale gate and not the filter itself. Tightening the filter would be the wrong fix.\n\n=== PASTE-READY PROMPT ===\n\n```\nFix the plays_log save-gate drift found by today's UI audit (2026-11-28). 29 picks were logged vs. a target of <=10/day, and 26 of them fail the unified filter.\n\n1. Finding kind `fails_unified_filter` (WARNING)\n   - Locate the code path that writes to plays_log (the save/append function and every caller, including any cron/scheduled job and manual-save endpoints).\n   - Make it call the SAME unified-filter function the board uses, as the single source of truth. Remove any duplicated or legacy threshold logic in the save path.\n   - Reject picks that fail the filter at save time. Log a reason for each rejection.\n\n2. Finding kind `over_daily_cap` (WARNING)\n   - Do NOT tighten the unified filter. Only 3 of 29 picks pass it, so the filter is not what's over the cap.\n   - Add a hard guard in the save path: if today's logged count is already >=10, skip the save and log it.\n   - Confirm the cap check is idempotent and counts by date in the correct timezone.\n\n3. Cleanup\n   - Identify today's 26 non-conforming pending picks in plays_log. List them for me first and do not delete anything yet. Propose whether to remove them or flag them as legacy, so they don't pollute settled/record stats.\n   - Check whether the audit's `fails_unified_filter` check and the save gate use the same filter import, so they can't drift again. Add a test asserting that every pick saved via the save path passes the unified filter.\n\n4. Optional, low priority (INFO `missing_ai_breakdown`): 2 unified-filter picks have no AI matchup/factors. Check whether the save path strips the fields or caches miss. Only fix it if the cause is obvious.\n\nWhen done, run the tests, commit with a clear message, push, and bust the cache so the dashboard reflects the corrected counts.\n```"
+  },
+  {
+    "ran_at": "2026-11-28T08:41:56.396409Z",
+    "today": "2026-11-28",
+    "findings": [
+      {
+        "kind": "fails_unified_filter",
+        "severity": "WARNING",
+        "detail": "26 logged pre-game pick(s) don't pass the unified filter \u2014 plays_log save gate drifted (board gate is authoritative, these may be stragglers from a prior filter)"
+      },
+      {
+        "kind": "missing_ai_breakdown",
+        "severity": "INFO",
+        "detail": "3 unified-filter picks lack AI matchup/factors (AI call never fired, cache miss on save, or save path stripped fields)"
+      },
+      {
+        "kind": "over_daily_cap",
+        "severity": "WARNING",
+        "detail": "32 picks logged today (unified-filter target is <=10/day); filter may need tightening"
+      }
+    ],
+    "finding_count": 3,
+    "analysis": "## DAILY UI AUDIT\n\n**OVERALL:** The board is healthy (80 rows, 0 settled and 32 pending, which is normal pre-game). The problem is the pick-logging save gate. It has drifted from the board's unified filter and logged 32 picks against a target of \u226410/day.\n\n**FINDINGS:**\n- **WARNING \u00b7 fails_unified_filter:** 26 of 32 logged pre-game picks fail the unified filter. Only 6 of the 32 pass. The plays_log save gate is out of sync with the authoritative board gate.\n- **WARNING \u00b7 over_daily_cap:** 32 picks were logged against a \u226410/day target. This is most likely the same root cause as above, since the 6 valid picks alone are under the cap. Fixing the gate should resolve both.\n- **INFO \u00b7 missing_ai_breakdown:** 3 of the 6 valid picks lack AI matchup/factors. This is not actionable until the gate is fixed. If it persists, check for a cache miss or stripped fields on the save path.\n\n---\n\n## PASTE-READY PROMPT\n\n```\nFix two related issues in the sports-betting dashboard's pick logging. Today's audit (2026-11-28) logged 32 picks, but only 6 pass the unified filter, and the target is \u226410/day.\n\nRoot cause (likely): the plays_log save gate has drifted from the board's unified filter. The board gate is authoritative.\n\n1. kind: fails_unified_filter (WARNING)\n   - Find the code path that writes picks to plays_log (the save/append gate).\n   - Find where the board applies the unified filter.\n   - Refactor so both call ONE shared function (e.g. passes_unified_filter(pick)). Remove any duplicated or legacy filter logic in the save path.\n   - Check whether picks are saved from other paths (backfill, refresh loops, earlier-run stragglers) that bypass the gate. Route them all through the shared function.\n\n2. kind: over_daily_cap (WARNING)\n   - After step 1, confirm the daily count is \u226410 under the unified filter.\n   - Add a hard cap guard at save time: if today's logged picks \u2265 the configured daily cap (use the existing constant, or add one set to 10), skip the save and log a warning.\n   - Make saves idempotent per pick (same game/market/side), so re-runs don't re-log.\n\n3. Cleanup\n   - Do NOT delete or alter existing graded or settled records.\n   - For today's 26 pending picks that fail the filter, tell me how many there are and propose (don't execute) a one-off cleanup. Wait for my confirmation.\n\n4. Optional check (kind: missing_ai_breakdown, INFO)\n   - 3 of the valid picks lack AI matchup/factors. While in the save path, check whether fields are stripped on save or the AI call is skipped on a cache miss. Report what you find. Only fix it if it's a trivial one-liner.\n\nVerification:\n   - Re-run the UI audit and confirm fails_unified_filter and over_daily_cap are gone.\n   - Show the before and after pick counts.\n\nWhen done: commit with a clear message, push, and bust the cache so the UI reflects the changes.\n```"
   }
 ]
